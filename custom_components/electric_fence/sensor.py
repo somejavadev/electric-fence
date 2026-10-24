@@ -2,6 +2,7 @@
 
 from collections import deque
 from datetime import datetime, timedelta
+import logging
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.core import HomeAssistant, callback
@@ -16,6 +17,8 @@ from .models import LoginAttempt, LoginResult, Record
 from .notifier import display_username
 from .privacy import inline_text
 from .storage import FenceStore
+
+_LOGGER = logging.getLogger(__name__)
 
 WINDOW = timedelta(hours=24)
 EXPIRY_INTERVAL = timedelta(minutes=1)
@@ -46,6 +49,7 @@ class FailedLoginsSensor(SensorEntity):
     _attr_should_poll = False
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "attempts"
+    _unrecorded_attributes = frozenset({"last_username", "last_ip"})
 
     def __init__(self, entry: ElectricFenceConfigEntry) -> None:
         """Initialise the sensor."""
@@ -53,6 +57,7 @@ class FailedLoginsSensor(SensorEntity):
         self._events: deque[tuple[datetime, int]] = deque()
         self._total = 0
         self._last: LoginAttempt | None = None
+        self._buffer: list[LoginAttempt] | None = None
         self._attr_unique_id = f"{entry.entry_id}_failed_logins"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -79,17 +84,32 @@ class FailedLoginsSensor(SensorEntity):
         }
 
     async def async_added_to_hass(self) -> None:
-        """Seed from the store, then follow the worker."""
+        """Follow the worker, seed from the store, then merge what arrived."""
         runtime = self._entry.runtime_data
-        now = dt_util.utcnow()
-        seeded = await self.hass.async_add_executor_job(
-            _seed, runtime.store, now - WINDOW
-        )
-        if seeded:
-            # The store has no times for the total, so it counts from now on.
-            self._events.append((now, seeded))
-            self._total += seeded
+        # The listener comes first and buffers while the seed query runs, so
+        # no record falls in the gap.
+        self._buffer = []
         self.async_on_remove(runtime.worker.add_listener(self._on_record))
+        cutoff = dt_util.utcnow()
+        try:
+            seeded = await self.hass.async_add_executor_job(
+                _seed, runtime.store, cutoff - WINDOW
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not read past failures: %s", type(err).__name__
+            )
+            seeded = []
+        buffered, self._buffer = self._buffer, None
+        # A buffered record older than the query is already in the seed.
+        # One newer than the query may be too, and then counts twice: a
+        # rare overcount of a record, rather than losing one.
+        for ts, count in seeded:
+            self._add(ts, count)
+        for record in buffered:
+            if record.ts > cutoff:
+                self._add(record.ts, record.count)
+        self._expire(dt_util.utcnow())
         self.async_on_remove(
             async_track_time_interval(
                 self.hass,
@@ -100,15 +120,21 @@ class FailedLoginsSensor(SensorEntity):
             )
         )
 
+    def _add(self, ts: datetime, count: int) -> None:
+        self._events.append((ts, count))
+        self._total += count
+
     @callback
     def _on_record(self, record: Record) -> None:
         if not isinstance(record, LoginAttempt):
             return
         if record.result not in (LoginResult.FAILED, LoginResult.BLOCKED):
             return
-        self._events.append((record.ts, record.count))
-        self._total += record.count
         self._last = record
+        if self._buffer is not None:
+            self._buffer.append(record)
+            return
+        self._add(record.ts, record.count)
         self._expire(dt_util.utcnow())
 
     @callback
@@ -119,5 +145,5 @@ class FailedLoginsSensor(SensorEntity):
         self.async_write_ha_state()
 
 
-def _seed(store: FenceStore, since: datetime) -> int:
-    return store.count_failed_since(since, include_blocked=True)
+def _seed(store: FenceStore, since: datetime) -> list[tuple[datetime, int]]:
+    return store.failed_buckets_since(since, include_blocked=True)

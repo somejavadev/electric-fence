@@ -3,8 +3,11 @@
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+import sqlite3
+import time
 
 from freezegun.api import FrozenDateTimeFactory
+import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -145,33 +148,117 @@ async def test_sensor_counts_merged_rows(
     assert hass.states.get(ENTITY_ID).state == "3"
 
 
-async def test_sensor_seeded_from_store_on_restart(
-    hass: HomeAssistant, monkeypatch: object
-) -> None:
-    """Attempts stored before a restart count again."""
+async def _setup_with_rows(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, rows: list[LoginAttempt]
+) -> MockConfigEntry:
+    """Store rows, then set up an entry (a restart)."""
     path = Path(hass.config.path(".storage", "electric_fence.db"))
     path.parent.mkdir(parents=True, exist_ok=True)
     store = FenceStore(path)
     store.open()
-    store.insert(
+    store.insert(rows)
+    store.close()
+
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", "2026.11.0")
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+async def test_sensor_seeded_from_store_on_restart(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failed and blocked attempts stored before a restart count again."""
+    await _setup_with_rows(
+        hass,
+        monkeypatch,
         [
             attempt(count=2),
             attempt(result=LoginResult.BLOCKED, reason=LoginReason.BLOCKED_LOCAL_ONLY),
             attempt(ts=dt_util.utcnow() - timedelta(hours=25)),
             attempt(result=LoginResult.SUCCESS, reason=LoginReason.OK),
-        ]
+        ],
     )
-    store.close()
+    assert hass.states.get(ENTITY_ID).state == "3"
 
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "custom_components.electric_fence.HA_VERSION", "2026.11.0"
+
+async def test_sensor_seed_keeps_row_times(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Seeded attempts expire at their own time, not 24h after the restart."""
+    await _setup_with_rows(
+        hass,
+        monkeypatch,
+        [
+            attempt(ts=dt_util.utcnow() - timedelta(hours=23), count=2),
+            attempt(ts=dt_util.utcnow() - timedelta(hours=1)),
+        ],
     )
+    assert hass.states.get(ENTITY_ID).state == "3"
+
+    freezer.tick(timedelta(hours=1, minutes=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY_ID).state == "1"
+
+
+async def test_sensor_seed_failure_starts_empty(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing seed query is logged by type only, and the sensor still works."""
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise sqlite3.OperationalError("secret detail")
+
+    monkeypatch.setattr(FenceStore, "failed_buckets_since", boom)
+    entry = await _setup_with_rows(hass, monkeypatch, [])
+    assert hass.states.get(ENTITY_ID).state == "0"
+    assert "OperationalError" in caplog.text
+    assert "secret detail" not in caplog.text
+    await submit(hass, entry, attempt())
+    assert hass.states.get(ENTITY_ID).state == "1"
+
+
+async def test_sensor_records_during_seed_are_kept(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record that arrives while the seed query runs is counted once."""
+    real = FenceStore.failed_buckets_since
+    entry_holder: list[MockConfigEntry] = []
+
+    def slow(self: FenceStore, *args: object, **kwargs: object) -> object:
+        # Runs in the executor, between the listener and the end of seeding.
+        hass.loop.call_soon_threadsafe(
+            entry_holder[0].runtime_data.worker.submit, attempt(ts=dt_util.utcnow())
+        )
+        time.sleep(0.2)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(FenceStore, "failed_buckets_since", slow)
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", "2026.11.0")
     entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry_holder.append(entry)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY_ID).state == "1"
 
-    assert hass.states.get(ENTITY_ID).state == "3"
+
+async def test_sensor_hides_identifying_attributes_from_recorder(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The username and IP are not written to the recorder history."""
+    entity = hass.data["entity_components"]["sensor"].get_entity(ENTITY_ID)
+    assert entity._unrecorded_attributes >= {"last_username", "last_ip"}  # noqa: SLF001
+    assert "last_reason" not in entity._unrecorded_attributes  # noqa: SLF001
 
 
 async def test_sensor_removed_on_unload(

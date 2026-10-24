@@ -10,7 +10,7 @@ from awesomeversion import AwesomeVersion
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, __version__ as HA_VERSION
 from homeassistant.core import HassJob, HomeAssistant
-from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
@@ -127,8 +127,6 @@ async def async_setup_entry(
         runtime.collectors.append(collector)
         collector.install()
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     async def _async_purge(_now: datetime | None = None) -> None:
         cutoff = dt_util.utcnow() - timedelta(days=runtime.settings.retention_days)
         try:
@@ -157,6 +155,9 @@ async def async_setup_entry(
         )
     )
 
+    # Last, so nothing that can fail runs after the platform is forwarded.
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
 
 async def async_unload_entry(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
@@ -166,8 +167,7 @@ async def async_unload_entry(
     Collectors, worker and store are torn down by the on_unload callback
     registered in setup, which also covers a setup that failed partway.
     """
-    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        raise HomeAssistantError("Electric Fence could not unload its platforms")
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
 
 async def _async_teardown(hass: HomeAssistant, runtime: Runtime) -> None:

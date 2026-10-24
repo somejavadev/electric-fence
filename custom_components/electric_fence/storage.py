@@ -429,6 +429,26 @@ class FenceStore:
             )
         return int(row[0])
 
+    def failed_buckets_since(
+        self, since: datetime, *, include_blocked: bool = True
+    ) -> list[tuple[datetime, int]]:
+        """Return (ts, count) of failed rows since a time, oldest first."""
+        results = [str(LoginResult.FAILED)]
+        if include_blocked:
+            results.append(str(LoginResult.BLOCKED))
+        marks = ",".join("?" * len(results))
+        with self._lock:
+            rows = (
+                self._conn()
+                .execute(
+                    "SELECT ts, count FROM login_attempts "  # noqa: S608
+                    f"WHERE result IN ({marks}) AND ts >= ? ORDER BY ts, id",
+                    (*results, _to_text(since)),
+                )
+                .fetchall()
+            )
+        return [(_from_text(r[0]), int(r[1])) for r in rows]
+
     def count_token_failures_since(self, ip: str, since: datetime) -> int:
         """Return the invalid token attempts from an IP since a time."""
         with self._lock:

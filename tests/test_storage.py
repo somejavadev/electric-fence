@@ -462,3 +462,26 @@ def test_count_includes_blocked_only_on_request(tmp_path: Path) -> None:
         assert store.count_token_failures_since("1.1.1.1", since) == 0
     finally:
         store.close()
+
+
+def test_failed_buckets_since_lists_rows_ascending(store: FenceStore) -> None:
+    """Failed and blocked rows come back as (ts, count), oldest first."""
+    store.insert(
+        [
+            login(NOW, count=3),
+            login(NOW - timedelta(hours=2), count=2),
+            login(NOW - timedelta(hours=30), count=7),
+            login(NOW, result=LoginResult.SUCCESS),
+            login(NOW - timedelta(hours=1), result=LoginResult.BLOCKED),
+        ]
+    )
+    since = NOW - timedelta(hours=24)
+    assert store.failed_buckets_since(since) == [
+        (NOW - timedelta(hours=2), 2),
+        (NOW - timedelta(hours=1), 1),
+        (NOW, 3),
+    ]
+    assert store.failed_buckets_since(since, include_blocked=False) == [
+        (NOW - timedelta(hours=2), 2),
+        (NOW, 3),
+    ]
