@@ -183,9 +183,18 @@ async def async_apply_settings(
         or settings.maxmind_account_id != old.maxmind_account_id
         or settings.maxmind_license_key != old.maxmind_license_key
     ):
-        await runtime.geo_updater.async_set_provider(settings)
+        try:
+            await runtime.geo_updater.async_set_provider(settings)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not switch GeoIP provider: %s",
+                type(err).__name__,
+            )
     if settings.retention_days < old.retention_days:
-        await async_purge(hass, runtime)
+        try:
+            await async_purge(hass, runtime)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Electric Fence purge failed: %s", type(err).__name__)
 
 
 async def async_unload_entry(

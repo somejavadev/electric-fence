@@ -53,6 +53,10 @@
         "data": {
           "maxmind_account_id": "Account ID",
           "maxmind_license_key": "License key"
+        },
+        "data_description": {
+          "maxmind_account_id": "The account ID shown in your MaxMind account.",
+          "maxmind_license_key": "A license key created in your MaxMind account. It is stored in the config entry and not shown again."
         }
       }
     },

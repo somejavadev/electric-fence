@@ -69,7 +69,11 @@ class OptionsFlowHandler(OptionsFlow):
         """Ask for the general settings."""
         current = self._current()
         if user_input is not None:
-            self._pending = {**current.to_options(), **user_input}
+            self._pending = {
+                **current.to_options(),
+                **user_input,
+                "retention_days": int(user_input["retention_days"]),
+            }
             if user_input["geoip_provider"] == "maxmind":
                 return await self.async_step_maxmind()
             self._pending["maxmind_account_id"] = None

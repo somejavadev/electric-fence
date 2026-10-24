@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+import math
 from typing import Any, Literal
 
 
@@ -26,7 +27,11 @@ class Settings:
         """
         d = cls()
         retention = options.get("retention_days", d.retention_days)
-        if isinstance(retention, bool) or not isinstance(retention, int | float):
+        if (
+            isinstance(retention, bool)
+            or not isinstance(retention, int | float)
+            or not math.isfinite(retention)
+        ):
             retention = d.retention_days
         else:
             retention = min(max(int(retention), 1), 3650)
