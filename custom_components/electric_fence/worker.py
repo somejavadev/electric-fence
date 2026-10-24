@@ -12,10 +12,13 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .failopen import FailOpen
-from .models import LoginAttempt, LoginReason, LoginResult, Record
+from .models import LoginAttempt, LoginReason, LoginResult, Record, SettingsChange
 from .storage import FenceStore
 
 _LOGGER = logging.getLogger(__name__)
+
+# Pause after an unexpected pipeline error, so a repeating error can't spin.
+_ERROR_BACKOFF = 0.1
 
 type RecordListener = Callable[[Record], None]
 
@@ -82,6 +85,7 @@ class FenceWorker:
         flush_size: int = 200,
         merge_window: float = 1.0,
         confirm_timeout: float = 60.0,
+        enrich_timeout: float = 5.0,
     ) -> None:
         """Initialise the worker (not started)."""
         self._hass = hass
@@ -92,6 +96,7 @@ class FenceWorker:
         self._flush_size = flush_size
         self._merge_window = timedelta(seconds=merge_window)
         self._confirm_timeout = confirm_timeout
+        self._enrich_timeout = enrich_timeout
         self._queue: asyncio.Queue[_Item] = asyncio.Queue(maxsize=max_queue)
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -103,6 +108,7 @@ class FenceWorker:
         self._flush_waiters: list[asyncio.Future[None]] = []
         self._listeners: list[tuple[RecordListener, FailOpen]] = []
         self._enrich_guard = FailOpen("enricher")
+        self._loop_guard = FailOpen("worker")
         self._storage_ok = True
         # Records never stored: queue full, or lost in a failed write.
         self.dropped = 0
@@ -159,9 +165,12 @@ class FenceWorker:
         if self._task is not None:
             return
         self._stopping = False
-        self._task = self._hass.async_create_background_task(
+        task = self._hass.async_create_background_task(
             self._run(), "electric_fence worker"
         )
+        # Never leave a flush waiting on a task that has ended.
+        task.add_done_callback(lambda _: self._resolve_waiters())
+        self._task = task
 
     async def async_stop(self) -> None:
         """Store everything queued and held, then stop. Idempotent."""
@@ -171,9 +180,12 @@ class FenceWorker:
         self._stopping = True
         self._wake.set()
         try:
-            await task
+            # Does not raise if the task was cancelled or failed.
+            await asyncio.wait({task})
         finally:
             self._task = None
+        if not task.cancelled() and (err := task.exception()) is not None:
+            _LOGGER.error("Electric Fence worker ended: %s", type(err).__name__)
 
     async def async_flush(self) -> None:
         """Wait until the queue is processed and the pending batch is written."""
@@ -190,11 +202,13 @@ class FenceWorker:
         loop = self._hass.loop
         while True:
             self._wake.clear()
+            current: _Item = None
             try:
                 while not self._queue.empty():
-                    item = self._queue.get_nowait()
-                    if item is not None:
-                        await self._process(item)
+                    current = self._queue.get_nowait()
+                    if current is not None:
+                        await self._process(current)
+                    current = None
                     if len(self._batch) >= self._flush_size:
                         await self._flush()
                 now = loop.time()
@@ -212,8 +226,22 @@ class FenceWorker:
                     if self._stopping:
                         return
             except Exception as err:  # noqa: BLE001
-                # Never let a bug end the worker. Type only: no usernames.
-                _LOGGER.error("Electric Fence worker error: %s", type(err).__name__)
+                # Never let a bug end the worker. Rate-limited, message-free log.
+                self._loop_guard.call(_reraise, err)
+                if isinstance(current, (LoginAttempt, SettingsChange)):
+                    self.dropped += 1
+                if self._stopping:
+                    # Don't retry forever on stop: count what is left and end.
+                    self.dropped += len(self._batch) + len(self._held)
+                    self._batch, self._held = [], []
+                    while not self._queue.empty():
+                        if isinstance(
+                            self._queue.get_nowait(), (LoginAttempt, SettingsChange)
+                        ):
+                            self.dropped += 1
+                    self._resolve_waiters()
+                    return
+                await asyncio.sleep(_ERROR_BACKOFF)
                 continue
             # A submit during processing has set the event: no wait then.
             try:
@@ -237,9 +265,13 @@ class FenceWorker:
             self._confirm(item)
             return
         if isinstance(item, LoginAttempt):
+            before = (item.source, item.country_code, item.hostname)
             try:
-                await self._enricher.async_enrich(item)
+                async with asyncio.timeout(self._enrich_timeout):
+                    await self._enricher.async_enrich(item)
             except Exception as err:  # noqa: BLE001
+                # Includes the timeout: store the record un-enriched.
+                item.source, item.country_code, item.hostname = before
                 self._enrich_guard.call(_reraise, err)
             if item.result is LoginResult.FAILED:
                 self._merge_or_add(item)

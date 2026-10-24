@@ -68,6 +68,10 @@ async def async_setup_entry(
         ha_version=HA_VERSION,
     )
     entry.runtime_data = runtime
+    # Registered first, so it runs last (on_unload runs in reverse). HA runs
+    # on_unload both on unload and when setup fails partway, so this is the
+    # only teardown path.
+    entry.async_on_unload(lambda: _async_teardown(hass, runtime))
 
     await worker.async_start()
 
@@ -80,8 +84,8 @@ async def async_setup_entry(
 
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)
-        collector.install()
         runtime.collectors.append(collector)
+        collector.install()
 
     async def _async_purge(_now: datetime | None = None) -> None:
         cutoff = dt_util.utcnow() - timedelta(days=runtime.settings.retention_days)
@@ -116,14 +120,21 @@ async def async_setup_entry(
 async def async_unload_entry(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> bool:
-    """Unload a config entry."""
-    runtime = entry.runtime_data
+    """Unload a config entry.
+
+    Collectors, worker and store are torn down by the on_unload callback
+    registered in setup, which also covers a setup that failed partway.
+    """
+    return True
+
+
+async def _async_teardown(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Uninstall collectors in reverse, stop the worker, close the store."""
     for collector in reversed(runtime.collectors):
         collector.uninstall()
     runtime.collectors.clear()
     await runtime.worker.async_stop()
     await hass.async_add_executor_job(runtime.store.close)
-    return True
 
 
 def _remove_data(config_dir: Path) -> None:

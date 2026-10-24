@@ -37,6 +37,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from tests.helpers import flush_worker
 
+# Raised by name, so traceback source lines never contain the value.
+SECRET = "secret-username"
+
 
 def failed(
     *, ip: str = "203.0.113.7", user: str = "admin", seconds: float = 0.0
@@ -398,7 +401,7 @@ async def test_worker_survives_internal_error(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise ValueError("secret-username")
+            raise ValueError(SECRET)
         await original(item)
 
     monkeypatch.setattr(worker, "_process", process)
@@ -406,8 +409,8 @@ async def test_worker_survives_internal_error(
     worker.submit(failed(user="kept"))
     await worker.async_flush()
     assert [r.username_typed for r in logins(store)] == ["kept"]
-    assert "Electric Fence worker error: ValueError" in caplog.text
-    assert "secret-username" not in caplog.text
+    assert "Electric Fence hook worker failed: ValueError" in caplog.text
+    assert SECRET not in caplog.text
 
 
 async def test_listener_may_submit(
@@ -550,3 +553,154 @@ async def test_remove_entry_deletes_database(
     assert not Path(f"{db}-wal").exists()
     assert not Path(f"{db}-shm").exists()
     assert not geoip.parent.exists()
+
+
+async def test_purge_uses_configured_retention_days(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """With retention_days=30, a 31-day-old row goes and a 29-day-old row stays."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    entry = MockConfigEntry(
+        domain=DOMAIN, options=Settings(retention_days=30).to_options()
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    store = entry.runtime_data.store
+    old = failed(user="old")
+    old.ts = dt_util.utcnow() - timedelta(days=31)
+    kept = failed(user="kept")
+    kept.ts = dt_util.utcnow() - timedelta(days=29)
+    await hass.async_add_executor_job(store.insert, [old, kept])
+
+    freezer.tick(timedelta(minutes=5, seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    rows = await hass.async_add_executor_job(logins, store)
+    assert [r.username_typed for r in rows] == ["kept"]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+class _Spin(BaseException):
+    """Breaks a spinning worker loop in the RED case."""
+
+
+async def test_loop_error_yields_and_logs_once(
+    hass: HomeAssistant,
+    store: FenceStore,
+    worker: FenceWorker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A step that always raises never spins the loop; the log is rate-limited."""
+    calls = 0
+
+    def release_expired(now: float) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1000:
+            raise _Spin
+        raise ValueError(SECRET)
+
+    monkeypatch.setattr(worker, "_release_expired", release_expired)
+    worker.submit(failed())  # wakes the worker into the failing step
+
+    progressed = 0
+    for _ in range(5):
+        await asyncio.sleep(0.05)
+        progressed += 1
+    assert progressed == 5
+    assert 1 <= calls < 50
+    assert caplog.text.count("Electric Fence hook worker failed: ValueError") == 1
+    assert SECRET not in caplog.text
+    # Stop still ends the task although the step keeps failing, and counts
+    # what it could not store.
+    dropped = worker.dropped
+    worker.submit(failed(user="x"))
+    worker.submit(change())
+    async with asyncio.timeout(2):
+        await worker.async_stop()
+    assert worker.dropped == dropped + 3  # the batched record plus two queued
+
+
+async def test_record_lost_in_loop_error_is_counted(
+    hass: HomeAssistant,
+    store: FenceStore,
+    worker: FenceWorker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record lost to an unexpected pipeline error counts as dropped."""
+
+    def merge(rec: LoginAttempt) -> None:
+        raise ValueError("bug")
+
+    monkeypatch.setattr(worker, "_merge_or_add", merge)
+    worker.submit(failed())
+    async with asyncio.timeout(2):
+        await worker.async_flush()
+    assert worker.dropped == 1
+
+    # An error during stop drops (and counts) what is still queued.
+    for _ in range(3):
+        worker.submit(failed())
+    worker.submit(change())
+    async with asyncio.timeout(2):
+        await worker.async_stop()
+    assert worker.dropped == 5
+
+
+async def test_flush_returns_when_worker_task_dies(
+    hass: HomeAssistant, store: FenceStore, worker: FenceWorker
+) -> None:
+    """Pending flush waiters are released if the worker task ends."""
+    task = worker._task  # noqa: SLF001
+    assert task is not None
+    task.cancel()
+    async with asyncio.timeout(2):
+        await worker.async_flush()
+    async with asyncio.timeout(2):
+        await worker.async_stop()
+    assert task.done()
+
+
+async def test_hanging_enricher_times_out(
+    hass: HomeAssistant, store: FenceStore
+) -> None:
+    """A hanging enricher is cut off; the record is stored un-enriched."""
+
+    class Hanging:
+        async def async_enrich(self, record: LoginAttempt) -> None:
+            record.country_code = "DE"
+            await asyncio.Event().wait()
+
+    w = FenceWorker(hass, store, Hanging(), enrich_timeout=0.05)
+    await w.async_start()
+    try:
+        w.submit(failed())
+        async with asyncio.timeout(2):
+            await w.async_flush()
+    finally:
+        await w.async_stop()
+    rows = logins(store)
+    assert len(rows) == 1
+    assert rows[0].country_code is None
+
+
+async def test_stop_logs_worker_that_died(
+    hass: HomeAssistant,
+    store: FenceStore,
+    worker: FenceWorker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A task that died from a BaseException is reported on stop, not raised."""
+
+    def release_expired(now: float) -> None:
+        raise _Spin
+
+    monkeypatch.setattr(worker, "_release_expired", release_expired)
+    worker.submit(failed())
+    async with asyncio.timeout(2):
+        await worker.async_stop()
+    assert "Electric Fence worker ended: _Spin" in caplog.text
