@@ -56,8 +56,14 @@ print("\n".join(seen))
 PY
 )"
 
+MAX_LISTED=100
+MAX_BODY=59000 # GitHub rejects bodies over 65,536 characters
 if [[ -n "$failing" ]]; then
-  failing_md="$(sed 's/^/- `/; s/$/`/' <<<"$failing")"
+  total="$(grep -c '' <<<"$failing")"
+  failing_md="$(head -n "$MAX_LISTED" <<<"$failing" | sed 's/^/- `/; s/$/`/')"
+  if ((total > MAX_LISTED)); then
+    failing_md+=$'\n'"- … and $((total - MAX_LISTED)) more"
+  fi
 else
   failing_md="_No failing tests in the JUnit results: the job failed before or outside the tests (install or collection error). See the run._"
 fi
@@ -73,6 +79,10 @@ Run: ${run_url}
 BODY
 )"
 
+if ((${#body} > MAX_BODY)); then
+  body="${body:0:MAX_BODY}"$'\n\n_(truncated: body too long)_'
+fi
+
 gh_() {
   if [[ "${DRY_RUN:-}" == "1" ]]; then
     printf 'DRY_RUN: gh'
@@ -87,8 +97,8 @@ if [[ "${DRY_RUN:-}" == "1" ]]; then
   gh_ issue list --label upstream-break --state open --limit 100 --json number,title
   existing="${DRY_RUN_EXISTING_ISSUE:-}"
 else
-  existing="$(gh issue list --label upstream-break --state open --limit 100 \
-    --json number,title --jq "map(select(.title == \"${title}\")) | .[0].number // empty")"
+  existing="$(gh issue list --label upstream-break --state open --limit 100 --json number,title \
+    | jq -r --arg title "$title" 'map(select(.title == $title)) | .[0].number // empty')"
 fi
 
 if [[ -n "$existing" ]]; then

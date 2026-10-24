@@ -13,6 +13,7 @@
 # UPSTREAM_FIXTURE=<file> replaces the GitHub reads with a JSON file:
 #   {"pulls": [<closed-PR list as returned by the API>],
 #    "files": {"<number>": ["<changed path>", ...]}}
+# UPSTREAM_FAIL_FILES=<number> makes the changed-files call for that PR fail (tests).
 # UPSTREAM_NOW=<ISO-8601 UTC> overrides "now" (for tests).
 set -euo pipefail
 
@@ -31,6 +32,10 @@ fi
 
 changed_files() {
   local number="$1"
+  if [[ "${UPSTREAM_FAIL_FILES:-}" == "$number" ]]; then
+    echo "simulated failure fetching files of PR ${number}" >&2
+    return 1
+  fi
   if [[ -n "${UPSTREAM_FIXTURE:-}" ]]; then
     jq -r --arg n "$number" '.files[$n][]?' "$UPSTREAM_FIXTURE"
   else
@@ -53,19 +58,25 @@ matches() {
 }
 
 lines=""
-while IFS=$'\t' read -r number title url; do
+while IFS=$'\x1f' read -r number title url; do
   [[ -n "$number" ]] || continue
+  # Capture first: a failure inside `< <(...)` would be swallowed by set -e.
+  files="$(changed_files "$number")"
   hits=""
   while IFS= read -r file; do
     if matches "$file"; then
       hits+="${hits:+, }\`${file}\`"
     fi
-  done < <(changed_files "$number")
+  done <<<"$files"
   if [[ -n "$hits" ]]; then
-    lines+="- [#${number}](${url}) ${title}: ${hits}"$'\n'
+    # Titles are untrusted: no backtick can end the code span, so no @mention,
+    # #reference or markdown inside it is live.
+    title="${title//\`/\'}"
+    lines+="- [#${number}](${url}) \`${title}\`: ${hits}"$'\n'
   fi
 done < <(jq -r --arg since "$since" \
-  '.[] | select(.merged_at != null and .merged_at >= $since) | [.number, .title, .html_url] | @tsv' <<<"$pulls")
+  '.[] | select(.merged_at != null and .merged_at >= $since)
+   | [.number, (.title | gsub("[\\r\\n\u001f]"; " ")), .html_url] | join("\u001f")' <<<"$pulls")
 
 if [[ -z "$lines" ]]; then
   echo "No watched Home Assistant PRs merged since ${since}."

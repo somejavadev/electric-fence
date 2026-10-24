@@ -33,12 +33,16 @@ jobs:
           cache-dependency-path: requirements_test.txt
       - name: Resolve the Core ref
         id: ref
-        run: echo "ref=$(scripts/ci_resolve_ref.sh '${{ matrix.ha }}')" >> "$GITHUB_OUTPUT"
+        env:
+          CELL: ${{ matrix.ha }}
+        run: echo "ref=$(scripts/ci_resolve_ref.sh "$CELL")" >> "$GITHUB_OUTPUT"
       # Writes CORE_SHA and CORE_VERSION to the environment of later steps. The
       # PyPI pytest-homeassistant-custom-component has no 2026.11 build, so the
       # plugin is generated from this Core (see scripts/ci_install_ha.sh).
       - name: Install Home Assistant ${{ steps.ref.outputs.ref }}
-        run: scripts/ci_install_ha.sh '${{ steps.ref.outputs.ref }}'
+        env:
+          CORE_REF: ${{ steps.ref.outputs.ref }}
+        run: scripts/ci_install_ha.sh "$CORE_REF"
       - name: Contract and safety tests
         run: pytest tests/contracts tests/safety -m "not benchmark" --junitxml=junit-contracts.xml
       - name: Full suite
