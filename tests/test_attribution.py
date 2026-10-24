@@ -12,12 +12,8 @@ from unittest.mock import Mock
 import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
-    MockModule,
     MockUser,
     async_fire_time_changed,
-    mock_config_flow,
-    mock_integration,
-    mock_platform,
 )
 from pytest_homeassistant_custom_component.typing import (
     ClientSessionGenerator,
@@ -41,6 +37,11 @@ from custom_components.electric_fence.attribution import (
     direct_request_actor,
     open_scope,
 )
+from custom_components.electric_fence.collectors.config_entries import (
+    ConfigEntryCollector,
+)
+from custom_components.electric_fence.collectors.core_config import CoreConfigCollector
+from custom_components.electric_fence.collectors.users import UserCollector
 from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.models import ChangeAction, ChangeKind
 from homeassistant import config_entries
@@ -52,10 +53,6 @@ from homeassistant.config_entries import (
     SIGNAL_CONFIG_ENTRY_CHANGED,
     ConfigEntry,
     ConfigEntryChange,
-    ConfigFlowResult,
-    ConfigSubentryFlow,
-    OptionsFlow,
-    SubentryFlowResult,
 )
 from homeassistant.const import EVENT_COMPONENT_LOADED, EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import Event, HomeAssistant, callback
@@ -65,9 +62,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.http import current_request
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-from tests.helpers import create_hass_user
-
-DUMMY = "ef_dummy"
+from tests.helpers import DUMMY, PROBE, create_hass_user, dummy_entry, mock_dummy
 
 _CHANGE = {
     ConfigEntryChange.ADDED: ChangeAction.ADDED,
@@ -76,129 +71,21 @@ _CHANGE = {
 }
 
 
-class _Probe:
-    """What the dummy integration saw (reset per test)."""
+@pytest.fixture(autouse=True)
+def _only_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set up without the settings collectors.
 
-    spawned: dict[str, Any]
-
-    def __init__(self) -> None:
-        self.spawned = {}
-
-
-PROBE = _Probe()
-
-
-async def _probe_spawned_task() -> None:
-    """Record what a task spawned inside the flow's request sees."""
-    PROBE.spawned["request"] = current_request.get()
-    PROBE.spawned["direct_actor"] = direct_request_actor()
-    PROBE.spawned["actor"] = current_actor()
-    PROBE.spawned["scope"] = SCOPE.get()
-
-
-class _DummyOptionsFlow(OptionsFlow):
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is None:
-            return self.async_show_form(step_id="init")
-        return self.async_create_entry(data={"opt": True})
-
-
-class _DummySubentryFlow(ConfigSubentryFlow):
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        return self.async_create_entry(title="Thing", data={})
-
-
-class _DummyFlow(config_entries.ConfigFlow):
-    VERSION = 1
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        await self.hass.async_create_task(_probe_spawned_task())
-        return self.async_create_entry(title="Dummy", data={})
-
-    async def async_step_integration_discovery(
-        self, discovery_info: dict[str, Any]
-    ) -> ConfigFlowResult:
-        return self.async_create_entry(title="Discovered", data={})
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is None:
-            return self.async_show_form(step_id="reconfigure")
-        return self.async_update_reload_and_abort(
-            self._get_reconfigure_entry(), data_updates={"reconfigured": True}
-        )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        return _DummyOptionsFlow()
-
-    @classmethod
-    @callback
-    def async_get_supported_subentry_types(
-        cls, config_entry: ConfigEntry
-    ) -> dict[str, type[ConfigSubentryFlow]]:
-        return {"thing": _DummySubentryFlow}
-
-
-async def _dummy_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Update the own entry during every setup, as integrations do."""
-    setups = entry.data.get("setups", 0) + 1
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, "touched": True, "setups": setups}
+    These tests call `credited_actor` themselves, and a scope credits one
+    change only (R25), so the collectors would use the credit up first.
+    """
+    monkeypatch.setattr(
+        "custom_components.electric_fence.COLLECTOR_TYPES",
+        [
+            c
+            for c in COLLECTOR_TYPES
+            if c not in (ConfigEntryCollector, UserCollector, CoreConfigCollector)
+        ],
     )
-
-
-async def _dummy_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Unload (HA 2026.11 rejects a boolean result)."""
-
-
-async def _reloading_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Set up like `ef_dummy`, and reload when the options change."""
-    options = dict(entry.options)
-
-    async def _on_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
-        if entry.options != options:
-            await hass.config_entries.async_reload(entry.entry_id)
-
-    entry.async_on_unload(entry.add_update_listener(_on_update))
-    await _dummy_setup_entry(hass, entry)
-
-
-def _mock_dummy(hass: HomeAssistant, *, reloading: bool = False) -> None:
-    mock_integration(
-        hass,
-        MockModule(
-            DUMMY,
-            async_setup_entry=_reloading_setup_entry
-            if reloading
-            else _dummy_setup_entry,
-            async_unload_entry=_dummy_unload_entry,
-        ),
-    )
-
-
-@pytest.fixture
-def dummy(hass: HomeAssistant) -> Iterator[None]:
-    """Register the `ef_dummy` test integration with its config flow."""
-    PROBE.spawned = {}
-    _mock_dummy(hass)
-    mock_platform(hass, f"{DUMMY}.config_flow", None)
-    with mock_config_flow(DUMMY, _DummyFlow):
-        yield
-
-
-@pytest.fixture
-async def config(hass: HomeAssistant) -> None:
-    """Set up `config` (and `http`) before Electric Fence."""
-    assert await async_setup_component(hass, "config", {})
 
 
 @pytest.fixture
@@ -214,14 +101,6 @@ def _collector(hass: HomeAssistant) -> AttributionCollector:
     return next(
         c for c in entry.runtime_data.collectors if isinstance(c, AttributionCollector)
     )
-
-
-async def _dummy_entry(hass: HomeAssistant) -> MockConfigEntry:
-    entry = MockConfigEntry(domain=DUMMY, data={})
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
 
 
 type _EntrySeen = tuple[
@@ -400,7 +279,7 @@ async def test_scope_for_reconfigure_flow(
     hass_admin_user: MockUser,
 ) -> None:
     """Reconfigure credits the update of its own entry, on configure."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
     client = await hass_client()
 
@@ -430,7 +309,7 @@ async def test_scope_for_options_flow(
     hass_admin_user: MockUser,
 ) -> None:
     """An options flow credits the options update of its entry."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
     client = await hass_client()
 
@@ -458,7 +337,7 @@ async def test_scope_for_subentry_flow(
     hass_admin_user: MockUser,
 ) -> None:
     """A subentry flow credits the update of its parent entry."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
     client = await hass_client()
 
@@ -482,7 +361,7 @@ async def test_scope_for_entry_delete_view(
     hass_admin_user: MockUser,
 ) -> None:
     """Deleting an entry credits only its REMOVED, not the unload updates."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
     client = await hass_client()
 
@@ -521,7 +400,7 @@ async def test_direct_remove_without_request_has_no_scope(
     hass: HomeAssistant, fence: AttributionCollector
 ) -> None:
     """Removing an entry from code (no request) is System."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
 
     await hass.config_entries.async_remove(entry.entry_id)
@@ -538,9 +417,9 @@ async def test_remove_from_other_view_has_no_scope(
     Another entry, another method, or a task that is neither the view nor
     its remove task: System.
     """
-    first = await _dummy_entry(hass)
-    second = await _dummy_entry(hass)
-    third = await _dummy_entry(hass)
+    first = await dummy_entry(hass)
+    second = await dummy_entry(hass)
+    third = await dummy_entry(hass)
     seen = _watch_entries(hass)
     path = "/api/config/config_entries/entry/{}"
     request = Mock(method="DELETE", path=path.format(second.entry_id))
@@ -565,7 +444,7 @@ async def test_flows_from_code_have_no_scope(
     hass: HomeAssistant, fence: AttributionCollector
 ) -> None:
     """An options flow run by code (no request) is System."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
 
     form = await hass.config_entries.options.async_init(entry.entry_id)
@@ -687,8 +566,8 @@ async def test_scope_for_entry_ws_commands(
     extra: dict[str, Any],
 ) -> None:
     """Entry WebSocket commands credit the update of their own entry."""
-    entry = await _dummy_entry(hass)
-    other = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
+    other = await dummy_entry(hass)
     seen = _watch_entries(hass)
     ws = await hass_ws_client(hass)
 
@@ -719,7 +598,7 @@ async def test_ws_reenable_credits_enable_not_setup_update(
     hass_ws_client: WebSocketGenerator,
 ) -> None:
     """Re-enabling sets the entry up inline; its own update is System (R25)."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     await hass.config_entries.async_set_disabled_by(
         entry.entry_id, config_entries.ConfigEntryDisabler.USER
     )
@@ -754,7 +633,7 @@ async def test_ws_pref_disable_polling_credits_only_the_update(
     hass_ws_client: WebSocketGenerator,
 ) -> None:
     """A polling change reloads inline; the setup's own update is System."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
     ws = await hass_ws_client(hass)
 
@@ -782,8 +661,8 @@ async def test_ws_update_with_listener_reload_credits_only_the_update(
     hass_ws_client: WebSocketGenerator,
 ) -> None:
     """An update listener's eager reload inherits the scope, but is System."""
-    _mock_dummy(hass, reloading=True)
-    entry = await _dummy_entry(hass)
+    mock_dummy(hass, reloading=True)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
     ws = await hass_ws_client(hass)
 
@@ -819,8 +698,8 @@ async def test_options_flow_reload_credits_first_change_only(
     so the first dispatch showing the new options is the reload's state
     change, from the listener task (see the Task 9 fix report).
     """
-    _mock_dummy(hass, reloading=True)
-    entry = await _dummy_entry(hass)
+    mock_dummy(hass, reloading=True)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass, dedupe=False)
     client = await hass_client()
 
@@ -903,7 +782,7 @@ async def test_no_scope_for_timer_update(
     hass_admin_user: MockUser,
 ) -> None:
     """A timer set up during an action fires later, with no actor."""
-    entry = await _dummy_entry(hass)
+    entry = await dummy_entry(hass)
     seen = _watch_entries(hass)
 
     @callback
@@ -1406,7 +1285,7 @@ async def test_hass_user_id_lookup(hass: HomeAssistant) -> None:
     """The username matches normalised; anything unknown is None."""
     user = await create_hass_user(hass, "dave", "secret")
     await create_hass_user(hass, "erin", "secret")
-    lookup = attribution._hass_user_id
+    lookup = attribution.hass_user_id
 
     assert lookup(hass, " DAVE ") == user.id
     assert lookup(hass, "nobody") is None

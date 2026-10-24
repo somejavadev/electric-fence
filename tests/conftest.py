@@ -1,11 +1,19 @@
 """Shared fixtures for Electric Fence tests."""
 
+from collections.abc import Iterator
+
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    mock_config_flow,
+    mock_platform,
+)
 
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.settings import Settings
 from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
+from tests.helpers import DUMMY, PROBE, DummyFlow, mock_dummy
 
 
 @pytest.fixture(autouse=True)
@@ -31,3 +39,19 @@ async def setup_entry(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+@pytest.fixture
+def dummy(hass: HomeAssistant) -> Iterator[None]:
+    """Register the `ef_dummy` test integration with its config flow."""
+    PROBE.spawned = {}
+    mock_dummy(hass)
+    mock_platform(hass, f"{DUMMY}.config_flow", None)
+    with mock_config_flow(DUMMY, DummyFlow):
+        yield
+
+
+@pytest.fixture
+async def config(hass: HomeAssistant) -> None:
+    """Set up `config` (and `http`) before Electric Fence."""
+    assert await async_setup_component(hass, "config", {})

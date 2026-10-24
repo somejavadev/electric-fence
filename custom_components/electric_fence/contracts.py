@@ -214,3 +214,73 @@ for _name, _check in (
     ("admin_ws_commands", _check_admin_ws_commands),
 ):
     register_contract(Contract(_name, "attribution", _check))
+
+
+def _check_config_entry_signal(hass: HomeAssistant) -> str | None:
+    """`SIGNAL_CONFIG_ENTRY_CHANGED` exists; `ConfigEntryChange` has our changes."""
+    from homeassistant import config_entries  # noqa: PLC0415
+
+    if getattr(config_entries, "SIGNAL_CONFIG_ENTRY_CHANGED", None) is None:
+        return "config_entries.SIGNAL_CONFIG_ENTRY_CHANGED is missing"
+    change = getattr(config_entries, "ConfigEntryChange", None)
+    for member in ("ADDED", "REMOVED", "UPDATED"):
+        if not hasattr(change, member):
+            return f"config_entries.ConfigEntryChange.{member} is missing"
+    return None
+
+
+def _check_user_events(hass: HomeAssistant) -> str | None:
+    """Check the auth manager fires `user_added`, `user_updated`, `user_removed`."""
+    from homeassistant import auth  # noqa: PLC0415
+
+    for attr, expected in (
+        ("EVENT_USER_ADDED", "user_added"),
+        ("EVENT_USER_UPDATED", "user_updated"),
+        ("EVENT_USER_REMOVED", "user_removed"),
+    ):
+        if getattr(auth, attr, None) != expected:
+            return f"auth.{attr} is not {expected!r}"
+    return None
+
+
+def _check_hass_provider_password(hass: HomeAssistant) -> str | None:
+    """Check the `homeassistant` provider has the change methods H5 wraps.
+
+    Not applicable (passes) when no `homeassistant` provider is configured.
+    """
+    provider = hass.auth.get_auth_provider("homeassistant", None)
+    if provider is None:
+        return None
+    label = "homeassistant auth provider"
+    for attr, expected in (
+        (
+            "async_change_password",
+            [("username", _POS, _EMPTY), ("new_password", _POS, _EMPTY)],
+        ),
+        (
+            "async_change_username",
+            [("credential", _POS, _EMPTY), ("new_username", _POS, _EMPTY)],
+        ),
+    ):
+        fn = getattr(provider, attr, None)
+        if reason := _params_reason(f"{label}.{attr}", fn, expected, coro=True):
+            return reason
+    return None
+
+
+def _check_core_config_event(hass: HomeAssistant) -> str | None:
+    """Core fires `core_config_updated` with the changed keys."""
+    from homeassistant import const  # noqa: PLC0415
+
+    if getattr(const, "EVENT_CORE_CONFIG_UPDATE", None) != "core_config_updated":
+        return "const.EVENT_CORE_CONFIG_UPDATE is not 'core_config_updated'"
+    return None
+
+
+for _name, _collector, _check in (
+    ("config_entry_signal", "config_entries", _check_config_entry_signal),
+    ("user_events", "users", _check_user_events),
+    ("hass_provider_password", "users", _check_hass_provider_password),
+    ("core_config_event", "core_config", _check_core_config_event),
+):
+    register_contract(Contract(_name, _collector, _check))

@@ -10,13 +10,17 @@ from awesomeversion import AwesomeVersion
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HassJob, HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .attribution import AttributionCollector
 from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
+from .collectors.config_entries import ConfigEntryCollector
+from .collectors.core_config import CoreConfigCollector
 from .collectors.login import LoginCollector
+from .collectors.users import UserCollector
 from .const import MIN_HA_VERSION
 from .runtime import Runtime
 from .settings import Settings
@@ -37,6 +41,9 @@ COLLECTOR_TYPES: list[type[BaseCollector]] = [
     LoginCollector,
     AuthFailureCollector,
     AttributionCollector,
+    ConfigEntryCollector,
+    UserCollector,
+    CoreConfigCollector,
 ]
 
 
@@ -53,15 +60,15 @@ def _open_store(path: Path) -> FenceStore:
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
-) -> bool:
+) -> None:
     """Set up Electric Fence from a config entry."""
     if AwesomeVersion(HA_VERSION) < MIN_HA_VERSION:
-        _LOGGER.error(
-            "Electric Fence requires Home Assistant %s or newer (running %s)",
-            MIN_HA_VERSION,
-            HA_VERSION,
+        message = (
+            f"Electric Fence requires Home Assistant {MIN_HA_VERSION} or newer "
+            f"(running {HA_VERSION})"
         )
-        return False
+        _LOGGER.error("%s", message)
+        raise ConfigEntryError(message)
 
     store = await hass.async_add_executor_job(_open_store, _db_path(hass))
     enricher = NullEnricher()
@@ -121,18 +128,16 @@ async def async_setup_entry(
             ),
         )
     )
-    return True
 
 
 async def async_unload_entry(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
-) -> bool:
+) -> None:
     """Unload a config entry.
 
     Collectors, worker and store are torn down by the on_unload callback
     registered in setup, which also covers a setup that failed partway.
     """
-    return True
 
 
 async def _async_teardown(hass: HomeAssistant, runtime: Runtime) -> None:

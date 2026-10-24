@@ -267,8 +267,14 @@ def _first(details: dict[str, Any]) -> bool:
     """Credit only once per scope (R25).
 
     A scope has one kind and one target, so this is once per (kind, target).
-    Core dispatches the admin's own change before any follow-up (setup,
-    reload) in every wrapped handler.
+    Core dispatches the admin's own change before any follow-up change the
+    handler makes itself (an inline setup or reload). It does not always
+    dispatch it first: update listeners start as eager tasks before Core
+    dispatches the change (`_async_save_and_notify`), so a listener's reload,
+    up to the integration's own setup-time update, can be dispatched
+    earlier. H4 never asks for credit for those: state changes are skipped
+    (R26), and changes dispatched while the admin's change is still pending
+    are recorded as System (see `collectors/config_entries.py`).
     """
     if details.get("credited"):
         return False
@@ -385,13 +391,23 @@ def _ws_details(
         details["user_id"] = connection.user.id
     elif command == _CMD_HA_DELETE:
         # The message names the username only (R24).
-        details["user_id"] = _hass_user_id(connection.hass, msg.get("username"))
+        details["user_id"] = hass_user_id(connection.hass, msg.get("username"))
     else:
         details[rule.target] = _str(msg.get(rule.target))
     return details
 
 
-def _hass_user_id(hass: HomeAssistant, username: Any) -> str | None:
+def auth_users(hass: HomeAssistant) -> Mapping[str, User] | None:
+    """Return the auth store's users by ID, from memory.
+
+    The auth store's private `_users` (pinned by a contract test); None when
+    it isn't a mapping.
+    """
+    users = getattr(getattr(hass.auth, "_store", None), "_users", None)
+    return users if isinstance(users, Mapping) else None
+
+
+def hass_user_id(hass: HomeAssistant, username: Any) -> str | None:
     """Return the ID of the user with this `homeassistant` provider username.
 
     Memory only: the provider's credentials on each user, normalised on both
@@ -407,8 +423,8 @@ def _hass_user_id(hass: HomeAssistant, username: Any) -> str | None:
     if provider is None or provider.data is None:
         return None
     data = provider.data
-    users = getattr(getattr(hass.auth, "_store", None), "_users", None)
-    if not isinstance(users, Mapping):
+    users = auth_users(hass)
+    if users is None:
         return None
     name = data.normalize_username(username)
     for user in users.values():

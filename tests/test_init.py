@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -10,6 +11,7 @@ from custom_components.electric_fence.collectors.base import BaseCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
+from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 
@@ -23,6 +25,23 @@ async def test_setup_and_unload(
     assert setup_entry.state is ConfigEntryState.NOT_LOADED
 
 
+async def test_setup_and_unload_return_none(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup and unload return None, as HA 2026.11 expects (no bool)."""
+    report_usage = Mock()
+    monkeypatch.setattr(config_entries, "report_usage", report_usage)
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    assert entry.state is ConfigEntryState.NOT_LOADED
+    report_usage.assert_not_called()
+
+
 async def test_refuses_old_home_assistant(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -33,7 +52,12 @@ async def test_refuses_old_home_assistant(
     entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
     entry.add_to_hass(hass)
     assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
     assert "requires Home Assistant 2026.11.0" in caplog.text
+    # Raised as ConfigEntryError, not returned as False.
+    assert "returns a boolean" not in caplog.text
+    assert entry.reason is not None
+    assert "requires Home Assistant 2026.11.0" in entry.reason
 
 
 async def test_failed_setup_rolls_back(
