@@ -54,7 +54,7 @@ export class EfPostureList extends LitElement {
               <span class="glyph" aria-label=${strings.level[item.level]}
                 >${GLYPH[item.level]}</span
               >
-              <span class="text">${postureText(item)}</span>
+              <bdi class="text">${postureText(item)}</bdi>
             </li>
           `,
         )}

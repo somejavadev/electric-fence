@@ -31,16 +31,20 @@ export class EfOverview extends LitElement {
     _overview: { state: true },
     _status: { state: true },
     _phase: { state: true },
+    _liveFailed: { state: true },
   };
 
   declare hass: HomeAssistant;
   declare _overview: Overview | undefined;
   declare _status: Status | undefined;
   declare _phase: Phase;
+  declare _liveFailed: boolean;
 
   private _generation = 0;
   private _requests = 0;
   private _started = false;
+  /** Set by an unload; only a retry clears it, never a new `hass`. */
+  private _unloaded = false;
   private _unsub: UnsubscribeFunc | undefined;
   private _timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -104,6 +108,7 @@ export class EfOverview extends LitElement {
   constructor() {
     super();
     this._phase = "loading";
+    this._liveFailed = false;
   }
 
   override connectedCallback(): void {
@@ -122,7 +127,12 @@ export class EfOverview extends LitElement {
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
     // `hass` can arrive after the element is connected.
-    if (changed.has("hass") && this.hass !== undefined && this.isConnected) {
+    if (
+      changed.has("hass") &&
+      this.hass !== undefined &&
+      this.isConnected &&
+      !this._unloaded
+    ) {
       this._start();
     }
   }
@@ -133,6 +143,8 @@ export class EfOverview extends LitElement {
       return;
     }
     this._started = true;
+    this._unloaded = false;
+    this._liveFailed = false;
     const generation = ++this._generation;
     this._phase = "loading";
     void this._refresh(generation);
@@ -187,8 +199,13 @@ export class EfOverview extends LitElement {
       }
       this._unsub = unsub;
     } catch (err) {
-      if (generation === this._generation) {
-        this._fail(err);
+      if (generation !== this._generation) {
+        return;
+      }
+      if (isNotLoaded(err)) {
+        this._markUnloaded();
+      } else {
+        this._liveFailed = true;
       }
     }
   }
@@ -215,6 +232,7 @@ export class EfOverview extends LitElement {
     this._clearTimer();
     this._dropSubscription();
     this._started = false;
+    this._unloaded = true;
     this._generation += 1;
     this._phase = "unloaded";
   }
@@ -270,6 +288,18 @@ export class EfOverview extends LitElement {
       overview?.posture.filter((item) => item.level !== "ok").length ?? 0;
     const attribution = this._status?.geo?.attribution;
     return html`
+      ${
+        this._liveFailed
+          ? html`
+              <div class="notice" role="status">
+                <strong>${strings.liveUnavailable}</strong>
+                <button type="button" @click=${this._retry}>
+                  ${strings.retry}
+                </button>
+              </div>
+            `
+          : nothing
+      }
       ${
         this._phase === "error"
           ? html`
@@ -345,7 +375,7 @@ export class EfOverview extends LitElement {
       </div>
       ${
         typeof attribution === "string" && attribution !== ""
-          ? html`<p class="attribution">${attribution}</p>`
+          ? html`<p class="attribution"><bdi>${attribution}</bdi></p>`
           : nothing
       }
     `;

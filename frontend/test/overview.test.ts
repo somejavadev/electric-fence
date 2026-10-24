@@ -168,6 +168,65 @@ describe("ef-overview", () => {
     expect(fake.subscriptions()).toBe(2);
   });
 
+  it("keeps the unloaded state through hass updates", async () => {
+    const fake = fakeHass(overview());
+    const el = await mount(fake);
+    fake.push({ type: "unloaded" });
+    await el.updateComplete;
+    const fetches = fake.calls.length;
+    const subs = fake.subscriptions();
+    for (let i = 0; i < 3; i += 1) {
+      el.hass = { ...fake.hass };
+      await settle(el);
+    }
+    expect(fake.calls.length).toBe(fetches);
+    expect(fake.subscriptions()).toBe(subs);
+    expect(el.shadowRoot?.textContent).toContain("unloaded or reloaded");
+    expect(cards(el)).toHaveLength(0);
+  });
+
+  it("says live updates are unavailable when subscribing fails", async () => {
+    const fake = fakeHass(overview());
+    fake.hass.connection.subscribeMessage = (() =>
+      Promise.reject({ code: "boom" })) as never;
+    const el = await mount(fake);
+    expect(el.shadowRoot?.textContent).toContain(
+      "Live updates are unavailable",
+    );
+    expect(cards(el)).toHaveLength(4);
+  });
+
+  it("stops everything when removed", async () => {
+    vi.useFakeTimers();
+    const fake = fakeHass(overview());
+    const el = await mount(fake);
+    const fetches = () =>
+      fake.calls.filter((c) => c === "electric_fence/overview").length;
+    fake.push({ type: "login", item: login({ id: null }) });
+    el.remove();
+    fake.push({ type: "change", item: change({ id: null }) });
+    await vi.advanceTimersByTimeAsync(REFRESH_DELAY_MS * 3);
+    expect(fetches()).toBe(1);
+  });
+
+  it("drops a response that arrives after removal", async () => {
+    const fake = fakeHass(overview());
+    let release: (value: unknown) => void = () => undefined;
+    fake.hass.connection.sendMessagePromise = ((m: { type: string }) =>
+      m.type === "electric_fence/overview"
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve(null)) as never;
+    const el = await mount(fake);
+    el.remove();
+    release(overview());
+    await settle();
+    expect(
+      (el as unknown as { _overview?: unknown })._overview,
+    ).toBeUndefined();
+  });
+
   it("unsubscribes when removed", async () => {
     const fake = fakeHass(overview());
     const el = await mount(fake);
@@ -189,15 +248,17 @@ describe("ef-overview", () => {
 });
 
 describe("rows", () => {
-  it("shows the flag and code, or local", async () => {
+  it("shows local only for local sources, else the flag or unknown country", async () => {
     const el = await mount(
       fakeHass(
         overview({
           failed_24h: {
-            count: 2,
+            count: 4,
             items: [
               login({ country_code: "RU" }),
-              login({ country_code: null }),
+              login({ country_code: null, source: "local" }),
+              login({ country_code: null, source: "remote" }),
+              login({ country_code: null, source: null }),
             ],
           },
         }),
@@ -207,7 +268,12 @@ describe("rows", () => {
     const where = [...rows].map(
       (r) => r.shadowRoot?.querySelector(".where")?.textContent,
     );
-    expect(where.slice(0, 2)).toEqual(["🇷🇺 RU", "local"]);
+    expect(where.slice(0, 4)).toEqual([
+      "🇷🇺 RU",
+      "local",
+      "unknown country",
+      "unknown country",
+    ]);
   });
 
   it("tags successful logins with MFA or no MFA", async () => {
@@ -226,7 +292,7 @@ describe("rows", () => {
     const rows = cards(el)[2]?.querySelectorAll("ef-login-row") ?? [];
     expect(
       [...rows].map((r) => r.shadowRoot?.querySelector(".tag")?.textContent),
-    ).toEqual(["MFA", "no MFA"]);
+    ).toEqual(["two-factor", "no two-factor"]);
   });
 });
 
@@ -259,6 +325,18 @@ describe("sentences", () => {
         params: { check_failed: "KeyError" },
       }),
     ).toContain("could not run (KeyError)");
+  });
+
+  it("says auto-ban is off, without a number, for a threshold of zero or less", () => {
+    for (const threshold of [0, -1]) {
+      const text = postureText({
+        id: "auto_ban_off",
+        level: "warning",
+        params: { threshold },
+      });
+      expect(text).toContain("turned off");
+      expect(text).not.toMatch(/-?\d/);
+    }
   });
 
   it("uses Home Assistant, never the abbreviation", () => {

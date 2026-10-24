@@ -5,7 +5,7 @@ const REASON_LABELS: Record<LoginReason, string> = {
   no_such_user: "no such user",
   wrong_password: "wrong password",
   invalid_credentials: "invalid credentials",
-  wrong_2fa_code: "wrong 2FA code",
+  wrong_2fa_code: "wrong two-factor code",
   invalid_token: "invalid token",
   blocked_inactive_user: "blocked: inactive user",
   blocked_local_only: "blocked: local only",

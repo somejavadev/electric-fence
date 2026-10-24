@@ -29,7 +29,7 @@ export class EfChangeRow extends LitElement {
         <span class="time">${formatTime(item.ts, this.hass)}</span>
         <bdi class="main actor" title=${actor.full}>${actor.short}</bdi>
         <bdi class="what" title=${sentence.full}>${sentence.short}</bdi>
-        <span class="ip">${item.actor_ip ?? strings.unknownIp}</span>
+        <bdi class="ip">${item.actor_ip ?? strings.unknownIp}</bdi>
       </div>
     `;
   }

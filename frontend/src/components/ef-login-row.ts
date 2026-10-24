@@ -32,10 +32,13 @@ export class EfLoginRow extends LitElement {
       return nothing;
     }
     const user = truncate(item.username_typed ?? strings.unknownUser, MAX_TEXT);
+    // "local" only when the login really came from the local network.
     const where =
-      item.country_code === null
-        ? strings.local
-        : `${countryFlag(item.country_code)} ${item.country_code}`.trim();
+      item.country_code !== null
+        ? `${countryFlag(item.country_code)} ${item.country_code}`.trim()
+        : item.source === "local"
+          ? strings.local
+          : strings.unknownCountry;
     return html`
       <div class="row">
         <span class="time">${formatTime(item.ts, this.hass)}</span>
@@ -54,7 +57,7 @@ export class EfLoginRow extends LitElement {
   private _failed(item: LoginItem) {
     return html`
       <span class="tag bad">${reasonLabel(item.reason)}</span>
-      <span class="ip">${item.ip ?? strings.unknownIp}</span>
+      <bdi class="ip">${item.ip ?? strings.unknownIp}</bdi>
     `;
   }
 

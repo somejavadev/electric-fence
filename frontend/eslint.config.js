@@ -21,6 +21,8 @@ const markupSinks = [
 const sinkPattern = `/^(${markupSinks.join("|")})$/`;
 // Names banned when destructured or assigned, beyond the member bans above.
 const assignedSinkPattern = `/^(${[...markupSinks, "srcdoc"].join("|")})$/`;
+// A Lit property binding such as `.innerHTML=${x}` inside an html template.
+const litSinkBinding = String.raw`/\.(innerHTML|outerHTML|srcdoc|setHTMLUnsafe)\s*=/`;
 // Modules that must not even be loaded lazily.
 const bannedModulePattern = "/unsafe-html|unsafe-svg|lit-html|static-html/";
 
@@ -93,7 +95,23 @@ export default tseslint.config(
           message: "Do not destructure markup sinks.",
         },
         {
-          selector: `Literal[value=${sinkPattern}]`,
+          selector: "ImportExpression:not([source.type='Literal'])",
+          message: "Dynamic imports must name a plain string module.",
+        },
+        {
+          selector: `ObjectExpression > Property[key.name=${assignedSinkPattern}]`,
+          message: "Do not write markup sinks through object keys.",
+        },
+        {
+          selector: `ObjectExpression > Property[computed=true] > TemplateLiteral.key > TemplateElement[value.raw=${assignedSinkPattern}]`,
+          message: "Do not write markup sinks through object keys.",
+        },
+        {
+          selector: `TaggedTemplateExpression[tag.name=/^(html|svg)$/] > TemplateLiteral > TemplateElement[value.raw=${litSinkBinding}]`,
+          message: "Do not bind markup sinks as Lit properties.",
+        },
+        {
+          selector: `Literal[value=${assignedSinkPattern}]`,
           message: "Do not reach for markup sinks by name.",
         },
       ],

@@ -1,4 +1,8 @@
+import { truncate } from "./format.ts";
 import type { ChangeItem, PostureItem } from "./types.ts";
+
+/** Limit a value the server or a user supplied before it joins a sentence. */
+const cut = (text: string): string => truncate(text, 64).short;
 
 /**
  * Every sentence the Overview shows. English only for v0.1, kept in one place
@@ -21,18 +25,21 @@ export const strings = {
   loading: "Loading…",
   loadError: "Could not load this information from Home Assistant.",
   retry: "Try again",
+  liveUnavailable:
+    "Live updates are unavailable. The numbers shown may be out of date.",
   unloaded: "Electric Fence was unloaded or reloaded",
   unloadedHint:
     "Live updates have stopped. Try again once the integration is back.",
   postureProblems: (n: number): string =>
     n === 0 ? "All clear" : n === 1 ? "1 to check" : `${n} to check`,
   local: "local",
+  unknownCountry: "unknown country",
   unknownIp: "unknown IP",
   unknownUser: "unknown user",
   unknownClient: "unknown client",
   system: "System",
-  mfa: "MFA",
-  noMfa: "no MFA",
+  mfa: "two-factor",
+  noMfa: "no two-factor",
   repeated: (n: number): string => `×${n}`,
   level: { ok: "OK", warning: "Warning", error: "Problem" },
 } as const;
@@ -45,10 +52,10 @@ export function changeSentence(item: ChangeItem): string {
       ? keys.filter((key): key is string => typeof key === "string")
       : [];
     return list.length > 0
-      ? `changed core settings (${list.join(", ")})`
+      ? `changed core settings (${list.map(cut).join(", ")})`
       : "changed core settings";
   }
-  const name = item.target_name ?? item.target_id ?? "unknown";
+  const name = cut(item.target_name ?? item.target_id ?? "unknown");
   const isUser = item.kind === "user";
   // "added integration Tuya", "added user Anna", "changed options of Tuya".
   const subject = isUser ? `user ${name}` : name;
@@ -82,7 +89,7 @@ export function postureText(item: PostureItem): string {
     params !== null &&
     "check_failed" in params
   ) {
-    return `This check could not run (${String(params.check_failed)}).`;
+    return `This check could not run (${cut(String(params.check_failed))}).`;
   }
   switch (item.id) {
     case "admins_without_mfa": {
@@ -90,7 +97,7 @@ export function postureText(item: PostureItem): string {
       if (users.length === 0) {
         return "Every administrator uses two-factor authentication.";
       }
-      const names = users.map((user) => user.name ?? "unnamed user");
+      const names = users.map((user) => cut(user.name ?? "unnamed user"));
       return users.length === 1
         ? `1 administrator has no two-factor authentication: ${names.join(", ")}.`
         : `${users.length} administrators have no two-factor authentication: ${names.join(", ")}.`;
@@ -98,7 +105,7 @@ export function postureText(item: PostureItem): string {
     case "auto_ban_off": {
       const threshold =
         "threshold" in item.params ? item.params.threshold : null;
-      if (threshold === null) {
+      if (threshold === null || threshold < 1) {
         return "Banning addresses after failed logins is turned off in Home Assistant.";
       }
       return item.level === "ok"
@@ -110,7 +117,7 @@ export function postureText(item: PostureItem): string {
         return "No sign of a reverse proxy hiding visitors' addresses.";
       }
       const ip = "ip" in item.params ? item.params.ip : null;
-      return `Many different users seem to log in from one address${ip === null ? "" : ` (${ip})`}. That looks like a reverse proxy, and Home Assistant is not set to trust its forwarded address.`;
+      return `Many different users seem to log in from one address${ip === null ? "" : ` (${cut(ip)})`}. That looks like a reverse proxy, and Home Assistant is not set to trust its forwarded address.`;
     }
     case "geoip_missing": {
       const p = item.params;
@@ -118,7 +125,9 @@ export function postureText(item: PostureItem): string {
         return "Country lookup is ready.";
       }
       const why =
-        "last_error" in p && p.last_error !== null ? ` ${p.last_error}` : "";
+        "last_error" in p && p.last_error !== null
+          ? ` ${cut(p.last_error)}`
+          : "";
       return `The country database is missing, so addresses show no country.${why}`;
     }
     case "collector_disabled": {
@@ -126,14 +135,14 @@ export function postureText(item: PostureItem): string {
         return "Electric Fence is watching everything it should.";
       }
       const { collector, reasons } = item.params;
-      return `Electric Fence has switched off its ${collector} check${reasons.length > 0 ? `: ${reasons.join(", ")}` : ""}.`;
+      return `Electric Fence has switched off its ${cut(collector)} check${reasons.length > 0 ? `: ${reasons.map(cut).join(", ")}` : ""}.`;
     }
     case "storage_error": {
       if (item.level === "ok" || !("storage_errors" in item.params)) {
         return "History is being saved normally.";
       }
       const { storage_errors, last_error } = item.params;
-      return `Electric Fence could not save ${storage_errors} ${storage_errors === 1 ? "record" : "records"}.${last_error === null ? "" : ` Last error: ${last_error}`}`;
+      return `Electric Fence could not save ${storage_errors} ${storage_errors === 1 ? "record" : "records"}.${last_error === null ? "" : ` Last error: ${cut(last_error)}`}`;
     }
     default:
       // An id from a newer integration: say so rather than guess.
