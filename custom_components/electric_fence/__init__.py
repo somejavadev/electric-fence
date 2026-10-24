@@ -11,8 +11,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, __version__ as HA_VERSION
 from homeassistant.core import HassJob, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
 from .attribution import AttributionCollector
@@ -22,7 +24,7 @@ from .collectors.config_entries import ConfigEntryCollector
 from .collectors.core_config import CoreConfigCollector
 from .collectors.login import LoginCollector
 from .collectors.users import UserCollector
-from .const import MIN_HA_VERSION
+from .const import DOMAIN, MIN_HA_VERSION
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
@@ -30,11 +32,14 @@ from .notifier import Notifier
 from .runtime import Runtime
 from .settings import Settings
 from .storage import FenceStore
+from .websocket_api import async_end_subscriptions, async_register_commands
 from .worker import FenceWorker
 
 _LOGGER = logging.getLogger(__name__)
 
 type ElectricFenceConfigEntry = ConfigEntry[Runtime]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 DB_FILENAME = "electric_fence.db"
 DATA_DIRNAME = "electric_fence"
@@ -62,6 +67,12 @@ def _open_store(path: Path) -> FenceStore:
     store = FenceStore(path)
     store.open()
     return store
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the admin WebSocket commands, once per Home Assistant run."""
+    async_register_commands(hass)
+    return True
 
 
 async def async_setup_entry(
@@ -121,6 +132,8 @@ async def async_setup_entry(
     runtime.notifier = notifier
     entry.async_on_unload(notifier.async_stop)
     entry.async_on_unload(worker.add_listener(notifier.on_record))
+    # Panel subscriptions end before the worker stops.
+    entry.async_on_unload(lambda: async_end_subscriptions(hass, entry.entry_id))
 
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)
