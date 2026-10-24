@@ -104,7 +104,7 @@ async def test_failed_login_unknown_user_recorded(
     assert row.ip == "127.0.0.1"
     assert row.source == "local"
     assert row.provider == "homeassistant"
-    assert row.client_id == CLIENT_ID
+    assert row.client_id is None  # failures have no token to take it from
     assert row.url is not None
     assert row.url.startswith("/auth/login_flow/")
     assert row.user_agent
@@ -343,12 +343,19 @@ async def test_configure_for_unseen_flow_recorded(
     assert row.ip == "127.0.0.1"
 
 
+@pytest.mark.parametrize(("error", "errors"), [(RuntimeError, 1), (IndexError, 0)])
 async def test_flow_lookup_failure_falls_back_to_request(
     hass: HomeAssistant,
     setup_entry: MockConfigEntry,
     hass_client_no_auth: ClientSessionGenerator,
+    error: type[Exception],
+    errors: int,
 ) -> None:
-    """Without the flow, handler comes from the result and IP from the request."""
+    """Without the flow, handler comes from the result and IP from the request.
+
+    IndexError (a flow without a step yet) is expected, like UnknownFlow, and
+    is not counted as an error.
+    """
     await create_hass_user(hass, "alice", "right")
     client = await hass_client_no_auth()
     real_get = hass.auth.login_flow.async_get
@@ -360,7 +367,7 @@ async def test_flow_lookup_failure_falls_back_to_request(
         calls += 1
         if calls == 1:
             return real_get(flow_id)
-        raise RuntimeError
+        raise error
 
     with patch.object(hass.auth.login_flow, "async_get", flaky_get):
         await login_flow(client, "admin", "x")
@@ -372,27 +379,217 @@ async def test_flow_lookup_failure_falls_back_to_request(
         "127.0.0.1",
         "local",
     )
-    assert _collector(hass).guard.errors == 1
+    assert _collector(hass).guard.errors == errors
+
+
+async def test_hook_never_reads_request_body(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """Only Core reads the request body: once per request, never the hook."""
+    await create_hass_user(hass, "alice", "right")
+    client = await hass_client_no_auth()
+    reads: list[str] = []
+    real_read = web.BaseRequest.read
+
+    async def counting_read(self: web.BaseRequest) -> bytes:
+        reads.append(self.path)
+        return await real_read(self)
+
+    with patch.object(web.BaseRequest, "read", counting_read):
+        await login_flow(client, "alice", "wrong")
+        good = await login_flow(client, "alice", "right")
+    # One read per POST (two POSTs per login flow), all by Core's views.
+    assert len(reads) == 4
+    await _exchange_code(client, good["result"])
+    await flush_worker(hass)
+    rows = store_rows(hass)
+    assert [(r.result, r.client_id) for r in rows] == [
+        ("success", CLIENT_ID),
+        ("failed", None),
+    ]
+
+
+async def test_too_many_wrong_codes_last_attempt_recorded(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wrong code that makes Core abort the flow is recorded too."""
+    await _mfa_hass(hass)
+    user = await create_hass_user(hass, "alice", "right")
+    await hass.auth.async_enable_user_mfa(user, "totp", {})
+    await _setup(hass, monkeypatch)
+    client = await hass_client_no_auth()
+    collector = _collector(hass)
+    worker = collector.runtime.worker
+
+    step = await login_flow(client, "alice", "right")
+    results = []
+    with (
+        patch("pyotp.TOTP.verify", return_value=False),
+        patch.object(worker, "submit", wraps=worker.submit) as submit,
+    ):
+        for _ in range(5):
+            resp = await client.post(
+                f"/auth/login_flow/{step['flow_id']}",
+                json={"client_id": CLIENT_ID, "code": "000000"},
+            )
+            results.append(await resp.json())
+    assert [r["type"] for r in results] == ["form"] * 4 + ["abort"]
+    assert results[-1]["reason"] == "too_many_retry"
+    records = [c.args[0] for c in submit.call_args_list]
+    assert [
+        (r.result, r.reason, r.username_typed, r.mfa_module, r.user_exists)
+        for r in records
+    ] == [
+        (
+            LoginResult.FAILED,
+            LoginReason.WRONG_2FA_CODE,
+            "alice",
+            "totp",
+            UserExists.YES,
+        )
+    ] * 5
+    await flush_worker(hass)
+    rows = store_rows(hass)
+    # Identical failures within a second are merged into one row with a count.
+    assert sum(r.count for r in rows) == 5
+    assert {r.reason for r in rows} == {"wrong_2fa_code"}
+    assert collector._flows == {}
+
+
+async def test_other_aborts_not_recorded(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Aborts other than too many wrong codes are not attempts."""
+    collector = _collector(hass)
+    submitted: list[Any] = []
+    with patch.object(collector.runtime.worker, "submit", submitted.append):
+        for reason in ("login_expired", "unknown_error", None):
+            collector._observe(
+                "f",
+                None,
+                None,
+                {"type": FlowResultType.ABORT, "flow_id": "f", "reason": reason},
+            )
+    assert submitted == []
+
+
+async def test_2fa_code_never_stored_or_logged(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A submitted 2FA code never reaches the logs or the database."""
+    caplog.set_level(logging.DEBUG)
+    await _mfa_hass(hass)
+    user = await create_hass_user(hass, "alice", "right")
+    await hass.auth.async_enable_user_mfa(user, "totp", {})
+    await _setup(hass, monkeypatch)
+    client = await hass_client_no_auth()
+    step = await login_flow(client, "alice", "right")
+    with patch("pyotp.TOTP.verify", return_value=False):
+        resp = await client.post(
+            f"/auth/login_flow/{step['flow_id']}",
+            json={"client_id": CLIENT_ID, "code": "731946"},
+        )
+        assert (await resp.json())["errors"] == {"base": "invalid_code"}
+    await flush_worker(hass)
+    assert store_rows(hass)
+    assert "731946" not in caplog.text
+    assert "731946" not in dump_db(hass)
+
+
+async def _login_sequence(client: Client) -> list[dict[str, Any]]:
+    """Run password, MFA, token and failure steps; return every response."""
+    out: list[dict[str, Any]] = []
+    # bob: password only, then the token exchange.
+    good = await login_flow(client, "bob", "right")
+    out.extend([good, await _exchange_code(client, good["result"])])
+    # alice: password, MFA code, then the token exchange.
+    step = await login_flow(client, "alice", "right")
+    with patch("pyotp.TOTP.verify", return_value=True):
+        resp = await client.post(
+            f"/auth/login_flow/{step['flow_id']}",
+            json={"client_id": CLIENT_ID, "code": "123456"},
+        )
+        done = await resp.json()
+    out.extend([step, done, await _exchange_code(client, done["result"])])
+    # Failures: a wrong password and a wrong code.
+    out.append(await login_flow(client, "bob", "wrong"))
+    step = await login_flow(client, "alice", "right")
+    with patch("pyotp.TOTP.verify", return_value=False):
+        resp = await client.post(
+            f"/auth/login_flow/{step['flow_id']}",
+            json={"client_id": CLIENT_ID, "code": "000000"},
+        )
+        out.append(await resp.json())
+    return out
+
+
+def _strip(response: dict[str, Any]) -> dict[str, Any]:
+    """Drop the fields that differ between any two runs."""
+    volatile = {"flow_id", "result", "access_token", "refresh_token"}
+    return {k: v for k, v in response.items() if k not in volatile}
 
 
 async def test_login_response_identical_with_hook_raising(
     hass: HomeAssistant,
-    setup_entry: MockConfigEntry,
     hass_client_no_auth: ClientSessionGenerator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Logins succeed and fail exactly as without Electric Fence."""
+    """With every hook body raising, logins behave exactly as on plain Core."""
+    await _mfa_hass(hass)
+    await create_hass_user(hass, "bob", "right")
+    alice = await create_hass_user(hass, "alice", "right")
+    await hass.auth.async_enable_user_mfa(alice, "totp", {})
+    assert await async_setup_component(hass, "auth", {})
+    client = await hass_client_no_auth()
+
+    plain = [_strip(r) for r in await _login_sequence(client)]
+
+    await _setup(hass, monkeypatch)
+    collector = _collector(hass)
+    with (
+        patch.object(LoginCollector, "_observe", side_effect=RuntimeError),
+        patch.object(LoginCollector, "_flow_info", side_effect=RuntimeError),
+        patch.object(LoginCollector, "_confirm_token", side_effect=RuntimeError),
+    ):
+        hooked = [_strip(r) for r in await _login_sequence(client)]
+    assert hooked == plain
+    assert [r.get("type", r.get("token_type")) for r in plain] == [
+        "create_entry",
+        "Bearer",
+        "form",
+        "create_entry",
+        "Bearer",
+        "form",
+        "form",
+    ]
+    assert collector.guard.errors > 0
+
+
+async def test_argument_extraction_is_guarded(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """Even reading the call's arguments can't break a login."""
     await create_hass_user(hass, "alice", "right")
     client = await hass_client_no_auth()
-    for name in ("_observe", "_flow_info", "_confirm_token"):
-        monkeypatch.setattr(LoginCollector, name, Mock(side_effect=RuntimeError))
-    good = await login_flow(client, "alice", "right")
-    assert good["type"] == "create_entry"
-    bad = await login_flow(client, "alice", "wrong")
-    assert bad["errors"] == {"base": "invalid_auth"}
-    monkeypatch.undo()
-    tokens = await _exchange_code(client, good["result"])
-    assert tokens["token_type"] == "Bearer"
+    with patch(
+        "custom_components.electric_fence.collectors.login._arg",
+        side_effect=RuntimeError,
+    ):
+        assert (await login_flow(client, "alice", "wrong"))["errors"] == {
+            "base": "invalid_auth"
+        }
+        good = await login_flow(client, "alice", "right")
+        assert good["type"] == "create_entry"
+    assert _collector(hass).guard.errors > 0
 
 
 async def test_login_response_identical_to_core(
@@ -479,7 +676,7 @@ async def test_observe_edge_results(
                 "errors": {"base": "other"},
             },
         ):
-            collector._observe("f", None, {"username": "a"}, result, None)
+            collector._observe("f", None, {"username": "a"}, result)
         assert submitted == []
 
         # No username, non-dict input, unknown provider.
@@ -489,9 +686,9 @@ async def test_observe_edge_results(
             "handler": ("trusted_networks", None),
             "errors": {"base": "invalid_auth"},
         }
-        collector._observe("f", None, ["not", "a", "dict"], invalid, None)
-        collector._observe("f", None, {"username": 5}, invalid, None)
-        collector._observe("f", None, {"username": "bob"}, invalid, None)
+        collector._observe("f", None, ["not", "a", "dict"], invalid)
+        collector._observe("f", None, {"username": 5}, invalid)
+        collector._observe("f", None, {"username": "bob"}, invalid)
         assert [
             (r.reason, r.user_exists, r.username_typed, r.provider) for r in submitted
         ] == [
@@ -517,7 +714,6 @@ async def test_observe_edge_results(
             None,
             {"username": "bob"},
             {"type": FlowResultType.FORM, "errors": {"base": "invalid_auth"}},
-            None,
         )
         rec = submitted[0]
         assert (rec.provider, rec.ip, rec.source, rec.user_exists) == (
@@ -548,7 +744,7 @@ async def test_source_cloud(hass: HomeAssistant, setup_entry: MockConfigEntry) -
             return_value=True,
         ),
     ):
-        collector._observe("f", info, {"username": "a"}, result, None)
+        collector._observe("f", info, {"username": "a"}, result)
     assert submitted[0].source is Source.CLOUD
     assert submitted[0].ip is None  # not an IP address object
 
@@ -568,16 +764,16 @@ async def test_flow_memory_bounded(
         "description_placeholders": {"mfa_module_id": "totp"},
     }
     for i in range(5):
-        collector._observe(f"f{i}", None, {"username": "a"}, mfa_form, None)
+        collector._observe(f"f{i}", None, {"username": "a"}, mfa_form)
     assert list(collector._flows) == ["f2", "f3", "f4"]
     # Seen again: moved to the newest position.
-    collector._observe("f2", None, None, mfa_form, None)
+    collector._observe("f2", None, None, mfa_form)
     assert list(collector._flows) == ["f3", "f4", "f2"]
     assert collector._flows["f2"].username == "a"
-    collector._observe("f2", None, {"username": "b"}, mfa_form, None)
+    collector._observe("f2", None, {"username": "b"}, mfa_form)
     assert collector._flows["f2"].username == "b"
     # No flow ID: nothing remembered.
-    collector._observe(None, None, {"username": "c"}, mfa_form, None)
+    collector._observe(None, None, {"username": "c"}, mfa_form)
     assert len(collector._flows) == 3
     collector.uninstall()
     assert collector._flows == {}
@@ -590,27 +786,10 @@ async def test_defensive_paths_never_raise(
     collector = _collector(hass)
     submitted: list[Any] = []
     with patch.object(collector.runtime.worker, "submit", submitted.append):
-        collector._observe("f", None, None, "not a result", None)
+        collector._observe("f", None, None, "not a result")
     assert submitted == []
-    assert collector._flow_info(None) is None
-    assert await collector._read_client_id("not a result") is None
-
-    created = {"type": FlowResultType.CREATE_ENTRY, "flow_id": "f"}
-    request = Mock(can_read_body=False, content_type="application/json")
-    request.json = AsyncMock(side_effect=ValueError("hunter2"))
-    token = current_request.set(request)
-    try:
-        assert await collector._read_client_id(created) is None
-        assert collector.guard.errors == 1
-        request.json = AsyncMock(return_value=["not", "a", "dict"])
-        assert await collector._read_client_id(created) is None
-        # A body still to be read is never awaited.
-        request.can_read_body = True
-        request.json = AsyncMock(return_value={"client_id": "x"})
-        assert await collector._read_client_id(created) is None
-        request.json.assert_not_awaited()
-    finally:
-        current_request.reset(token)
+    assert collector._flow_info((None,), {}) is None
+    assert collector._flow_info((), {}) is None
 
 
 @pytest.mark.parametrize(
@@ -641,7 +820,6 @@ async def test_ip_from_request_when_flow_unknown(
                 None,
                 {"username": "a"},
                 {"type": FlowResultType.FORM, "errors": {"base": "invalid_auth"}},
-                None,
             )
     finally:
         current_request.reset(token)

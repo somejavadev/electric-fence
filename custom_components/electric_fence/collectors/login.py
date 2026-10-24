@@ -1,9 +1,11 @@
 """Login collector: H1 (login flow) and H8 (refresh-token confirmation).
 
 Safety (spec §4): every wrapper awaits Core's original first and returns its
-result, or lets its exception propagate, unchanged. Everything Electric Fence
-does runs inside `self.guard` (fail open), reads memory only, and queues one
-record. User resolution and storage happen later in the worker.
+result, or lets its exception propagate, unchanged. Calling the original and
+returning its result are the only unguarded statements; everything else runs
+inside `self.guard` (fail open), is synchronous, reads memory only (never the
+request body), and queues at most one record. User resolution and storage
+happen later in the worker.
 
 Privacy: only `username` is read from the submitted step, never the password
 or code. Typed usernames are sanitised before they are kept, and never logged.
@@ -37,7 +39,8 @@ if TYPE_CHECKING:
 # Flows remembered between steps (username, MFA module); the oldest is dropped.
 MAX_FLOWS = 1024
 
-_FAILURE_ERRORS = frozenset({"invalid_auth", "invalid_code"})
+# Core aborts the flow on the wrong code that reaches the module's retry limit.
+_ABORT_TOO_MANY_RETRY = "too_many_retry"
 
 type _IP = IPv4Address | IPv6Address
 type _Handler = tuple[str, str | None]
@@ -87,21 +90,6 @@ def _as_ip(value: str | None) -> _IP | None:
         return None
 
 
-def _is_attempt(result: Any) -> bool:
-    """Return True for results that are recorded."""
-    if not isinstance(result, Mapping):
-        return False
-    rtype = result.get("type")
-    if rtype == FlowResultType.CREATE_ENTRY:
-        return True
-    errors = result.get("errors")
-    return (
-        rtype == FlowResultType.FORM
-        and isinstance(errors, Mapping)
-        and errors.get("base") in _FAILURE_ERRORS
-    )
-
-
 def _mfa_module(result: Mapping[str, Any]) -> str | None:
     """Return the MFA module ID an `mfa` step form names, sanitised."""
     placeholders = result.get("description_placeholders")
@@ -109,11 +97,6 @@ def _mfa_module(result: Mapping[str, Any]) -> str | None:
         return None
     value = placeholders.get("mfa_module_id")
     return sanitise_text(value) if isinstance(value, str) else None
-
-
-def _reraise(err: Exception) -> None:
-    """Re-raise `err` inside a FailOpen guard so it is counted and logged."""
-    raise err
 
 
 class LoginCollector(BaseCollector):
@@ -148,21 +131,17 @@ class LoginCollector(BaseCollector):
     def _wrap_init(self, original: _AsyncFn) -> _AsyncFn:
         async def async_init(*args: Any, **kwargs: Any) -> Any:
             result = await original(*args, **kwargs)
-            client_id = await self._read_client_id(result)
-            self.guard.call(self._observe_init, args, kwargs, result, client_id)
+            self.guard.call(self._observe_init, args, kwargs, result)
             return result
 
         return async_init
 
     def _wrap_configure(self, original: _AsyncFn) -> _AsyncFn:
         async def async_configure(*args: Any, **kwargs: Any) -> Any:
-            flow_id = _arg(args, kwargs, 0, "flow_id")
             # Before the call: a finished flow is gone afterwards.
-            info = self.guard.call(self._flow_info, flow_id)
+            info = self.guard.call(self._flow_info, args, kwargs)
             result = await original(*args, **kwargs)
-            client_id = await self._read_client_id(result)
-            user_input = _arg(args, kwargs, 1, "user_input")
-            self.guard.call(self._observe, flow_id, info, user_input, result, client_id)
+            self.guard.call(self._observe_configure, args, kwargs, info, result)
             return result
 
         return async_configure
@@ -188,14 +167,18 @@ class LoginCollector(BaseCollector):
 
     # H1
 
-    def _flow_info(self, flow_id: Any) -> _FlowInfo | None:
-        """Return the handler and IP of a flow in progress, if it exists."""
+    def _flow_info(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> _FlowInfo | None:
+        """Return the handler and IP of the flow `async_configure` is called for."""
+        flow_id = _arg(args, kwargs, 0, "flow_id")
         if not isinstance(flow_id, str):
             return None
         try:
             flow = self.hass.auth.login_flow.async_get(flow_id)
-        except UnknownFlow:
-            # Core raises it to the caller in a moment; nothing to record.
+        except UnknownFlow, IndexError:
+            # Unknown flow (Core raises it to the caller in a moment), or a
+            # flow without a step yet: expected, nothing to look up.
             return None
         return self._flow_info_from(flow)
 
@@ -209,36 +192,8 @@ class LoginCollector(BaseCollector):
             ip=ip if isinstance(ip, (IPv4Address, IPv6Address)) else None,
         )
 
-    async def _read_client_id(self, result: Any) -> str | None:
-        """Return `client_id` from the JSON body Core has already read.
-
-        Only for recorded results, and only once the body is fully read, so
-        this never waits for the network. Never raises.
-        """
-        try:
-            if not _is_attempt(result):
-                return None
-            request = current_request.get()
-            if (
-                request is None
-                or request.can_read_body
-                or request.content_type != "application/json"
-            ):
-                return None
-            # Served from aiohttp's cache of the already-read body.
-            data = await request.json()
-        except Exception as err:  # noqa: BLE001
-            self.guard.call(_reraise, err)
-            return None
-        value = data.get("client_id") if isinstance(data, dict) else None
-        return sanitise_text(value) if isinstance(value, str) else None
-
     def _observe_init(
-        self,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        result: Any,
-        client_id: str | None,
+        self, args: tuple[Any, ...], kwargs: dict[str, Any], result: Any
     ) -> None:
         """Observe `async_init(handler, *, context=None, data=None)`."""
         context = kwargs.get("context")
@@ -246,15 +201,21 @@ class LoginCollector(BaseCollector):
             {"handler": _arg(args, kwargs, 0, "handler"), "context": context}
         )
         flow_id = result.get("flow_id") if isinstance(result, Mapping) else None
-        self._observe(flow_id, info, None, result, client_id)
+        self._observe(flow_id, info, None, result)
+
+    def _observe_configure(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        info: _FlowInfo | None,
+        result: Any,
+    ) -> None:
+        """Observe `async_configure(flow_id, user_input=None)`."""
+        flow_id = _arg(args, kwargs, 0, "flow_id")
+        self._observe(flow_id, info, _arg(args, kwargs, 1, "user_input"), result)
 
     def _observe(
-        self,
-        flow_id: Any,
-        info: _FlowInfo | None,
-        user_input: Any,
-        result: Any,
-        client_id: str | None,
+        self, flow_id: Any, info: _FlowInfo | None, user_input: Any, result: Any
     ) -> None:
         """Turn a step result into a login attempt and queue it."""
         if not isinstance(result, Mapping):
@@ -290,7 +251,10 @@ class LoginCollector(BaseCollector):
                     UserExists.UNKNOWN: LoginReason.INVALID_CREDENTIALS,
                 }[exists],
             )
-        elif rtype == FlowResultType.FORM and base == "invalid_code":
+        elif (rtype == FlowResultType.FORM and base == "invalid_code") or (
+            rtype == FlowResultType.ABORT
+            and result.get("reason") == _ABORT_TOO_MANY_RETRY
+        ):
             outcome, reason, exists = (
                 LoginResult.FAILED,
                 LoginReason.WRONG_2FA_CODE,
@@ -307,7 +271,7 @@ class LoginCollector(BaseCollector):
             found = result.get("result")
             credentials = found if isinstance(found, Credentials) else None
         else:
-            # Forms without errors, MFA prompts, aborts: not attempts.
+            # Forms without errors, MFA prompts, other aborts: not attempts.
             return
 
         request = current_request.get()
@@ -338,7 +302,8 @@ class LoginCollector(BaseCollector):
                     if request is not None
                     else None
                 ),
-                client_id=client_id,
+                # Failures have none; a success gets it from its token (H8).
+                client_id=None,
                 mfa_module=mfa_module,
                 # A success waits for its refresh token (H8).
                 confirmed=outcome is not LoginResult.SUCCESS,

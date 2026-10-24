@@ -49,11 +49,15 @@ type _Params = Sequence[tuple[str, str, Any]]
 
 
 def _params_reason(label: str, fn: Any, expected: _Params, *, coro: bool) -> str | None:
-    """Check `fn` is callable, optionally a coroutine function, with `expected`."""
+    """Check `fn` is callable with `expected`, and is a coroutine iff `coro`."""
     if not callable(fn):
         return f"{label} is missing"
-    if coro and not inspect.iscoroutinefunction(fn):
+    is_coro = inspect.iscoroutinefunction(fn)
+    if coro and not is_coro:
         return f"{label} is not a coroutine function"
+    if not coro and is_coro:
+        # Called synchronously by the hook.
+        return f"{label} is a coroutine function"
     params = [
         (p.name, p.kind.name, p.default)
         for p in inspect.signature(fn).parameters.values()

@@ -38,7 +38,7 @@ def _configure_sync(flow_id: str, user_input: Any = None) -> None:
 
 
 async def _get_async(flow_id: str) -> None:
-    """Async-only lookup with the right parameter."""
+    """Coroutine lookup with the right parameter."""
 
 
 def _get_no_args() -> None:
@@ -69,12 +69,14 @@ async def test_contract_fails_when_signature_changes(
     assert expected in reason
 
 
-async def test_contract_accepts_sync_or_async_get(
+async def test_contract_fails_when_async_get_is_a_coroutine(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`async_get` only has to take a flow ID."""
+    """The hook calls `async_get` synchronously, so a coroutine fails."""
     monkeypatch.setattr(hass.auth.login_flow, "async_get", _get_async)
-    assert _check(hass, "login_flow_manager") is None
+    reason = _check(hass, "login_flow_manager")
+    assert reason is not None
+    assert "async_get is a coroutine function" in reason
 
 
 async def test_contract_fails_without_login_flow(
