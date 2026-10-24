@@ -3,6 +3,7 @@
 from collections.abc import Callable
 import logging
 import time
+import traceback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class FailOpen:
         """Call `fn`; return its result, or None if it raised."""
         try:
             return fn(*args, **kwargs)
-        except Exception:
+        except Exception as err:  # noqa: BLE001
             self.errors += 1
             now = time.monotonic()
             if (
@@ -31,6 +32,12 @@ class FailOpen:
                 or now - self._last_logged >= self._log_interval
             ):
                 self._last_logged = now
-                # Never include call arguments: they may contain usernames.
-                _LOGGER.exception("Electric Fence hook %s failed", self.name)
+                # Never include call arguments or the exception message: they
+                # may contain usernames. Log the type and the frames only.
+                _LOGGER.error(
+                    "Electric Fence hook %s failed: %s\n%s",
+                    self.name,
+                    type(err).__name__,
+                    "".join(traceback.format_tb(err.__traceback__)),
+                )
             return None

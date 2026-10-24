@@ -128,7 +128,7 @@ async def test_wrap_ws_command_restores_original(
     assert (await client.receive_json())["result"] == 7
     assert seen == [7]
     h.restore()
-    assert hass.data[WS_DOMAIN]["ef_dummy"] == original
+    assert hass.data[WS_DOMAIN]["ef_dummy"] is original
     await client.send_json_auto_id({"type": "ef_dummy", "n": 8})
     assert (await client.receive_json())["result"] == 8
     assert seen == [7]
@@ -138,15 +138,87 @@ async def test_ws_restore_when_replaced_becomes_passthrough(
     hass: HomeAssistant,
 ) -> None:
     """If another party replaced the entry, restore leaves it alone."""
-
-    @websocket_api.websocket_command({"type": "ef_dummy2"})
-    @websocket_api.callback
-    def handler(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
-        connection.send_result(msg["id"])
-
-    websocket_api.async_register_command(hass, handler)
-    h = wrap_ws_command(hass, "ef_dummy2", lambda orig: orig)
-    other = (object(), None)
+    _, seen = _ws_dummy(hass, "ef_dummy2")
+    h, ours = _wrap_recording(hass, "ef_dummy2", seen)
+    other = (lambda *a: ours(*a), None)
     hass.data[WS_DOMAIN]["ef_dummy2"] = other
     h.restore()
     assert hass.data[WS_DOMAIN]["ef_dummy2"] is other
+    ours(hass, None, {"id": 1, "n": 3})  # type: ignore[arg-type]
+    assert seen == []
+
+
+def _ws_dummy(hass: HomeAssistant, name: str) -> tuple[Any, list[int]]:
+    @websocket_api.websocket_command({"type": name})
+    @websocket_api.callback
+    def handler(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+        pass
+
+    websocket_api.async_register_command(hass, handler)
+    return handler, []
+
+
+def _wrap_recording(hass: HomeAssistant, name: str, seen: list[int]) -> tuple[Any, Any]:
+    def mk(orig: Any) -> Any:
+        def w(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+            seen.append(msg["n"])
+            orig(hass, connection, msg)
+
+        return w
+
+    h = wrap_ws_command(hass, name, mk)
+    return h, hass.data[WS_DOMAIN][name][0]
+
+
+async def test_ws_rewrap_after_passthrough_records_again(
+    hass: HomeAssistant,
+) -> None:
+    """A fresh wrapper is live even if an earlier one was passthrough."""
+    _, seen = _ws_dummy(hass, "ef_dummy3")
+    h, ours = _wrap_recording(hass, "ef_dummy3", seen)
+    third = (lambda *a: ours(*a), None)
+    original = hass.data[WS_DOMAIN]["ef_dummy3"]
+    hass.data[WS_DOMAIN]["ef_dummy3"] = third
+    h.restore()  # passthrough
+    hass.data[WS_DOMAIN]["ef_dummy3"] = original  # third party unwraps
+    _wrap_recording(hass, "ef_dummy3", seen)
+    new = hass.data[WS_DOMAIN]["ef_dummy3"][0]
+    new(hass, None, {"id": 1, "n": 4})
+    assert seen == [4]
+
+
+async def test_rewrap_method_after_passthrough_records_again() -> None:
+    """Regression: functools.wraps must not copy a passthrough flag."""
+    t = T()
+    calls: list[int] = []
+
+    def mk(orig: Callable[..., Awaitable[int]]) -> Callable[..., Awaitable[int]]:
+        async def w(a: int) -> int:
+            calls.append(a)
+            return await orig(a)
+
+        return w
+
+    h = wrap_async_method(t, "f", mk)
+    ours = t.f
+
+    async def third(a: int) -> int:
+        return await ours(a)
+
+    t.f = third  # type: ignore[method-assign]
+    h.restore()  # passthrough
+    t.f = ours  # type: ignore[method-assign]  # third party unwraps
+    wrap_async_method(t, "f", mk)
+    assert await t.f(9) == 9
+    assert calls == [9]
+
+
+def test_wrap_sync_method_on_class_restores_class_attribute() -> None:
+    """Wrapping a class-level method leaves no instance attribute behind."""
+    t = T()
+    h = wrap_sync_method(T, "g", lambda orig: lambda self, a: orig(self, a) + 1)
+    assert t.g(1) == 2
+    h.restore()
+    assert t.g(1) == 1
+    assert "g" not in vars(t)
+    assert vars(T)["g"] is T.g

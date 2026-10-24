@@ -13,17 +13,23 @@ from homeassistant.core import HomeAssistant
 _MISSING: Any = object()
 
 
+class _State:
+    """Mutable passthrough flag shared by a wrapper and its handle."""
+
+    passthrough = False
+
+
 class HookHandle:
     """Handle to an installed hook."""
 
     def __init__(
         self,
-        wrapper: Callable[..., Any],
+        state: _State,
         is_current: Callable[[], bool],
         put_back: Callable[[], None],
     ) -> None:
         """Initialise the handle."""
-        self._wrapper = wrapper
+        self._state = state
         self._is_current = is_current
         self._put_back = put_back
         self._restored = False
@@ -40,15 +46,17 @@ class HookHandle:
         if self._is_current():
             self._put_back()
         else:
-            self._wrapper.__ef_passthrough__ = True  # type: ignore[attr-defined]
+            self._state.passthrough = True
 
 
 def _passthrough_async[T](
-    orig: Callable[..., Awaitable[T]], inner: Callable[..., Awaitable[T]]
+    orig: Callable[..., Awaitable[T]],
+    inner: Callable[..., Awaitable[T]],
+    state: _State,
 ) -> Callable[..., Awaitable[T]]:
     @wraps(orig)
     async def outer(*args: Any, **kwargs: Any) -> T:
-        if getattr(outer, "__ef_passthrough__", False):
+        if state.passthrough:
             return await orig(*args, **kwargs)
         return await inner(*args, **kwargs)
 
@@ -56,11 +64,11 @@ def _passthrough_async[T](
 
 
 def _passthrough_sync[R](
-    orig: Callable[..., R], inner: Callable[..., R]
+    orig: Callable[..., R], inner: Callable[..., R], state: _State
 ) -> Callable[..., R]:
     @wraps(orig)
     def outer(*args: Any, **kwargs: Any) -> R:
-        if getattr(outer, "__ef_passthrough__", False):
+        if state.passthrough:
             return orig(*args, **kwargs)
         return inner(*args, **kwargs)
 
@@ -68,14 +76,17 @@ def _passthrough_sync[R](
 
 
 def _install_attr(
-    obj: object, attr: str, build: Callable[[Callable[..., Any]], Callable[..., Any]]
+    obj: object,
+    attr: str,
+    build: Callable[[Callable[..., Any], _State], Callable[..., Any]],
 ) -> HookHandle:
     orig = getattr(obj, attr)
     try:
         own = vars(obj).get(attr, _MISSING)
     except TypeError:
         own = _MISSING
-    wrapper = build(orig)
+    state = _State()
+    wrapper = build(orig, state)
     setattr(obj, attr, wrapper)
 
     def put_back() -> None:
@@ -90,7 +101,7 @@ def _install_attr(
     def is_current() -> bool:
         return getattr(obj, attr, None) is wrapper
 
-    return HookHandle(wrapper, is_current, put_back)
+    return HookHandle(state, is_current, put_back)
 
 
 def wrap_async_method[T](
@@ -100,7 +111,9 @@ def wrap_async_method[T](
 ) -> HookHandle:
     """Wrap the async callable `obj.attr`."""
     return _install_attr(
-        obj, attr, lambda orig: _passthrough_async(orig, make_wrapper(orig))
+        obj,
+        attr,
+        lambda orig, state: _passthrough_async(orig, make_wrapper(orig), state),
     )
 
 
@@ -111,7 +124,9 @@ def wrap_sync_method(
 ) -> HookHandle:
     """Wrap the sync callable `obj.attr`."""
     return _install_attr(
-        obj, attr, lambda orig: _passthrough_sync(orig, make_wrapper(orig))
+        obj,
+        attr,
+        lambda orig, state: _passthrough_sync(orig, make_wrapper(orig), state),
     )
 
 
@@ -124,9 +139,10 @@ def wrap_ws_command(
     handlers = hass.data[WEBSOCKET_API_DOMAIN]
     original = handlers[command]
     handler, schema = original
+    state = _State()
     wrapper = cast(
         WebSocketCommandHandler,
-        _passthrough_sync(handler, make_wrapper(handler)),
+        _passthrough_sync(handler, make_wrapper(handler), state),
     )
     handlers[command] = (wrapper, schema)
 
@@ -137,4 +153,4 @@ def wrap_ws_command(
     def put_back() -> None:
         handlers[command] = original
 
-    return HookHandle(wrapper, is_current, put_back)
+    return HookHandle(state, is_current, put_back)
