@@ -1,10 +1,10 @@
 """Tests for the failed logins sensor."""
 
+import asyncio
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 import sqlite3
-import time
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
@@ -228,27 +228,32 @@ async def test_sensor_seed_failure_starts_empty(
 async def test_sensor_records_during_seed_are_kept(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A record that arrives while the seed query runs is counted once."""
+    """A record flushed and notified while the seed query runs is counted."""
     real = FenceStore.failed_buckets_since
-    entry_holder: list[MockConfigEntry] = []
+    holder: list[MockConfigEntry] = []
+
+    async def store_one() -> None:
+        worker = holder[0].runtime_data.worker
+        worker.submit(attempt(ts=dt_util.utcnow()))
+        # Stored, and the listeners called, before this returns. (The entry
+        # is still setting up, so `flush_worker` would not find it.)
+        await worker.async_flush()
 
     def slow(self: FenceStore, *args: object, **kwargs: object) -> object:
-        # Runs in the executor, between the listener and the end of seeding.
-        hass.loop.call_soon_threadsafe(
-            entry_holder[0].runtime_data.worker.submit, attempt(ts=dt_util.utcnow())
-        )
-        time.sleep(0.2)
-        return real(self, *args, **kwargs)
+        # Runs in the executor, so the seed is still pending while the record
+        # is stored and the live listener is called.
+        result = real(self, *args, **kwargs)
+        asyncio.run_coroutine_threadsafe(store_one(), hass.loop).result(10)
+        return result
 
     monkeypatch.setattr(FenceStore, "failed_buckets_since", slow)
     monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", "2026.11.0")
     entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
-    entry_holder.append(entry)
+    holder.append(entry)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    await flush_worker(hass)
-    await hass.async_block_till_done()
+    # Stored after the query read the store, so only the buffer has it.
     assert hass.states.get(ENTITY_ID).state == "1"
 
 

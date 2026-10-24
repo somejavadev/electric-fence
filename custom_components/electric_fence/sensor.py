@@ -145,5 +145,12 @@ class FailedLoginsSensor(SensorEntity):
         self.async_write_ha_state()
 
 
+# Seeding edge cases, accepted: the listener buffers while the query runs and
+# a buffered record is dropped when its ts is at or before the query start
+# (it is taken to be in the seed). A record created before the query start
+# but stored after the query read the store is therefore lost; that window is
+# about one worker flush interval (1 s). A record with a ts after the query
+# start that was stored before the query read the store counts twice. Both
+# are rare, one record, and fade out of the 24 hour window.
 def _seed(store: FenceStore, since: datetime) -> list[tuple[datetime, int]]:
     return store.failed_buckets_since(since, include_blocked=True)
