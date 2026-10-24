@@ -111,3 +111,28 @@ register_contract(Contract("login_flow_manager", "login", _check_login_flow_mana
 register_contract(
     Contract("refresh_token_create", "login", _check_refresh_token_create)
 )
+
+
+def _check_wrong_login_notification(hass: HomeAssistant) -> str | None:
+    """`process_wrong_login` uses `http-login`/`ip-ban`; the helpers exist."""
+    # Imported here, so a moved module fails the contract, not the import.
+    from homeassistant.components import persistent_notification  # noqa: PLC0415
+    from homeassistant.components.http import ban  # noqa: PLC0415
+
+    for attr, expected in (
+        ("NOTIFICATION_ID_LOGIN", "http-login"),
+        ("NOTIFICATION_ID_BAN", "ip-ban"),
+    ):
+        if getattr(ban, attr, None) != expected:
+            return f"http.ban.{attr} is not {expected!r}"
+    for attr in ("async_register_callback", "async_dismiss"):
+        if not callable(getattr(persistent_notification, attr, None)):
+            return f"persistent_notification.{attr} is missing"
+    return None
+
+
+register_contract(
+    Contract(
+        "wrong_login_notification", "auth_failures", _check_wrong_login_notification
+    )
+)

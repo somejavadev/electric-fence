@@ -13,6 +13,7 @@ from homeassistant.core import HassJob, HomeAssistant
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
+from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
 from .collectors.login import LoginCollector
 from .const import MIN_HA_VERSION
@@ -31,7 +32,10 @@ PURGE_INTERVAL = timedelta(hours=24)
 FIRST_PURGE_DELAY = timedelta(minutes=5)
 
 # Each collector task appends its class here.
-COLLECTOR_TYPES: list[type[BaseCollector]] = [LoginCollector]
+COLLECTOR_TYPES: list[type[BaseCollector]] = [
+    LoginCollector,
+    AuthFailureCollector,
+]
 
 
 def _db_path(hass: HomeAssistant) -> Path:
