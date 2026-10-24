@@ -21,7 +21,7 @@ from custom_components.electric_fence.settings import Settings
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-from tests.helpers import create_hass_user, flush_worker, login_flow
+from tests.helpers import create_hass_user, flush_worker, login_flow, store_rows
 
 LOGINS = 50
 ROUNDS = 5
@@ -29,6 +29,11 @@ WARMUP = 5
 MAX_OVERHEAD_S = 0.005
 
 type Client = TestClient[web.Request, web.Application]
+
+
+def _failed_count(hass: HomeAssistant) -> int:
+    """Return the number of stored failed attempts (merged rows counted out)."""
+    return sum(row.count for row in store_rows(hass) if row.result == "failed")
 
 
 async def _timed_logins(client: Client, count: int) -> list[float]:
@@ -70,8 +75,13 @@ async def test_login_overhead_under_5ms(
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert entry.state is ConfigEntryState.LOADED
+        # A disabled login collector would leave the entry loaded but unhooked.
+        login = next(c for c in entry.runtime_data.collectors if c.name == "login")
+        assert login.is_installed
+        stored = _failed_count(hass)
         fenced.extend(await _timed_logins(client, per_round))
         await flush_worker(hass)
+        assert _failed_count(hass) == stored + per_round
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
 

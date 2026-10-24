@@ -1,12 +1,14 @@
 """Diagnostics for Electric Fence: status only, never records or secrets.
 
 Contains no rows, usernames or IPs. The MaxMind account ID and license key
-are redacted.
+are redacted. An entry that is not loaded gets only its state and reason.
 """
 
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 
 from . import ElectricFenceConfigEntry
@@ -47,6 +49,13 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
+    if entry.state is not ConfigEntryState.LOADED:
+        # No runtime data (setup failed or not loaded): state and reason only.
+        return {
+            "state": entry.state.value,
+            "ha_version": HA_VERSION,
+            "reason": entry.reason,
+        }
     runtime = entry.runtime_data
     worker = runtime.worker
     try:

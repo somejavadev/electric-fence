@@ -10,6 +10,7 @@ scenario again, and compares the responses (volatile fields stripped).
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+import sys
 from typing import Any
 from unittest.mock import patch
 
@@ -24,6 +25,10 @@ from pytest_homeassistant_custom_component.typing import (
     WebSocketGenerator,
 )
 
+from custom_components.electric_fence import (
+    attribution,
+    websocket_api as fence_websocket_api,
+)
 from custom_components.electric_fence.attribution import ActionScope
 from custom_components.electric_fence.collectors.auth_failures import (
     AuthFailureCollector,
@@ -40,9 +45,28 @@ from custom_components.electric_fence.sensor import FailedLoginsSensor
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.worker import FenceWorker
 from homeassistant.auth import auth_manager_from_config
+from homeassistant.components import websocket_api as core_websocket_api
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from tests.helpers import CLIENT_ID, DUMMY, create_hass_user, flush_worker, login_flow
+
+
+class CoreWebSocketApi:
+    """Core's `websocket_api` module as the panel API sees it.
+
+    Installed in place of the module in `websocket_api.py`, so the live
+    subscription's `_on_record` listener can be made to raise (its call to
+    `event_message` is outside its own try) without touching Core.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        """Return Core's attribute."""
+        return getattr(core_websocket_api, name)
+
+    def event_message(self, *args: Any, **kwargs: Any) -> Any:
+        """Pass through to Core."""
+        return core_websocket_api.event_message(*args, **kwargs)
+
 
 # (class, attribute) pairs patched to raise.
 type Patches = tuple[tuple[type, str], ...]
@@ -66,10 +90,56 @@ CASES: dict[str, Patches] = {
     "worker_confirm": ((FenceWorker, "confirm_success"),),
     "notifier_on_record": ((Notifier, "on_record"),),
     "sensor_listener": ((FailedLoginsSensor, "_on_record"),),
+    "panel_subscription": ((CoreWebSocketApi, "event_message"),),
 }
 CASES["everything"] = tuple(p for patches in CASES.values() for p in patches)
 
 case_param = pytest.mark.parametrize("case", list(CASES))
+
+# Where an action scope is opened and closed: the WebSocket wrapper, and the
+# flow manager and entry remove wrappers (with the flow action).
+SCOPE_SITES = (
+    "ws",
+    "async_init:config_flow",
+    "async_init:options_flow",
+    "async_init:subentry_flow",
+    "async_configure:config_flow",
+    "async_configure:options_flow",
+    "async_remove",
+)
+_SITE_WRAPPERS = ("async_init", "async_configure")
+_WS_SITES = ("_ws_enter", "_ws_exit", "<lambda>")
+
+
+def _site(target: type, attr: str) -> str:
+    """Return the call key; for a scope, with the attribution wrapper calling it."""
+    key = f"{target.__name__}.{attr}"
+    if target is not ActionScope:
+        return key
+    frame = sys._getframe(2)  # noqa: SLF001
+    while frame is not None:
+        code = frame.f_code
+        if code.co_filename == attribution.__file__:
+            if code.co_name in _WS_SITES:
+                return f"{key}:ws"
+            if code.co_name in _SITE_WRAPPERS:
+                return f"{key}:{code.co_name}:{frame.f_locals.get('action')}"
+            if code.co_name == "async_remove":
+                return f"{key}:async_remove"
+        frame = frame.f_back
+    return f"{key}:unknown"
+
+
+def _expected_keys(case: str) -> set[str]:
+    keys: set[str] = set()
+    for target, attr in CASES[case]:
+        key = f"{target.__name__}.{attr}"
+        if target is ActionScope:
+            keys.update(f"{key}:{site}" for site in SCOPE_SITES)
+        else:
+            keys.add(key)
+    return keys
+
 
 # Replaced by a placeholder: they differ between any two runs.
 VOLATILE = {
@@ -104,6 +174,7 @@ async def env(
     hass_client_no_auth: ClientSessionGenerator,
     hass_client: ClientSessionGenerator,
     hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Env:
     """Set up plain Core: no Electric Fence yet."""
     hass.auth = await auth_manager_from_config(
@@ -115,6 +186,7 @@ async def env(
     bob = await create_hass_user(hass, "bob", "right")
     mia = await create_hass_user(hass, "mia", "right")
     await hass.auth.async_enable_user_mfa(mia, "totp", {})
+    monkeypatch.setattr(fence_websocket_api, "websocket_api", CoreWebSocketApi())
     for domain in ("http", "api", "auth", "websocket_api", "config"):
         assert await async_setup_component(hass, domain, {})
     refresh = await hass.auth.async_create_refresh_token(admin, CLIENT_ID)
@@ -144,18 +216,24 @@ def _norm(value: Any, ids: frozenset[str] = frozenset()) -> Any:
     return value
 
 
-@contextmanager
-def _failing(case: str) -> Iterator[list[int]]:
-    """Make every entry point of `case` raise; yield the call count."""
-    calls = [0]
-
+def _raiser(target: type, attr: str, calls: dict[str, int]) -> Callable[..., Any]:
     def boom(*args: Any, **kwargs: Any) -> Any:
-        calls[0] += 1
+        key = _site(target, attr)
+        calls[key] = calls.get(key, 0) + 1
         raise RuntimeError("Electric Fence fail-open test")
 
+    return boom
+
+
+@contextmanager
+def _failing(case: str) -> Iterator[dict[str, int]]:
+    """Make every entry point of `case` raise; yield the calls per target."""
+    calls: dict[str, int] = {}
     with ExitStack() as stack:
         for target, attr in CASES[case]:
-            stack.enter_context(patch.object(target, attr, boom))
+            stack.enter_context(
+                patch.object(target, attr, _raiser(target, attr, calls))
+            )
         yield calls
 
 
@@ -171,15 +249,25 @@ async def _setup_fence(hass: HomeAssistant) -> None:
 type Scenario = Callable[[Env], Awaitable[list[Any]]]
 
 
+async def _subscribe(env: Env) -> Any:
+    """Open a panel live subscription (Electric Fence only, not compared)."""
+    ws = await env.ws_client(env.hass, access_token=env.token)
+    await ws.send_json_auto_id({"type": "electric_fence/subscribe"})
+    assert (await ws.receive_json())["success"]
+    return ws
+
+
 async def _compare(env: Env, case: str, scenario: Scenario) -> list[Any]:
     """Run `scenario` on plain Core, then with the failing fence; compare."""
     plain = await scenario(env)
     with _failing(case):
         await _setup_fence(env.hass)
+        subscription = await _subscribe(env)
         hooked = await scenario(env)
-        # Record listeners (notifier, sensor) run after the write.
+        # Record listeners (notifier, sensor, panel) run after the write.
         await flush_worker(env.hass)
         await env.hass.async_block_till_done()
+        await subscription.close()
     assert hooked == plain
     return plain
 
@@ -384,12 +472,19 @@ async def test_config_flow_still_works(env: Env, case: str) -> None:
 @pytest.mark.parametrize("expected_lingering_timers", [True])
 @case_param
 async def test_failing_entry_point_is_reached(env: Env, case: str) -> None:
-    """The scenarios really run every patched entry point (not a vacuous pass)."""
+    """The scenarios really run every patched target, at every call site."""
     with _failing(case) as calls:
         # Inside: the record listeners are bound at setup.
         await _setup_fence(env.hass)
+        subscription = await _subscribe(env)
         for scenario in SCENARIOS:
             await scenario(env)
         await flush_worker(env.hass)
         await env.hass.async_block_till_done()
-    assert calls[0] > 0
+        await subscription.close()
+    if case == "everything":
+        # Earlier failures starve later targets (no submit: no listeners).
+        assert sum(calls.values()) > 0
+        return
+    missing = sorted(_expected_keys(case) - {k for k, n in calls.items() if n > 0})
+    assert not missing, (missing, calls)

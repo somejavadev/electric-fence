@@ -8,14 +8,17 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components import electric_fence as fence
+from custom_components.electric_fence import attribution
 from custom_components.electric_fence.attribution import ADMIN_WS_COMMANDS
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.settings import Settings
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_API_DOMAIN
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_COMPONENT_LOADED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER
+from homeassistant.setup import ATTR_COMPONENT
 from tests.helpers import (
     change_rows,
     create_hass_user,
@@ -200,3 +203,32 @@ async def test_reload_without_restart_records_again(
         ("core_config", {"keys": ["location_name"]})
     ]
     assert hass.states.get(SENSOR_ID).state == "2"
+
+
+async def test_unload_restores_ws_handlers_wrapped_after_config_loads(
+    hass: HomeAssistant, config: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WS handlers wrapped when `config` loads late are restored to Core's tuples.
+
+    `frontend` (a dependency) loads `config` first in practice, so the entry
+    is set up as if `config` were not loaded yet, and its load event is then
+    fired.
+    """
+    handlers = hass.data[WEBSOCKET_API_DOMAIN]
+    core = {command: handlers[command] for command in ADMIN_WS_COMMANDS}
+    monkeypatch.setattr(attribution, "_CONFIG", "config (not loaded yet)")
+    entry = await _setup(hass, monkeypatch)
+    for command, original in core.items():
+        assert handlers[command] is original, command
+
+    monkeypatch.setattr(attribution, "_CONFIG", "config")
+    hass.bus.async_fire(EVENT_COMPONENT_LOADED, {ATTR_COMPONENT: "config"})
+    await hass.async_block_till_done()
+    for command, original in core.items():
+        assert handlers[command] is not original, command
+        assert handlers[command][1] is original[1], command
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    for command, original in core.items():
+        assert handlers[command] is original, command

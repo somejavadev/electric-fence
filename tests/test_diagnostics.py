@@ -14,6 +14,8 @@ from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.contracts import CONTRACTS, Contract
 from custom_components.electric_fence.settings import Settings
 from homeassistant.components.diagnostics import REDACTED
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from tests.helpers import CLIENT_ID, REDIRECT_URI, flush_worker, store_rows
@@ -170,3 +172,25 @@ async def test_diagnostics_geo_status(
         "db_date": "2026-10-01",
         "last_error": "download failed: HTTP 503",
     }
+
+
+async def test_diagnostics_for_entry_not_loaded(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An entry that failed to set up gets its state and reason, not an error."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", "2026.10.3")
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+
+    assert diag == {
+        "state": "setup_error",
+        "ha_version": HA_VERSION,
+        "reason": entry.reason,
+    }
+    assert "requires Home Assistant 2026.11.0" in diag["reason"]
