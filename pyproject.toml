@@ -25,6 +25,8 @@ source = ["custom_components/electric_fence"]
 fail_under = 95
 
 [tool.ruff]
+# Owner-approved generator, kept verbatim from .superpowers/phcc-build.
+extend-exclude = ["scripts/build_phcc.py"]
 
 [tool.ruff.lint]
 select = [

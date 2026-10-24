@@ -1,0 +1,27 @@
+name: Upstream watch
+
+# Daily list of merged Home Assistant Core PRs that touch code this integration
+# relies on (auth, http, websocket_api, config), as a comment on the
+# `upstream-watch` issue.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: List watched upstream PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/upstream_watch.sh

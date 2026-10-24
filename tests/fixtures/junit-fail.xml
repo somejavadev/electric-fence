@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="pytest" errors="1" failures="1" skipped="0" tests="3">
+    <testcase classname="tests.contracts.test_settings_contracts" name="test_admin_ws_commands_unchanged" time="0.01">
+      <failure message="AssertionError: electric_fence/list_events is not registered">traceback</failure>
+    </testcase>
+    <testcase classname="tests.safety.test_failopen" name="test_collector_never_raises" time="0.01"/>
+    <testcase classname="tests.test_hooks.TestHooks" name="test_wrapper_installed" time="0.01">
+      <error message="ImportError: cannot import name 'x'">traceback</error>
+    </testcase>
+  </testsuite>
+</testsuites>

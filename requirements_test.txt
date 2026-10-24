@@ -1,8 +1,18 @@
-pytest-homeassistant-custom-component==0.13.374
-home-assistant-frontend==20260930.5
+# Tooling and extra test requirements only.
+#
+# Deliberately NOT listed here:
+#   * homeassistant and pytest-homeassistant-custom-component. The PyPI plugin
+#     has no build for HA 2026.11 (0.13.374 pins 2026.10.3, which this
+#     repository's tests are not compatible with). CI generates the plugin from
+#     a Core checkout with scripts/ci_install_ha.sh <core-ref>, and locally the
+#     venv was built with the same generator.
+#   * home-assistant-frontend (taken from Core's requirements_all.txt by
+#     scripts/ci_install_ha.sh, so it always matches the Core under test).
+# Once 2026.11.0 and a matching plugin are on PyPI, this can go back to
+# `pytest-homeassistant-custom-component==<version>` and the script can retire.
 maxminddb==3.2.0
 pyotp==2.10.0
+mmdb-writer==0.2.7
 mypy
 ruff
 pre-commit
-mmdb-writer==0.2.7

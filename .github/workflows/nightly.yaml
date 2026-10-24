@@ -1,0 +1,59 @@
+name: Nightly upstream
+
+# Fail early when upstream Home Assistant changes affect the integration. Each
+# cell installs a different Core; beta and dev failures open (or update) an
+# `upstream-break` issue.
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    name: ${{ matrix.ha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        ha: [min, stable, beta, dev]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - name: Resolve the Core ref
+        id: ref
+        run: echo "ref=$(scripts/ci_resolve_ref.sh '${{ matrix.ha }}')" >> "$GITHUB_OUTPUT"
+      # Writes CORE_SHA and CORE_VERSION to the environment of later steps. The
+      # PyPI pytest-homeassistant-custom-component has no 2026.11 build, so the
+      # plugin is generated from this Core (see scripts/ci_install_ha.sh).
+      - name: Install Home Assistant ${{ steps.ref.outputs.ref }}
+        run: scripts/ci_install_ha.sh '${{ steps.ref.outputs.ref }}'
+      - name: Contract and safety tests
+        run: pytest tests/contracts tests/safety -m "not benchmark" --junitxml=junit-contracts.xml
+      - name: Full suite
+        if: ${{ !cancelled() }}
+        run: pytest -m "not benchmark" --junitxml=junit-full.xml
+      - name: Benchmark
+        if: ${{ !cancelled() }}
+        run: pytest -m benchmark -s --junitxml=junit-benchmark.xml
+      - name: Report the upstream break
+        if: ${{ failure() && (matrix.ha == 'beta' || matrix.ha == 'dev') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CELL: ${{ matrix.ha }}
+          CORE_REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          core="${CORE_VERSION:-$CORE_REF}"
+          [[ "$CELL" == dev ]] && core="${CORE_SHA:-$CORE_REF}"
+          scripts/report_upstream_break.sh "$CELL" "$core" junit-contracts.xml junit-full.xml junit-benchmark.xml
