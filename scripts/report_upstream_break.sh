@@ -57,7 +57,7 @@ PY
 )"
 
 MAX_LISTED=100
-MAX_BODY=59000 # GitHub rejects bodies over 65,536 characters
+MAX_BODY_BYTES=60000 # GitHub rejects bodies over 65,536 characters
 if [[ -n "$failing" ]]; then
   total="$(grep -c '' <<<"$failing")"
   failing_md="$(head -n "$MAX_LISTED" <<<"$failing" | sed 's/^/- `/; s/$/`/')"
@@ -79,15 +79,40 @@ Run: ${run_url}
 BODY
 )"
 
-if ((${#body} > MAX_BODY)); then
-  body="${body:0:MAX_BODY}"$'\n\n_(truncated: body too long)_'
-fi
+# The body goes to gh through a file (no argument-size limit) and is capped in
+# bytes at a UTF-8 character boundary, whatever the locale.
+body_file="$(mktemp)"
+trap 'rm -f "$body_file"' EXIT
+printf '%s' "$body" | python3 -I -c '
+import sys
+limit = int(sys.argv[1])
+data = sys.stdin.buffer.read()
+if len(data) > limit:
+    note = "\n\n_(truncated: body too long)_".encode()
+    data = data[: limit - len(note)].decode("utf-8", errors="ignore").encode() + note
+sys.stdout.buffer.write(data)
+' "$MAX_BODY_BYTES" >"$body_file"
 
 gh_() {
   if [[ "${DRY_RUN:-}" == "1" ]]; then
+    local shown=() file=""
+    while (($#)); do
+      if [[ "$1" == "--body-file" ]]; then
+        file="$2"
+        shown+=("$1" "<body>")
+        shift
+      else
+        shown+=("$1")
+      fi
+      shift
+    done
     printf 'DRY_RUN: gh'
-    printf ' %q' "$@"
+    printf ' %q' "${shown[@]}"
     printf '\n'
+    if [[ -n "$file" ]]; then
+      cat "$file"
+      echo
+    fi
   else
     gh "$@"
   fi
@@ -102,9 +127,9 @@ else
 fi
 
 if [[ -n "$existing" ]]; then
-  gh_ issue comment "$existing" --body "$body"
+  gh_ issue comment "$existing" --body-file "$body_file"
 else
   gh_ label create upstream-break --color B60205 \
     --description "Nightly CI failed against a newer Home Assistant" --force
-  gh_ issue create --title "$title" --label upstream-break --body "$body"
+  gh_ issue create --title "$title" --label upstream-break --body-file "$body_file"
 fi

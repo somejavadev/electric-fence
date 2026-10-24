@@ -65,6 +65,7 @@ while IFS=$'\x1f' read -r number title url; do
   hits=""
   while IFS= read -r file; do
     if matches "$file"; then
+      file="${file//\`/\'}"
       hits+="${hits:+, }\`${file}\`"
     fi
   done <<<"$files"
