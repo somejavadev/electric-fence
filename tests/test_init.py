@@ -2,18 +2,20 @@
 
 import asyncio
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.electric_fence.collectors.base import BaseCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
+from custom_components.electric_fence.geo.enrich import GeoEnricher
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, HomeAssistant
 
 
 async def test_setup_and_unload(
@@ -114,3 +116,32 @@ async def test_failed_setup_rolls_back(
     assert all(t.done() for t in tasks)
     with pytest.raises(RuntimeError, match="not open"):
         entry.runtime_data.store.stats()
+
+
+async def test_geo_wired_and_started(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, geo_start: AsyncMock
+) -> None:
+    """Setup uses the real enricher and starts the GeoIP updater."""
+    runtime = setup_entry.runtime_data
+    assert isinstance(runtime.enricher, GeoEnricher)
+    assert runtime.enricher.runtime is runtime
+    assert runtime.geo_updater is not None
+    assert runtime.geo_status is not None
+    assert runtime.geo_status.provider == "dbip_lite"
+    geo_start.assert_awaited_once()
+    assert await hass.config_entries.async_unload(setup_entry.entry_id)
+
+
+async def test_geo_start_waits_for_started(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, geo_start: AsyncMock
+) -> None:
+    """While Home Assistant is still starting, the updater starts on STARTED."""
+    hass.set_state(CoreState.starting)
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    geo_start.assert_not_awaited()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    geo_start.assert_awaited_once()

@@ -9,10 +9,9 @@ from .storage import FenceStore
 from .worker import Enricher, FenceWorker
 
 if TYPE_CHECKING:
-    # Modules added by Task 11 (geo) and Task 12 (notifier); those tasks drop
-    # the ignores (and correct the module paths if they differ).
-    from .geo.base import GeoStatus  # type: ignore[import-not-found]
-    from .geo.updater import GeoUpdater  # type: ignore[import-not-found]
+    # Module added by Task 12 (notifier); that task drops the ignore.
+    from .geo.base import GeoStatus
+    from .geo.updater import GeoUpdater
     from .notifier import Notifier  # type: ignore[import-not-found]
 
 

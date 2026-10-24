@@ -5,3 +5,4 @@ pyotp==2.10.0
 mypy
 ruff
 pre-commit
+mmdb-writer==0.2.7

@@ -12,6 +12,7 @@ from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HassJob, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .attribution import AttributionCollector
@@ -22,10 +23,13 @@ from .collectors.core_config import CoreConfigCollector
 from .collectors.login import LoginCollector
 from .collectors.users import UserCollector
 from .const import MIN_HA_VERSION
+from .geo.base import GeoStatus
+from .geo.enrich import GeoEnricher
+from .geo.updater import GeoUpdater
 from .runtime import Runtime
 from .settings import Settings
 from .storage import FenceStore
-from .worker import FenceWorker, NullEnricher
+from .worker import FenceWorker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,16 +75,22 @@ async def async_setup_entry(
         raise ConfigEntryError(message)
 
     store = await hass.async_add_executor_job(_open_store, _db_path(hass))
-    enricher = NullEnricher()
+    enricher = GeoEnricher(hass)
     worker = FenceWorker(hass, store, enricher)
+    settings = Settings.from_options(entry.options)
+    geo_status = GeoStatus(provider=settings.geoip_provider)
+    geo_updater = GeoUpdater(hass, settings, geo_status)
     runtime = Runtime(
-        settings=Settings.from_options(entry.options),
+        settings=settings,
         store=store,
         worker=worker,
         enricher=enricher,
         collectors=[],
         ha_version=HA_VERSION,
+        geo_status=geo_status,
+        geo_updater=geo_updater,
     )
+    enricher.runtime = runtime
     entry.runtime_data = runtime
     # Registered first, so it runs last (on_unload runs in reverse). HA runs
     # on_unload both on unload and when setup fails partway, so this is the
@@ -95,6 +105,15 @@ async def async_setup_entry(
         await hass.async_add_executor_job(store.close)
 
     entry.async_on_unload(hass.async_add_shutdown_job(HassJob(_async_shutdown)))
+
+    # Registered after the worker's shutdown job, so it stops first.
+    entry.async_on_unload(geo_updater.async_stop)
+
+    # Downloads wait for startup to finish, so they never slow it down.
+    async def _async_start_geo(_hass: HomeAssistant) -> None:
+        await geo_updater.async_start()
+
+    entry.async_on_unload(async_at_started(hass, _async_start_geo))
 
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)

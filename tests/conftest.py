@@ -1,6 +1,7 @@
 """Shared fixtures for Electric Fence tests."""
 
 from collections.abc import Iterator
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -10,6 +11,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
+from custom_components.electric_fence.geo.updater import GeoUpdater
 from custom_components.electric_fence.settings import Settings
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
@@ -55,3 +57,15 @@ def dummy(hass: HomeAssistant) -> Iterator[None]:
 async def config(hass: HomeAssistant) -> None:
     """Set up `config` (and `http`) before Electric Fence."""
     assert await async_setup_component(hass, "config", {})
+
+
+@pytest.fixture(autouse=True)
+def geo_start() -> Iterator[AsyncMock]:
+    """Never download a GeoIP database during setup; expose the start call."""
+    start = AsyncMock()
+
+    class NoStartUpdater(GeoUpdater):
+        async_start = start  # type: ignore[assignment]
+
+    with patch("custom_components.electric_fence.GeoUpdater", NoStartUpdater):
+        yield start
