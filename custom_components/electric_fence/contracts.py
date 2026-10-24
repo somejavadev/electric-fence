@@ -67,30 +67,33 @@ def _params_reason(label: str, fn: Any, expected: _Params, *, coro: bool) -> str
     return None
 
 
+# The flow manager methods wrapped by the login and attribution collectors.
+_FLOW_MANAGER_CHECKS: list[tuple[str, _Params, bool]] = [
+    (
+        "async_init",
+        [("handler", _POS, _EMPTY), ("context", _KW, None), ("data", _KW, None)],
+        True,
+    ),
+    ("async_configure", [("flow_id", _POS, _EMPTY), ("user_input", _POS, None)], True),
+    ("async_get", [("flow_id", _POS, _EMPTY)], False),
+]
+
+
+def _flow_manager_reason(label: str, mgr: Any) -> str | None:
+    """Check a flow manager has the methods the hooks wrap and call."""
+    for attr, expected, coro in _FLOW_MANAGER_CHECKS:
+        fn = getattr(mgr, attr, None)
+        if reason := _params_reason(f"{label}.{attr}", fn, expected, coro=coro):
+            return reason
+    return None
+
+
 def _check_login_flow_manager(hass: HomeAssistant) -> str | None:
     """`hass.auth.login_flow` has the methods the login collector wraps."""
     mgr = getattr(hass.auth, "login_flow", None)
     if mgr is None:
         return "hass.auth.login_flow is missing"
-    label = "hass.auth.login_flow"
-    checks: list[tuple[str, _Params, bool]] = [
-        (
-            "async_init",
-            [("handler", _POS, _EMPTY), ("context", _KW, None), ("data", _KW, None)],
-            True,
-        ),
-        (
-            "async_configure",
-            [("flow_id", _POS, _EMPTY), ("user_input", _POS, None)],
-            True,
-        ),
-        ("async_get", [("flow_id", _POS, _EMPTY)], False),
-    ]
-    for attr, expected, coro in checks:
-        fn = getattr(mgr, attr, None)
-        if reason := _params_reason(f"{label}.{attr}", fn, expected, coro=coro):
-            return reason
-    return None
+    return _flow_manager_reason("hass.auth.login_flow", mgr)
 
 
 def _check_refresh_token_create(hass: HomeAssistant) -> str | None:
@@ -136,3 +139,78 @@ register_contract(
         "wrong_login_notification", "auth_failures", _check_wrong_login_notification
     )
 )
+
+
+def _check_flow_managers(hass: HomeAssistant) -> str | None:
+    """Check the config, options and subentry flow managers H9 wraps."""
+    for attr in ("flow", "options", "subentries"):
+        label = f"hass.config_entries.{attr}"
+        mgr = getattr(hass.config_entries, attr, None)
+        if mgr is None:
+            return f"{label} is missing"
+        if reason := _flow_manager_reason(label, mgr):
+            return reason
+    return None
+
+
+def _check_config_entries_remove(hass: HomeAssistant) -> str | None:
+    """`hass.config_entries.async_remove(entry_id)` is a coroutine function."""
+    return _params_reason(
+        "hass.config_entries.async_remove",
+        getattr(hass.config_entries, "async_remove", None),
+        [("entry_id", _POS, _EMPTY)],
+        coro=True,
+    )
+
+
+def _check_request_handler_task(hass: HomeAssistant) -> str | None:
+    """Aiohttp runs each view in a `RequestHandler._handle_request` task (R10)."""
+    from aiohttp.web_protocol import RequestHandler  # noqa: PLC0415
+
+    from .attribution import HANDLE_REQUEST_QUALNAME  # noqa: PLC0415
+
+    fn = getattr(RequestHandler, "_handle_request", None)
+    if (
+        not inspect.iscoroutinefunction(fn)
+        or getattr(fn, "__qualname__", None) != HANDLE_REQUEST_QUALNAME
+    ):
+        return f"aiohttp {HANDLE_REQUEST_QUALNAME} is missing"
+    return None
+
+
+def _check_ws_connection(hass: HomeAssistant) -> str | None:
+    """`ActiveConnection` has the `user` and `remote` the WebSocket hook reads."""
+    from homeassistant.components.websocket_api import ActiveConnection  # noqa: PLC0415
+
+    for attr in ("user", "remote"):
+        if not hasattr(ActiveConnection, attr):
+            return f"ActiveConnection.{attr} is missing"
+    return None
+
+
+def _check_admin_ws_commands(hass: HomeAssistant) -> str | None:
+    """Once `config` is loaded, every admin command H9 wraps is registered."""
+    from homeassistant.components.websocket_api.const import (  # noqa: PLC0415
+        DOMAIN as WEBSOCKET_API_DOMAIN,
+    )
+
+    from . import attribution  # noqa: PLC0415
+
+    if "config" not in hass.config.components:
+        # Checked again when `config` loads.
+        return None
+    handlers = hass.data.get(WEBSOCKET_API_DOMAIN, {})
+    missing = [c for c in attribution.ADMIN_WS_COMMANDS if c not in handlers]
+    if missing:
+        return f"WebSocket commands not registered: {', '.join(missing)}"
+    return None
+
+
+for _name, _check in (
+    ("flow_managers", _check_flow_managers),
+    ("config_entries_remove", _check_config_entries_remove),
+    ("request_handler_task", _check_request_handler_task),
+    ("ws_connection", _check_ws_connection),
+    ("admin_ws_commands", _check_admin_ws_commands),
+):
+    register_contract(Contract(_name, "attribution", _check))

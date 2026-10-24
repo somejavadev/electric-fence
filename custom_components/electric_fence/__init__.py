@@ -13,6 +13,7 @@ from homeassistant.core import HassJob, HomeAssistant
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
+from .attribution import AttributionCollector
 from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
 from .collectors.login import LoginCollector
@@ -35,6 +36,7 @@ FIRST_PURGE_DELAY = timedelta(minutes=5)
 COLLECTOR_TYPES: list[type[BaseCollector]] = [
     LoginCollector,
     AuthFailureCollector,
+    AttributionCollector,
 ]
 
 
