@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 from pytest_homeassistant_custom_component.typing import (
+    ClientSessionGenerator,
     MockHAClientWebSocket,
     WebSocketGenerator,
 )
@@ -29,7 +30,7 @@ from custom_components.electric_fence.models import (
 from custom_components.electric_fence.storage import ChangeRow, LoginRow
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
-from tests.helpers import create_hass_user, flush_worker
+from tests.helpers import create_hass_user, flush_worker, login_flow
 
 LOGIN_KEYS = {f.name for f in fields(LoginRow)}
 CHANGE_KEYS = {f.name for f in fields(ChangeRow)}
@@ -313,6 +314,25 @@ async def test_logins_filters_and_paging(
         msg = await call(ws, "electric_fence/logins", **bad)
         assert not msg["success"], bad
         assert msg["error"]["code"] == "invalid_format", bad
+
+
+async def test_logins_user_filter_finds_failures(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """Filtering by user returns that user's failed logins too."""
+    alice = await create_hass_user(hass, "alice", "right")
+    await login_flow(await hass_client_no_auth(), "alice", "wrong")
+    await login_flow(await hass_client_no_auth(), "mallory", "wrong")
+    await flush_worker(hass)
+
+    res = await result(ws, "electric_fence/logins", user_id=alice.id)
+
+    assert [(i["username_typed"], i["reason"]) for i in res["items"]] == [
+        ("alice", "wrong_password")
+    ]
 
 
 async def test_logins_naive_time_is_utc(

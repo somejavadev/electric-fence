@@ -3,13 +3,22 @@
 Core's `process_wrong_login` creates or updates the `http-login` notification
 synchronously inside the failing request, so this listener sees the request
 through `current_request`. It runs on the request path: memory only, at most
-one queued record, everything inside `self.guard` (fail open). Login-flow
-failures are recorded by the login collector (H1), so they are skipped here.
+one queued record, everything inside `self.guard` (fail open).
 
-The dismiss of `http-login` (replace mode) is scheduled with `call_soon`, so
-Core's own create call finishes first. `ip-ban` is never touched.
+Login-flow failures are recorded by the login collector (H1), which marks the
+request (`REQUEST_RECORDED`). A login-flow request Core counts without that
+mark (a 4xx before any form, such as a bad client ID) is recorded here as
+`invalid_credentials` with no username. Token failures are recorded here.
+
+Replace mode dismisses `http-login` only when Electric Fence will notify about
+this same failure (spec §5.2: never left without a notification): it was
+recorded (by H1 with a notifying mark, or here), the login collector is
+installed for login-flow paths, and storage had no error in the last five
+minutes. The dismiss is scheduled with `call_soon`, so Core's own create call
+finishes first. `ip-ban` is never touched.
 """
 
+from collections.abc import Mapping
 from ipaddress import ip_address
 
 from aiohttp import hdrs, web
@@ -25,12 +34,13 @@ from homeassistant.util.network import is_local
 from ..models import LoginAttempt, LoginReason, LoginResult, Source, UserExists
 from ..privacy import sanitise_text
 from .base import BaseCollector
+from .login import REQUEST_RECORDED, LoginCollector
 
 # Core's `homeassistant.components.http.ban.NOTIFICATION_ID_LOGIN`, checked by
 # the `wrong_login_notification` contract.
 NOTIFICATION_ID_LOGIN = "http-login"
 
-# Login-flow failures belong to H1.
+# Login-flow failures belong to H1, unless it did not see the request.
 _LOGIN_FLOW_PATH = "/auth/login_flow"
 
 
@@ -65,11 +75,27 @@ class AuthFailureCollector(BaseCollector):
         request = current_request.get()
         if request is None:
             return
-        if not request.path.startswith(_LOGIN_FLOW_PATH):
-            self.guard.call(self._record, request)
+        if request.path.startswith(_LOGIN_FLOW_PATH):
+            mark = (
+                request.get(REQUEST_RECORDED) if isinstance(request, Mapping) else None
+            )
+            if mark is None:
+                recorded = self.guard.call(
+                    self._record, request, LoginReason.INVALID_CREDENTIALS
+                )
+            else:
+                recorded = mark is True
+            recorded = recorded and self._login_installed()
+        else:
+            recorded = self.guard.call(self._record, request, LoginReason.INVALID_TOKEN)
         # Read at event time, so a settings change applies live.
         settings = self.runtime.settings
-        if settings.ha_login_notification == "replace" and settings.notify_failed_login:
+        if (
+            recorded
+            and settings.ha_login_notification == "replace"
+            and settings.notify_failed_login
+            and self.runtime.worker.storage_healthy
+        ):
             self.hass.loop.call_soon(
                 self.guard.call,
                 persistent_notification.async_dismiss,
@@ -77,8 +103,14 @@ class AuthFailureCollector(BaseCollector):
                 NOTIFICATION_ID_LOGIN,
             )
 
-    def _record(self, request: web.Request) -> None:
-        """Queue an invalid-token attempt for the failing request."""
+    def _login_installed(self) -> bool:
+        return any(
+            isinstance(c, LoginCollector) and c.is_installed
+            for c in self.runtime.collectors
+        )
+
+    def _record(self, request: web.Request, reason: LoginReason) -> bool:
+        """Queue a failed attempt for the failing request; True if queued."""
         remote = request.remote
         source: Source | None = None
         if is_cloud_connection(self.hass):
@@ -90,11 +122,11 @@ class AuthFailureCollector(BaseCollector):
                 pass
             else:
                 source = Source.LOCAL if is_local(ip) else Source.REMOTE
-        self.runtime.worker.submit(
+        return self.runtime.worker.submit(
             LoginAttempt(
                 ts=dt_util.utcnow(),
                 result=LoginResult.FAILED,
-                reason=LoginReason.INVALID_TOKEN,
+                reason=reason,
                 username_typed=None,
                 user_exists=UserExists.UNKNOWN,
                 user_id=None,

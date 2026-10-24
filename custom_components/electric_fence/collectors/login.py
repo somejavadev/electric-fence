@@ -7,12 +7,18 @@ inside `self.guard` (fail open), is synchronous, reads memory only (never the
 request body), and queues at most one record. User resolution and storage
 happen later in the worker.
 
+When it queues an attempt for a request, it marks the request
+(`REQUEST_RECORDED`): True when Electric Fence will notify about it (a
+failure, or a success the worker will block), False otherwise. The auth
+failure collector (H2) reads the mark when Core counts the request as a
+failed login.
+
 Privacy: only `username` is read from the submitted step, never the password
 or code. Typed usernames are sanitised before they are kept, and never logged.
 """
 
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any
@@ -28,6 +34,7 @@ from homeassistant.helpers.network import is_cloud_connection
 from homeassistant.util import dt as dt_util
 from homeassistant.util.network import is_local
 
+from ..attribution import auth_users
 from ..hooks import wrap_async_method
 from ..models import LoginAttempt, LoginReason, LoginResult, Source, UserExists
 from ..privacy import sanitise_text
@@ -41,6 +48,9 @@ MAX_FLOWS = 1024
 
 # Core aborts the flow on the wrong code that reaches the module's retry limit.
 _ABORT_TOO_MANY_RETRY = "too_many_retry"
+
+# Request key: H1 queued an attempt for this request; True if we notify it.
+REQUEST_RECORDED = "electric_fence_recorded"
 
 type _IP = IPv4Address | IPv6Address
 type _Handler = tuple[str, str | None]
@@ -285,7 +295,7 @@ class LoginCollector(BaseCollector):
         else:
             source = Source.LOCAL if is_local(ip) else Source.REMOTE
 
-        self.runtime.worker.submit(
+        queued = self.runtime.worker.submit(
             LoginAttempt(
                 ts=dt_util.utcnow(),
                 result=outcome,
@@ -311,6 +321,27 @@ class LoginCollector(BaseCollector):
                 credentials=credentials,
             )
         )
+        if queued and isinstance(request, MutableMapping):
+            request[REQUEST_RECORDED] = (
+                outcome is LoginResult.FAILED or self._will_block(credentials, source)
+            )
+
+    def _will_block(
+        self, credentials: Credentials | None, source: Source | None
+    ) -> bool:
+        """Return True if the worker will store this success as blocked.
+
+        Memory only: the same rules as `FenceWorker._resolve_success`.
+        """
+        users = auth_users(self.hass)
+        if credentials is None or users is None:
+            return False
+        for user in users.values():
+            if any(c.id == credentials.id for c in user.credentials):
+                return not user.is_active or (
+                    user.local_only and source is not Source.LOCAL
+                )
+        return False
 
     def _remember(
         self, flow_id: Any, typed: str | None, module: str | None, *, failed: bool

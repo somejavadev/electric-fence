@@ -273,7 +273,11 @@ async def test_worker_survives_storage_failure(
     worker: FenceWorker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failing database drops the batch, counts it, and the worker carries on."""
+    """A failing database drops the batch, counts it, and the worker carries on.
+
+    Listeners still see the lost records (R44): events, the notification and
+    the live feed keep working during a storage outage.
+    """
     original = store.insert
     broken = True
 
@@ -292,14 +296,31 @@ async def test_worker_survives_storage_failure(
     assert worker.dropped == 1
     assert worker.last_storage_error == "OperationalError: database is locked"
     assert worker.last_storage_error_at is not None
-    assert listened == []
+    assert not worker.storage_healthy
+    assert [r.username_typed for r in listened if isinstance(r, LoginAttempt)] == [
+        "lost"
+    ]
 
     broken = False
     worker.submit(failed(user="kept"))
     await worker.async_flush()
     assert [r.username_typed for r in logins(store)] == ["kept"]
     assert worker.storage_errors == 1
-    assert len(listened) == 1
+    assert len(listened) == 2
+
+
+async def test_storage_healthy_five_minutes_after_last_error(
+    hass: HomeAssistant, store: FenceStore, freezer: FrozenDateTimeFactory
+) -> None:
+    """Storage counts as healthy again five minutes after its last error."""
+    w = FenceWorker(hass, store, NullEnricher())
+    assert w.storage_healthy
+    w.last_storage_error_at = dt_util.utcnow()
+    assert not w.storage_healthy
+    freezer.tick(timedelta(minutes=5))
+    assert not w.storage_healthy
+    freezer.tick(timedelta(seconds=1))
+    assert w.storage_healthy
 
 
 async def test_listener_exception_does_not_stop_worker(

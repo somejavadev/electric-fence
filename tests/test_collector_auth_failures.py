@@ -4,13 +4,17 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import sqlite3
 from typing import Any
 from unittest.mock import Mock, patch
 
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_capture_events,
+)
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.electric_fence import COLLECTOR_TYPES
@@ -18,7 +22,15 @@ from custom_components.electric_fence.collectors.auth_failures import (
     AuthFailureCollector,
 )
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
-from custom_components.electric_fence.contracts import CONTRACTS, check_contracts
+from custom_components.electric_fence.contracts import (
+    CONTRACTS,
+    Contract,
+    check_contracts,
+)
+from custom_components.electric_fence.notifier import (
+    EVENT_LOGIN_FAILED,
+    NOTIFICATION_ID,
+)
 from custom_components.electric_fence.settings import Settings
 from homeassistant.components import persistent_notification
 from homeassistant.components.http import ban
@@ -26,7 +38,14 @@ from homeassistant.components.persistent_notification import UpdateType
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import current_request
 from homeassistant.setup import async_setup_component
-from tests.helpers import create_hass_user, flush_worker, login_flow, store_rows
+from tests.helpers import (
+    CLIENT_ID,
+    REDIRECT_URI,
+    create_hass_user,
+    flush_worker,
+    login_flow,
+    store_rows,
+)
 
 type Client = TestClient[web.Request, web.Application]
 
@@ -307,6 +326,15 @@ async def test_listener_fails_open(
     collector = _collector(hass)
     with (
         patch.object(collector.runtime.worker, "submit", side_effect=RuntimeError),
+        patch.object(persistent_notification, "async_dismiss") as dismiss,
+        _request(),
+    ):
+        collector._on_update(**_login_update())
+        await hass.async_block_till_done()
+    # Nothing recorded, so nothing of ours replaces `http-login`.
+    dismiss.assert_not_called()
+    assert collector.guard.errors == 1
+    with (
         patch.object(
             persistent_notification, "async_dismiss", side_effect=RuntimeError
         ) as dismiss,
@@ -316,6 +344,158 @@ async def test_listener_fails_open(
         await hass.async_block_till_done()
     dismiss.assert_called_once_with(hass, "http-login")
     assert collector.guard.errors == 2
+
+
+def _break_login_collector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the login collector's contract fail, so it is not installed."""
+    monkeypatch.setitem(
+        CONTRACTS,
+        "login_flow_manager",
+        Contract("login_flow_manager", "login", lambda hass: "broken"),
+    )
+
+
+async def test_replace_mode_keeps_http_login_without_login_collector(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the login collector off, a login-flow `http-login` stays."""
+    _break_login_collector(monkeypatch)
+    await _setup(hass, monkeypatch)
+    await create_hass_user(hass, "alice", "right")
+    await login_flow(await hass_client_no_auth(), "alice", "wrong")
+    await hass.async_block_till_done()
+    assert "http-login" in _notifications(hass)
+
+
+async def test_replace_mode_keeps_http_login_while_storage_fails(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While storage fails, `http-login` stays; our event and notification fire."""
+    entry = await _setup(hass, monkeypatch)
+    runtime = entry.runtime_data
+    monkeypatch.setattr(
+        runtime.store, "insert", Mock(side_effect=sqlite3.OperationalError("full"))
+    )
+    events = async_capture_events(hass, EVENT_LOGIN_FAILED)
+    client = await hass_client_no_auth()
+    await _bad_bearer(client)
+    await flush_worker(hass)
+    assert runtime.worker.storage_errors == 1
+
+    await create_hass_user(hass, "alice", "right")
+    await login_flow(client, "alice", "wrong")
+    await _bad_bearer(client)
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+
+    notifications = _notifications(hass)
+    assert "http-login" in notifications
+    assert NOTIFICATION_ID in notifications
+    assert [e.data["reason"] for e in events] == [
+        "invalid_token",
+        "wrong_password",
+        "invalid_token",
+    ]
+    assert store_rows(hass) == []
+
+
+async def test_malformed_login_flow_post_recorded_and_dismissed(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A login-flow 4xx Core counts without a form is recorded here."""
+    await _setup(hass, monkeypatch)
+    client = await hass_client_no_auth()
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": "not a client id",
+            "handler": ["homeassistant", None],
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers={"User-Agent": UA},
+    )
+    assert resp.status == 400
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+    rows = store_rows(hass)
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.result, row.reason, row.username_typed, row.url) == (
+        "failed",
+        "invalid_credentials",
+        None,
+        "/auth/login_flow",
+    )
+    assert "http-login" not in _notifications(hass)
+
+
+async def test_replace_mode_dismisses_blocked_login_http_login(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocked login is ours to notify: one row, and `http-login` goes."""
+    await _setup(hass, monkeypatch)
+    await create_hass_user(hass, "owner", "pw")  # the owner can't be deactivated
+    alice = await create_hass_user(hass, "alice", "right")
+    await hass.auth.async_update_user(alice, is_active=False)
+    client = await hass_client_no_auth()
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": REDIRECT_URI,
+        },
+    )
+    step = await resp.json()
+    resp = await client.post(
+        f"/auth/login_flow/{step['flow_id']}",
+        json={"client_id": CLIENT_ID, "username": "alice", "password": "right"},
+    )
+    assert resp.status == 403
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+    assert [(r.result, r.reason) for r in store_rows(hass)] == [
+        ("blocked", "blocked_inactive_user")
+    ]
+    assert "http-login" not in _notifications(hass)
+
+
+async def test_login_flow_redirect_failure_keeps_http_login(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Right password, bad redirect URI: Core counts it, we notify nothing."""
+    await _setup(hass, monkeypatch)
+    await create_hass_user(hass, "alice", "right")
+    client = await hass_client_no_auth()
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": "http://evil.example/",
+        },
+    )
+    step = await resp.json()
+    resp = await client.post(
+        f"/auth/login_flow/{step['flow_id']}",
+        json={"client_id": CLIENT_ID, "username": "alice", "password": "right"},
+    )
+    assert resp.status == 403
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+    assert "http-login" in _notifications(hass)
+    # H1 holds its success for a token; nothing failed is recorded here.
+    assert [r for r in store_rows(hass) if r.result != "success"] == []
 
 
 async def test_unload_unsubscribes(

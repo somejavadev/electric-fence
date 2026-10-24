@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient
 import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
+    async_capture_events,
     ensure_auth_manager_loaded,
 )
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
@@ -25,6 +26,7 @@ from custom_components.electric_fence.models import (
     Source,
     UserExists,
 )
+from custom_components.electric_fence.notifier import EVENT_LOGIN_FAILED
 from custom_components.electric_fence.settings import Settings
 from homeassistant.auth import auth_manager_from_config
 from homeassistant.auth.models import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
@@ -128,6 +130,26 @@ async def test_failed_login_wrong_password_existing_user(
     assert row.username_typed == " Alice "
 
 
+async def test_failed_login_existing_user_has_user_id(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """A wrong password for a real user carries its user ID, row and event."""
+    alice = await create_hass_user(hass, "alice", "right")
+    events = async_capture_events(hass, EVENT_LOGIN_FAILED)
+    await login_flow(await hass_client_no_auth(), " Alice ", "wrong")
+    await login_flow(await hass_client_no_auth(), "nobody", "wrong")
+    await flush_worker(hass)
+    rows = {r.username_typed: r for r in store_rows(hass)}
+    assert rows[" Alice "].user_id == alice.id
+    assert rows["nobody"].user_id is None
+    assert {e.data["username"]: e.data["user_id"] for e in events} == {
+        " Alice ": alice.id,
+        "no•••": None,
+    }
+
+
 async def test_wrong_2fa_code_recorded(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
@@ -139,6 +161,7 @@ async def test_wrong_2fa_code_recorded(
     await hass.auth.async_enable_user_mfa(user, "totp", {})
     await _setup(hass, monkeypatch)
     client = await hass_client_no_auth()
+    events = async_capture_events(hass, EVENT_LOGIN_FAILED)
 
     step = await login_flow(client, "alice", "right")
     assert step["step_id"] == "mfa"
@@ -156,6 +179,8 @@ async def test_wrong_2fa_code_recorded(
     assert row.mfa_module == "totp"
     assert row.user_exists == "yes"
     assert row.username_typed == "alice"
+    assert row.user_id == user.id
+    assert [e.data["user_id"] for e in events] == [user.id]
 
 
 async def test_successful_login_with_mfa_records_module(
@@ -457,6 +482,7 @@ async def test_too_many_wrong_codes_last_attempt_recorded(
     # Identical failures within a second are merged into one row with a count.
     assert sum(r.count for r in rows) == 5
     assert {r.reason for r in rows} == {"wrong_2fa_code"}
+    assert {r.user_id for r in rows} == {user.id}
     assert collector._flows == {}
 
 
@@ -879,3 +905,23 @@ async def test_records_carry_enum_values(
     assert submitted[0].result is LoginResult.FAILED
     assert submitted[0].source is Source.LOCAL
     assert submitted[0].flow_id is not None
+
+
+async def test_will_block_mirrors_worker_rules(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The request mark predicts the worker's block rules, from memory."""
+    collector = _collector(hass)
+    alice = await create_hass_user(hass, "alice", "right")
+    credentials = alice.credentials[0]
+    assert not collector._will_block(None, Source.REMOTE)
+    assert not collector._will_block(Mock(id="unlinked"), Source.REMOTE)
+    assert not collector._will_block(credentials, Source.REMOTE)
+    await hass.auth.async_update_user(alice, local_only=True)
+    assert not collector._will_block(credentials, Source.LOCAL)
+    assert collector._will_block(credentials, Source.REMOTE)
+    with patch(
+        "custom_components.electric_fence.collectors.login.auth_users",
+        return_value=None,
+    ):
+        assert not collector._will_block(credentials, Source.REMOTE)

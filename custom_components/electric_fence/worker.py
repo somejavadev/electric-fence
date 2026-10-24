@@ -12,6 +12,7 @@ from homeassistant.auth.models import Credentials
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
+from .attribution import hass_user_id
 from .failopen import FailOpen
 from .models import (
     LoginAttempt,
@@ -20,6 +21,7 @@ from .models import (
     Record,
     SettingsChange,
     Source,
+    UserExists,
 )
 from .storage import FenceStore
 
@@ -27,6 +29,12 @@ _LOGGER = logging.getLogger(__name__)
 
 # Pause after an unexpected pipeline error, so a repeating error can't spin.
 _ERROR_BACKOFF = 0.1
+
+# Storage counts as healthy again this long after its last error.
+STORAGE_HEALTHY_AFTER = timedelta(minutes=5)
+
+# The provider whose usernames map to users (`hass_user_id`).
+_HASS_PROVIDER = "homeassistant"
 
 type RecordListener = Callable[[Record], None]
 
@@ -116,10 +124,11 @@ class FenceWorker:
         self._flush_waiters: list[asyncio.Future[None]] = []
         self._listeners: list[tuple[RecordListener, FailOpen]] = []
         self._enrich_guard = FailOpen("enricher")
-        self._resolve_guard = FailOpen("success resolution")
+        self._resolve_guard = FailOpen("user resolution")
         self._loop_guard = FailOpen("worker")
         self._storage_ok = True
-        # Records never stored: queue full, or lost in a failed write.
+        # Records never stored: queue full, or lost in a failed write (whose
+        # listeners still ran).
         self.dropped = 0
         self.storage_errors = 0
         self.last_storage_error: str | None = None
@@ -130,17 +139,25 @@ class FenceWorker:
         """Return the number of items waiting in the queue."""
         return self._queue.qsize()
 
+    @property
+    def storage_healthy(self) -> bool:
+        """Return False within STORAGE_HEALTHY_AFTER of a storage error."""
+        at = self.last_storage_error_at
+        return at is None or dt_util.utcnow() - at > STORAGE_HEALTHY_AFTER
+
     @callback
-    def submit(self, record: Record) -> None:
-        """Queue a record. O(1), never raises, never awaits."""
+    def submit(self, record: Record) -> bool:
+        """Queue a record; True if queued. O(1), never raises, never awaits."""
         try:
             if self._stopping:
                 self.dropped += 1
-                return
+                return False
             self._queue.put_nowait(record)
             self._wake.set()
         except asyncio.QueueFull:
             self.dropped += 1
+            return False
+        return True
 
     @callback
     def confirm_success(
@@ -158,7 +175,7 @@ class FenceWorker:
 
     @callback
     def add_listener(self, cb: RecordListener) -> CALLBACK_TYPE:
-        """Call `cb` for each record after it has been stored."""
+        """Call `cb` for each record after its write, even a failed one."""
         entry = (cb, FailOpen(f"listener {getattr(cb, '__name__', 'callback')}"))
         self._listeners.append(entry)
 
@@ -287,6 +304,7 @@ class FenceWorker:
                 item.credentials = None
                 await self._resolve_success(item, credentials)
             if item.result is LoginResult.FAILED:
+                self._resolve_guard.call(self._resolve_failure, item)
                 self._merge_or_add(item)
                 return
             if (
@@ -321,6 +339,18 @@ class FenceWorker:
             rec.result, rec.reason = LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE
         elif user.local_only and rec.source is not Source.LOCAL:
             rec.result, rec.reason = LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY
+
+    def _resolve_failure(self, rec: LoginAttempt) -> None:
+        """Set the user of a failure for an existing `homeassistant` username.
+
+        Memory only. Covers wrong passwords and wrong two-factor codes.
+        """
+        if (
+            rec.user_id is None
+            and rec.user_exists is UserExists.YES
+            and rec.provider == _HASS_PROVIDER
+        ):
+            rec.user_id = hass_user_id(self._hass, rec.username_typed)
 
     def _merge_or_add(self, rec: LoginAttempt) -> None:
         """Merge into a pending identical failure within the window, or add."""
@@ -401,10 +431,12 @@ class FenceWorker:
                     len(batch),
                     self.last_storage_error,
                 )
-            return
-        if not self._storage_ok:
-            self._storage_ok = True
-            _LOGGER.info("Electric Fence storage recovered")
+        else:
+            if not self._storage_ok:
+                self._storage_ok = True
+                _LOGGER.info("Electric Fence storage recovered")
+        # Even when the write failed: events, the notification, the sensor and
+        # the live feed must keep working during a storage outage.
         listeners = list(self._listeners)
         for rec in batch:
             for cb, guard in listeners:
