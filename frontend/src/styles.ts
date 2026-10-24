@@ -57,3 +57,50 @@ export const panelStyles = css`
     color: var(--success-color);
   }
 `;
+
+/** Shared by the Overview rows. */
+export const rowStyles = css`
+  :host {
+    display: block;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    padding: 6px 0;
+    font-size: 14px;
+  }
+  .time,
+  .ip,
+  .where {
+    color: var(--secondary-text-color);
+    font-size: 12px;
+  }
+  .main {
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+  bdi {
+    unicode-bidi: isolate;
+  }
+  .tag {
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    border: 1px solid var(--divider-color);
+    color: var(--secondary-text-color);
+  }
+  .tag.bad {
+    color: var(--error-color);
+    border-color: var(--error-color);
+  }
+  .tag.good {
+    color: var(--success-color);
+    border-color: var(--success-color);
+  }
+  .tag.warn {
+    color: var(--warning-color);
+    border-color: var(--warning-color);
+  }
+`;

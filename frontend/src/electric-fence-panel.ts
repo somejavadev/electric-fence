@@ -1,4 +1,6 @@
 import { LitElement, html } from "lit";
+import "./views/ef-overview.ts";
+import { navigate } from "./fire-event.ts";
 import { panelStyles } from "./styles.ts";
 import type { HomeAssistant, Route } from "./types.ts";
 
@@ -69,17 +71,17 @@ export class ElectricFencePanel extends LitElement {
   }
 
   private _renderTab(tab: TabId) {
-    // Placeholders until the tab bodies are built.
+    if (tab === "overview") {
+      return html`<ef-overview .hass=${this.hass}></ef-overview>`;
+    }
+    // Placeholders until the other tab bodies are built.
     const label = TABS.find((t) => t.id === tab)?.label ?? "";
     return html`<p class="placeholder">${label}</p>`;
   }
 
   private _select(tab: TabId): void {
     const prefix = this.route?.prefix ?? "/electric-fence";
-    history.pushState(null, "", `${prefix}/${tab}`);
-    window.dispatchEvent(
-      new CustomEvent("location-changed", { detail: { replace: false } }),
-    );
+    navigate(`${prefix}/${tab}`);
   }
 }
 

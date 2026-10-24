@@ -1,0 +1,144 @@
+import type {
+  ChangeItem,
+  HomeAssistant,
+  LoginItem,
+  Overview,
+  Status,
+  SubscribeEvent,
+} from "../src/types.ts";
+
+export function login(over: Partial<LoginItem> = {}): LoginItem {
+  return {
+    id: 1,
+    ts: "2026-10-24T09:15:02+00:00",
+    result: "failed",
+    reason: "wrong_password",
+    username_typed: "admin",
+    user_exists: "yes",
+    user_id: null,
+    provider: null,
+    ip: "203.0.113.7",
+    country_code: "RU",
+    hostname: null,
+    source: "remote",
+    client_id: "https://ha.example/",
+    client_name: "Firefox",
+    user_agent: null,
+    url: null,
+    mfa_module: null,
+    confirmed: false,
+    count: 1,
+    ...over,
+  };
+}
+
+export function change(over: Partial<ChangeItem> = {}): ChangeItem {
+  return {
+    id: 1,
+    ts: "2026-10-24T08:00:00+00:00",
+    kind: "config_entry",
+    action: "added",
+    target_id: "abc",
+    target_name: "Tuya",
+    details: {},
+    actor_user_id: "u1",
+    actor_name: "Anna",
+    actor_ip: "192.168.1.5",
+    ...over,
+  };
+}
+
+export function overview(over: Partial<Overview> = {}): Overview {
+  return {
+    failed_24h: { count: 17, items: [login()] },
+    changes_7d: { count: 3, items: [change()] },
+    recent_success: {
+      items: [login({ result: "success", reason: "ok", mfa_module: "totp" })],
+    },
+    posture: [
+      { id: "admins_without_mfa", level: "ok", params: { users: [] } },
+      {
+        id: "auto_ban_off",
+        level: "warning",
+        params: { threshold: null },
+      },
+    ],
+    ...over,
+  };
+}
+
+export const status = (attribution: string | null = null): Status => ({
+  version: "0.1.0",
+  settings: {
+    notify_failed_login: true,
+    ha_login_notification: "replace",
+    retention_days: 90,
+    geoip_provider: "dbip_lite",
+    maxmind_account_id: null,
+    reverse_dns: false,
+    maxmind_license_key_set: false,
+  },
+  geo: {
+    provider: "dbip_lite",
+    db_date: null,
+    last_error: null,
+    attribution,
+  },
+  collectors: [],
+  worker: { queued: 0, dropped: 0, storage_errors: 0 },
+});
+
+export interface FakeHass {
+  hass: HomeAssistant;
+  /** Replace what `electric_fence/overview` answers next. */
+  setOverview(value: Overview): void;
+  push(event: SubscribeEvent): void;
+  calls: string[];
+  unsubscribed: () => number;
+  subscriptions: () => number;
+}
+
+export function fakeHass(
+  first: Overview,
+  attribution: string | null = null,
+): FakeHass {
+  let current = first;
+  let callback: ((event: SubscribeEvent) => void) | undefined;
+  let unsubs = 0;
+  let subs = 0;
+  const calls: string[] = [];
+  const hass = {
+    locale: { language: "en" },
+    config: { time_zone: "UTC" },
+    language: "en",
+    connection: {
+      sendMessagePromise: (message: { type: string }) => {
+        calls.push(message.type);
+        if (message.type === "electric_fence/overview") {
+          return Promise.resolve(current);
+        }
+        if (message.type === "electric_fence/status") {
+          return Promise.resolve(status(attribution));
+        }
+        return Promise.reject(new Error(`unexpected ${message.type}`));
+      },
+      subscribeMessage: (cb: (event: SubscribeEvent) => void) => {
+        callback = cb;
+        subs += 1;
+        return Promise.resolve(() => {
+          unsubs += 1;
+        });
+      },
+    },
+  } as unknown as HomeAssistant;
+  return {
+    hass,
+    setOverview: (value) => {
+      current = value;
+    },
+    push: (event) => callback?.(event),
+    calls,
+    unsubscribed: () => unsubs,
+    subscriptions: () => subs,
+  };
+}

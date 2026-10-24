@@ -15,8 +15,14 @@ const markupSinks = [
   "writeln",
   "createContextualFragment",
   "parseFromString",
+  "setHTMLUnsafe",
+  "parseHTMLUnsafe",
 ];
 const sinkPattern = `/^(${markupSinks.join("|")})$/`;
+// Names banned when destructured or assigned, beyond the member bans above.
+const assignedSinkPattern = `/^(${[...markupSinks, "srcdoc"].join("|")})$/`;
+// Modules that must not even be loaded lazily.
+const bannedModulePattern = "/unsafe-html|unsafe-svg|lit-html|static-html/";
 
 export default tseslint.config(
   { ignores: ["node_modules/**"] },
@@ -61,6 +67,30 @@ export default tseslint.config(
         {
           selector: `MemberExpression[computed=true] > TemplateLiteral.property > TemplateElement[value.raw=${sinkPattern}]`,
           message: "Use a Lit template instead of writing markup.",
+        },
+        {
+          selector: `ImportExpression[source.value=${bannedModulePattern}]`,
+          message: "Never import markup-writing modules, not even lazily.",
+        },
+        {
+          selector: `ImportExpression[source.type=TemplateLiteral] > TemplateLiteral.source > TemplateElement[value.raw=${bannedModulePattern}]`,
+          message: "Never import markup-writing modules, not even lazily.",
+        },
+        {
+          selector: `AssignmentExpression > MemberExpression.left[property.name="srcdoc"]`,
+          message: "Do not assign srcdoc: it is markup.",
+        },
+        {
+          selector: `AssignmentExpression > MemberExpression.left[computed=true][property.value="srcdoc"]`,
+          message: "Do not assign srcdoc: it is markup.",
+        },
+        {
+          selector: `ObjectPattern > Property[key.name=${assignedSinkPattern}]`,
+          message: "Do not destructure markup sinks.",
+        },
+        {
+          selector: `ObjectPattern > Property[computed=true] > TemplateLiteral.key > TemplateElement[value.raw=${assignedSinkPattern}]`,
+          message: "Do not destructure markup sinks.",
         },
         {
           selector: `Literal[value=${sinkPattern}]`,
