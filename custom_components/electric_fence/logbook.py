@@ -64,7 +64,7 @@ def async_describe_events(
         if data.get("ip"):
             message += f" from {_text(data.get('ip'))}"
         if data.get("mfa_used"):
-            message += " with 2FA"
+            message += " with two-factor authentication"
         return {
             LOGBOOK_ENTRY_NAME: NAME,
             LOGBOOK_ENTRY_MESSAGE: message,

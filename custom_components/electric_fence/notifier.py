@@ -42,7 +42,7 @@ REASON_TEXT: dict[LoginReason, str] = {
     LoginReason.NO_SUCH_USER: "no such user",
     LoginReason.WRONG_PASSWORD: "wrong password",
     LoginReason.INVALID_CREDENTIALS: "invalid credentials",
-    LoginReason.WRONG_2FA_CODE: "wrong 2FA code",
+    LoginReason.WRONG_2FA_CODE: "wrong two-factor code",
     LoginReason.INVALID_TOKEN: "invalid token",
     LoginReason.BLOCKED_INACTIVE: "blocked: inactive user",
     LoginReason.BLOCKED_LOCAL_ONLY: "blocked: local only",

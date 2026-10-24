@@ -57,7 +57,16 @@ async def test_logbook_describes_events(hass: HomeAssistant) -> None:
         )
     )
     assert succeeded[LOGBOOK_ENTRY_MESSAGE] == (
-        "alice logged in from 192.168.1.5 with 2FA"
+        "alice logged in from 192.168.1.5 with two-factor authentication"
+    )
+    wrong_code = found["electric_fence_login_failed"](
+        Event(
+            "electric_fence_login_failed",
+            {"username": "alice", "reason": "wrong_2fa_code", "ip": "203.0.113.7"},
+        )
+    )
+    assert wrong_code[LOGBOOK_ENTRY_MESSAGE] == (
+        "failed login for alice (wrong two-factor code) from 203.0.113.7"
     )
 
     changed = found["electric_fence_settings_changed"](

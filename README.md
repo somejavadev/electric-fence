@@ -15,8 +15,8 @@ Screenshots are coming.
 - Records successful logins.
 - Records who added, changed, or removed users, integrations, and core
   settings.
-- Shows everything in an admin-only panel with an Overview, Logins, Audit, and
-  Users tab.
+- Shows everything in an admin-only panel with Overview, Activity, Users,
+  Audit, and Settings tabs.
 - Creates a persistent notification, fires events, and provides a sensor, so
   you can build your own automations.
 
@@ -62,7 +62,9 @@ Electric Fence fires these events on the Home Assistant event bus.
 
 A failed login event has these fields: `username`, `username_masked`,
 `user_exists`, `user_id`, `reason`, `ip`, `country`, `hostname`, `source`,
-`client`, and `count`.
+`client`, and `count`. `user_id` is set when the typed username belongs to an
+existing user (for example a wrong password or a wrong two-factor code), and
+is `null` otherwise.
 
 A successful login event has these fields: `user_id`, `username` (the user's
 name, never the typed text), `ip`, `country`, `source`, `client`, and
@@ -104,7 +106,8 @@ resolver your system is configured to use. You can turn it off in the settings.
   in the admin panel. Everywhere else (the notification, the events, the
   sensor, and the logbook) a username that doesn't belong to a known user is
   masked, for example `ad•••`.
-- **Network details.** IP addresses and user agents are stored.
+- **Network details.** IP addresses, host names (from reverse DNS), URLs, and
+  user agents are stored.
 - **Retention.** Records older than the retention period are deleted. The
   default is 90 days.
 - **Removal.** Removing the integration deletes `.storage/electric_fence.db`
@@ -137,12 +140,22 @@ is licensed under
 - Adding or removing a login (credentials) for an existing user isn't
   recorded.
 - The minimum supported version is Home Assistant 2026.11.0. The integration
-  refuses to load on betas and development builds below it.
+  refuses to load on betas and development builds below it, including
+  `2026.11.0.dev0`.
 - Supervisor features aren't available in the dev container.
 
 ## Development
 
 ### Try it
+
+> [!NOTE]
+> Until Home Assistant 2026.11.0 is released, the dev container installs a
+> development build (`2026.11.0.dev0`), which is below the minimum version, so
+> the integration refuses to load there (there is deliberately no bypass).
+> Once a 2026.11 tag exists, set `HA_REF` to it and rerun `scripts/setup` (see
+> [How Home Assistant is installed](#how-home-assistant-is-installed)). Until
+> then, use the test suite (`scripts/test`), which runs Electric Fence against
+> the development build with the version check pinned to 2026.11.0.
 
 1. Open the repository in the dev container (VS Code: **Dev Containers: Reopen
    in Container**). It installs everything with `scripts/setup`.

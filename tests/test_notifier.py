@@ -27,6 +27,7 @@ from custom_components.electric_fence.models import (
 from custom_components.electric_fence.notifier import (
     NOTIFICATION_ID,
     Notifier,
+    build_message,
     country_text,
 )
 from custom_components.electric_fence.settings import Settings
@@ -503,3 +504,18 @@ async def test_setup_registers_notifier_on_worker(
     assert "1 failed logins in the last 24 hours" in (notification(hass) or "")
     assert await hass.config_entries.async_unload(setup_entry.entry_id)
     assert not runtime.worker._listeners  # noqa: SLF001
+
+
+def test_wrong_code_reason_text() -> None:
+    """A wrong two-factor code reads as such (R43), never as "2FA"."""
+    message = build_message(
+        attempt(
+            reason=LoginReason.WRONG_2FA_CODE,
+            username_typed="alice",
+            user_exists=UserExists.YES,
+        ),
+        1,
+        None,
+    )
+    assert "(wrong two-factor code)" in message
+    assert "2FA" not in message
