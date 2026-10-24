@@ -101,14 +101,10 @@ class FailedLoginsSensor(SensorEntity):
             )
             seeded = []
         buffered, self._buffer = self._buffer, None
-        # A buffered record older than the query is already in the seed.
-        # One newer than the query may be too, and then counts twice: a
-        # rare overcount of a record, rather than losing one.
-        for ts, count in seeded:
+        for ts, count in merge_seed(
+            seeded, [(r.ts, r.count) for r in buffered], cutoff
+        ):
             self._add(ts, count)
-        for record in buffered:
-            if record.ts > cutoff:
-                self._add(record.ts, record.count)
         self._expire(dt_util.utcnow())
         self.async_on_remove(
             async_track_time_interval(
@@ -145,12 +141,26 @@ class FailedLoginsSensor(SensorEntity):
         self.async_write_ha_state()
 
 
-# Seeding edge cases, accepted: the listener buffers while the query runs and
-# a buffered record is dropped when its ts is at or before the query start
-# (it is taken to be in the seed). A record created before the query start
-# but stored after the query read the store is therefore lost; that window is
-# about one worker flush interval (1 s). A record with a ts after the query
-# start that was stored before the query read the store counts twice. Both
-# are rare, one record, and fade out of the 24 hour window.
+def merge_seed(
+    seeded: list[tuple[datetime, int]],
+    buffered: list[tuple[datetime, int]],
+    cutoff: datetime,
+) -> list[tuple[datetime, int]]:
+    """Return the seed plus the buffered records newer than the query, by time.
+
+    A buffered record at or before `cutoff` (when the query started) is taken
+    to be in the seed already.
+
+    Accepted edge cases: a record created before the cutoff but stored after
+    the query read the store is lost. The window is up to `enrich_timeout`
+    (5 s) plus the worker's `flush_interval` (1 s), about 6 s in the worst
+    case and longer under a backlog. A record newer than the cutoff that was
+    stored before the query read the store counts twice. Both involve one
+    record and fade out of the 24 hour window.
+    """
+    kept = [item for item in buffered if item[0] > cutoff]
+    return sorted([*seeded, *kept], key=lambda item: item[0])
+
+
 def _seed(store: FenceStore, since: datetime) -> list[tuple[datetime, int]]:
     return store.failed_buckets_since(since, include_blocked=True)

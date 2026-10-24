@@ -21,6 +21,7 @@ from custom_components.electric_fence.models import (
     Source,
     UserExists,
 )
+from custom_components.electric_fence.sensor import FailedLoginsSensor, merge_seed
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import FenceStore
 from homeassistant.core import HomeAssistant
@@ -225,12 +226,42 @@ async def test_sensor_seed_failure_starts_empty(
     assert hass.states.get(ENTITY_ID).state == "1"
 
 
-async def test_sensor_records_during_seed_are_kept(
+def test_merge_seed_drops_buffered_at_or_before_cutoff() -> None:
+    """A buffered record at or before the query start is already in the seed."""
+    cutoff = dt_util.utcnow()
+    seeded = [(cutoff - timedelta(hours=1), 2)]
+    buffered = [(cutoff - timedelta(seconds=1), 1), (cutoff, 4)]
+    assert merge_seed(seeded, buffered, cutoff) == seeded
+
+
+def test_merge_seed_keeps_buffered_after_cutoff_in_order() -> None:
+    """Newer buffered records are kept, and the result is ascending."""
+    cutoff = dt_util.utcnow()
+    early = (cutoff - timedelta(hours=2), 1)
+    late = (cutoff - timedelta(minutes=5), 2)
+    newer = (cutoff + timedelta(seconds=1), 3)
+    newest = (cutoff + timedelta(seconds=2), 4)
+    assert merge_seed([late, early], [newest, newer], cutoff) == [
+        early,
+        late,
+        newer,
+        newest,
+    ]
+
+
+async def test_sensor_buffers_records_while_seeding(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A record flushed and notified while the seed query runs is counted."""
+    """A record notified while the seed query runs is buffered, then merged."""
     real = FenceStore.failed_buckets_since
     holder: list[MockConfigEntry] = []
+    adds_during_seed: list[int] = []
+    adds: list[int] = []
+    real_add = FailedLoginsSensor._add  # noqa: SLF001
+
+    def spy_add(self: FailedLoginsSensor, ts: object, count: int) -> None:
+        adds.append(count)
+        real_add(self, ts, count)  # type: ignore[arg-type]
 
     async def store_one() -> None:
         worker = holder[0].runtime_data.worker
@@ -238,6 +269,7 @@ async def test_sensor_records_during_seed_are_kept(
         # Stored, and the listeners called, before this returns. (The entry
         # is still setting up, so `flush_worker` would not find it.)
         await worker.async_flush()
+        adds_during_seed.append(len(adds))
 
     def slow(self: FenceStore, *args: object, **kwargs: object) -> object:
         # Runs in the executor, so the seed is still pending while the record
@@ -246,6 +278,7 @@ async def test_sensor_records_during_seed_are_kept(
         asyncio.run_coroutine_threadsafe(store_one(), hass.loop).result(10)
         return result
 
+    monkeypatch.setattr(FailedLoginsSensor, "_add", spy_add)
     monkeypatch.setattr(FenceStore, "failed_buckets_since", slow)
     monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", "2026.11.0")
     entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
@@ -253,7 +286,9 @@ async def test_sensor_records_during_seed_are_kept(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    # Stored after the query read the store, so only the buffer has it.
+    # Nothing was counted while seeding: the record went to the buffer.
+    assert adds_during_seed == [0]
+    # It was stored after the query read the store, so the merge keeps it.
     assert hass.states.get(ENTITY_ID).state == "1"
 
 
