@@ -220,6 +220,7 @@ export class EfActivity extends LiveView {
     this._items = [];
     this._live = [];
     this._next = null;
+    this._loadingMore = false;
     this._phase = "loading";
   }
 
@@ -245,7 +246,10 @@ export class EfActivity extends LiveView {
         this._fail(err);
       }
     } finally {
-      this._loadingMore = false;
+      // A stale request must not clear the flag of a newer one.
+      if (generation === this._generation && request === this._requests) {
+        this._loadingMore = false;
+      }
     }
   }
 

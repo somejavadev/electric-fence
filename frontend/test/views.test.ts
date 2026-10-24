@@ -408,112 +408,137 @@ describe("audit details use the real backend shapes", () => {
   });
 });
 
-describe("stale cursors after a filter change", () => {
-  it("activity: no mixing in either resolve order", async () => {
-    for (const order of ["old-first", "new-first"]) {
-      document.body.replaceChildren();
-      const first = deferred<unknown>();
-      const second = deferred<unknown>();
-      const more = deferred<unknown>();
-      let n = 0;
-      const fake = fakeApi({
-        users: { items: [] },
-        logins: (m: Record<string, unknown>) => {
-          n += 1;
-          if (n === 1) {
-            return {
-              items: [login({ id: 9, username_typed: "old" })],
-              next_before_id: 9,
-            };
-          }
-          if (m["before_id"] !== undefined) {
-            return more.promise;
-          }
-          return first.promise;
-        },
+describe("a Load more in flight across a filter change", () => {
+  const cases = [
+    {
+      name: "activity",
+      tag: "ef-activity",
+      command: "logins",
+      row: "ef-login-row",
+      make: (id: number | null) => login({ id }),
+      filter: ["result", "blocked"],
+    },
+    {
+      name: "audit",
+      tag: "ef-audit",
+      command: "changes",
+      row: "ef-change-row",
+      make: (id: number | null) => change({ id }),
+      filter: ["kind", "user"],
+    },
+  ] as const;
+
+  const setup = async (c: (typeof cases)[number]) => {
+    const pending: ReturnType<typeof deferred<unknown>>[] = [];
+    let n = 0;
+    const fake = fakeApi({
+      users: { items: [] },
+      [c.command]: () => {
+        n += 1;
+        if (n === 1) {
+          return { items: [c.make(9)], next_before_id: 9 };
+        }
+        const d = deferred<unknown>();
+        pending.push(d);
+        return d.promise;
+      },
+    });
+    const el = await mount<HTMLElement & { updateComplete: Promise<unknown> }>(
+      c.tag,
+      fake,
+    );
+    return { fake, el, pending };
+  };
+
+  for (const c of cases) {
+    for (const order of ["stale-first", "refetch-first"] as const) {
+      it(`${c.name}: ${order} never mixes lists`, async () => {
+        const { fake, el, pending } = await setup(c);
+        loadMoreButton(el)?.click(); // A: Load more, in flight
+        await settle(el);
+        chooseOption(bar(el), c.filter[0], c.filter[1]);
+        await settle(el);
+        const [stale, refetch] = pending as [
+          ReturnType<typeof deferred<unknown>>,
+          ReturnType<typeof deferred<unknown>>,
+        ];
+        expect(fake.of(c.command).at(-2)).toHaveProperty("before_id", 9);
+        const staleAnswer = {
+          items: [c.make(1), c.make(2)],
+          next_before_id: 1,
+        };
+        const freshAnswer = { items: [c.make(4)], next_before_id: null };
+        if (order === "stale-first") {
+          stale.resolve(staleAnswer);
+          await settle(el);
+          refetch.resolve(freshAnswer);
+        } else {
+          refetch.resolve(freshAnswer);
+          await settle(el);
+          stale.resolve(staleAnswer);
+        }
+        await settle(el);
+        expect(rowCount(el, c.row)).toBe(1);
+        expect(loadMoreButton(el)).toBeUndefined();
       });
-      void second;
-      const el = await mount<EfActivity>("ef-activity", fake);
-      chooseOption(bar(el), "result", "blocked");
+    }
+
+    it(`${c.name}: the new list's Load more is not blocked, and a late stale one cannot unblock a newer one`, async () => {
+      const { fake, el, pending } = await setup(c);
+      loadMoreButton(el)?.click(); // A
       await settle(el);
-      // The refetch is pending: Load more must be gone or inert.
+      chooseOption(bar(el), c.filter[0], c.filter[1]);
+      await settle(el);
+      const [stale, refetch] = pending as [
+        ReturnType<typeof deferred<unknown>>,
+        ReturnType<typeof deferred<unknown>>,
+      ];
+      refetch.resolve({ items: [c.make(4)], next_before_id: 4 });
+      await settle(el);
+      const button = loadMoreButton(el);
+      expect(button?.disabled).toBe(false);
+      button?.click(); // B, on the new list
+      await settle(el);
+      const before = fake.of(c.command).length;
+      expect(fake.of(c.command).at(-1)).toHaveProperty("before_id", 4);
+      stale.resolve({ items: [c.make(1)], next_before_id: 1 });
+      await settle(el);
+      // B is still in flight: the button must stay disabled.
+      expect(loadMoreButton(el)?.disabled).toBe(true);
       loadMoreButton(el)?.click();
       await settle(el);
-      expect(fake.of("logins").filter((m) => "before_id" in m)).toHaveLength(0);
-      const fresh = {
-        items: [login({ id: 4, username_typed: "new" })],
-        next_before_id: null,
-      };
-      if (order === "old-first") {
-        more.resolve({ items: [login({ id: 1, username_typed: "stale" })] });
-        first.resolve(fresh);
-      } else {
-        first.resolve(fresh);
-        more.resolve({ items: [login({ id: 1, username_typed: "stale" })] });
-      }
-      await settle(el);
-      expect(rowCount(el, "ef-login-row")).toBe(1);
-      expect(loadMoreButton(el)).toBeUndefined();
+      expect(fake.of(c.command)).toHaveLength(before);
+      expect(rowCount(el, c.row)).toBe(1);
+    });
+  }
+});
+
+describe("live cap", () => {
+  it("renders 200 of 201 pushed items", async () => {
+    const fake = fakeApi({
+      users: { items: [] },
+      logins: { items: [], next_before_id: null },
+      changes: { items: [], next_before_id: null },
+    });
+    const a = await mount<EfActivity>("ef-activity", fake);
+    for (let i = 0; i < LIVE_CAP + 1; i += 1) {
+      fake.push({
+        type: "login",
+        item: login({ id: null, ts: new Date().toISOString() }),
+      });
     }
-  });
-
-  it("activity: an in-flight Load more is dropped by a filter change", async () => {
-    const more = deferred<unknown>();
-    const refetch = deferred<unknown>();
-    let n = 0;
-    const fake = fakeApi({
-      users: { items: [] },
-      logins: (m: Record<string, unknown>) => {
-        n += 1;
-        if (n === 1) {
-          return { items: [login({ id: 9 })], next_before_id: 9 };
-        }
-        return m["before_id"] !== undefined ? more.promise : refetch.promise;
-      },
-    });
-    const el = await mount<EfActivity>("ef-activity", fake);
-    loadMoreButton(el)?.click();
-    await settle(el);
-    chooseOption(bar(el), "result", "blocked");
-    await settle(el);
-    refetch.resolve({
-      items: [login({ id: 4 })],
-      next_before_id: null,
-    });
-    more.resolve({
-      items: [login({ id: 1 }), login({ id: 2 })],
-      next_before_id: 1,
-    });
-    await settle(el);
-    expect(rowCount(el, "ef-login-row")).toBe(1);
-    expect(loadMoreButton(el)).toBeUndefined();
-  });
-
-  it("audit: an in-flight Load more is dropped by a filter change", async () => {
-    const more = deferred<unknown>();
-    const refetch = deferred<unknown>();
-    let n = 0;
-    const fake = fakeApi({
-      users: { items: [] },
-      changes: (m: Record<string, unknown>) => {
-        n += 1;
-        if (n === 1) {
-          return { items: [change({ id: 9 })], next_before_id: 9 };
-        }
-        return m["before_id"] !== undefined ? more.promise : refetch.promise;
-      },
-    });
-    const el = await mount<EfAudit>("ef-audit", fake);
-    loadMoreButton(el)?.click();
-    await settle(el);
-    chooseOption(bar(el), "kind", "user");
-    await settle(el);
-    expect(loadMoreButton(el)).toBeUndefined();
-    refetch.resolve({ items: [change({ id: 4 })], next_before_id: null });
-    more.resolve({ items: [change({ id: 1 })], next_before_id: 1 });
-    await settle(el);
-    expect(rowCount(el, "ef-change-row")).toBe(1);
-    expect(loadMoreButton(el)).toBeUndefined();
+    await settle(a);
+    expect(rowCount(a, "ef-login-row")).toBe(200);
+    a.remove();
+    const u = await mount<EfAudit>("ef-audit", fake);
+    for (let i = 0; i < LIVE_CAP + 1; i += 1) {
+      fake.push({
+        type: "change",
+        item: change({ id: null, ts: new Date().toISOString() }),
+      });
+    }
+    await settle(u);
+    expect(rowCount(u, "ef-change-row")).toBe(200);
   });
 });
 
