@@ -267,3 +267,6 @@ custom_components/electric_fence/frontend_dist/
 .coverage
 htmlcov/
 /electric-fence/
+# Dev container configuration: keep only the checked-in configuration.yaml
+.devcontainer/config/*
+!.devcontainer/config/configuration.yaml

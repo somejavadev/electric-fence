@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run Home Assistant with the development configuration.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# The panel's static path is registered once, with the folder as it exists at
+# startup, so the build has to be there before Home Assistant starts.
+if [[ ! -d custom_components/electric_fence/frontend_dist ]]; then
+  echo "frontend_dist is missing; building the panel first."
+  (cd frontend && npm ci && npm run build)
+fi
+
+exec hass -c .devcontainer/config --debug

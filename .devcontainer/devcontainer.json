@@ -1,0 +1,32 @@
+{
+  "name": "Electric Fence",
+  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "forwardPorts": [8123],
+  "portsAttributes": {
+    "8123": {
+      "label": "Home Assistant"
+    }
+  },
+  "postCreateCommand": "scripts/setup",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "ms-python.mypy-type-checker",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "runem.lit-plugin"
+      ],
+      "settings": {
+        "python.pythonPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true
+      }
+    }
+  }
+}

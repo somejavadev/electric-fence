@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run the Python and frontend tests.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+pytest "$@"
+(cd frontend && npm test)

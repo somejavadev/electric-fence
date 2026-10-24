@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Set up the development environment: Home Assistant, the test tooling, the
+# panel build, and the symlink that makes the integration visible to Home
+# Assistant in .devcontainer/config.
+#
+# HA_REF picks the Home Assistant Core ref (a tag or branch). The default is
+# `dev` until 2026.11.0 is released. DRY_RUN=1 prints the Home Assistant
+# install commands without cloning or installing.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Installs Home Assistant, the generated test plugin, and requirements_test.txt.
+# There is no PyPI build of the test plugin for 2026.11 yet.
+scripts/ci_install_ha.sh "${HA_REF:-dev}"
+
+python -m pip --disable-pip-version-check install -r requirements_test.txt
+
+# The panel must be built before Home Assistant starts: the static path is
+# registered once, with the folder as it exists at startup.
+(cd frontend && npm ci && npm run build)
+
+mkdir -p .devcontainer/config/custom_components
+ln -sfn ../../../custom_components/electric_fence .devcontainer/config/custom_components/electric_fence

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run every linter and the type checker.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+ruff check .
+ruff format --check .
+mypy custom_components
+(cd frontend && npm run lint)

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Rebuild the panel when its files change. Reload the browser to see changes.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../frontend"
+exec npm run watch

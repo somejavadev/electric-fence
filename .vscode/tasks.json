@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Home Assistant",
+      "type": "shell",
+      "command": "scripts/develop",
+      "problemMatcher": []
+    },
+    {
+      "label": "Watch the panel",
+      "type": "shell",
+      "command": "scripts/frontend-watch",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run the tests",
+      "type": "shell",
+      "command": "scripts/test",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint",
+      "type": "shell",
+      "command": "scripts/lint",
+      "problemMatcher": []
+    }
+  ]
+}
