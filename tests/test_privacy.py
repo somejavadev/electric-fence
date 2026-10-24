@@ -4,6 +4,7 @@ import pytest
 
 from custom_components.electric_fence.models import UserExists
 from custom_components.electric_fence.privacy import (
+    inline_text,
     mask_username,
     md_code,
     sanitise_text,
@@ -41,3 +42,12 @@ def test_sanitise_text_none_and_controls():
 def test_md_code_cannot_break_out():
     """Check md code cannot break out."""
     assert md_code("`](javascript:x)\n**b**") == "`ˋ](javascript:x) **b**`"
+
+
+def test_inline_text_single_line() -> None:
+    """Controls are stripped and Unicode line breaks become spaces."""
+    assert inline_text("a\x00b\nc\rd\x7fe") == "abcde"
+    assert inline_text("a b c\u0085d") == "a b c d"
+    assert inline_text("x" * 300) == "x" * 256
+    assert inline_text("x" * 10, limit=3) == "xxx"
+    assert inline_text("") == ""

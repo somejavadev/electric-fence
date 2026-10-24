@@ -406,15 +406,43 @@ class FenceStore:
             rows = self._conn().execute(sql, params).fetchall()
         return [_change_row(r) for r in rows]
 
-    def count_failed_since(self, since: datetime) -> int:
-        """Return the number of failed attempts since a time (summing merged rows)."""
+    def count_failed_since(
+        self, since: datetime, *, include_blocked: bool = False
+    ) -> int:
+        """Return the number of failed attempts since a time (summing merged rows).
+
+        With `include_blocked`, blocked attempts count too.
+        """
+        results = [str(LoginResult.FAILED)]
+        if include_blocked:
+            results.append(str(LoginResult.BLOCKED))
+        marks = ",".join("?" * len(results))
+        with self._lock:
+            row = (
+                self._conn()
+                .execute(
+                    "SELECT COALESCE(SUM(count), 0) FROM login_attempts "  # noqa: S608
+                    f"WHERE result IN ({marks}) AND ts >= ?",
+                    (*results, _to_text(since)),
+                )
+                .fetchone()
+            )
+        return int(row[0])
+
+    def count_token_failures_since(self, ip: str, since: datetime) -> int:
+        """Return the invalid token attempts from an IP since a time."""
         with self._lock:
             row = (
                 self._conn()
                 .execute(
                     "SELECT COALESCE(SUM(count), 0) FROM login_attempts "
-                    "WHERE result = ? AND ts >= ?",
-                    (str(LoginResult.FAILED), _to_text(since)),
+                    "WHERE result = ? AND reason = ? AND ip = ? AND ts >= ?",
+                    (
+                        str(LoginResult.FAILED),
+                        str(LoginReason.INVALID_TOKEN),
+                        ip,
+                        _to_text(since),
+                    ),
                 )
                 .fetchone()
             )

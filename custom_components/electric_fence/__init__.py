@@ -26,6 +26,7 @@ from .const import MIN_HA_VERSION
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
+from .notifier import Notifier
 from .runtime import Runtime
 from .settings import Settings
 from .storage import FenceStore
@@ -114,6 +115,11 @@ async def async_setup_entry(
         await geo_updater.async_start()
 
     entry.async_on_unload(async_at_started(hass, _async_start_geo))
+
+    notifier = Notifier(hass, runtime)
+    runtime.notifier = notifier
+    entry.async_on_unload(notifier.async_stop)
+    entry.async_on_unload(worker.add_listener(notifier.on_record))
 
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)

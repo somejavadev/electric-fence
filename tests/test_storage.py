@@ -436,3 +436,29 @@ def test_last_success_ignores_unconfirmed(store: FenceStore) -> None:
     result = store.last_success_per_user()
     assert set(result) == {"u1"}
     assert result["u1"].ip == "1.1.1.1"
+
+
+def test_count_includes_blocked_only_on_request(tmp_path: Path) -> None:
+    """`count_failed_since` counts blocked rows only with `include_blocked`."""
+    store = FenceStore(tmp_path / "c.db")
+    store.open()
+    try:
+        token = {"reason": LoginReason.INVALID_TOKEN}
+        store.insert(
+            [
+                login(NOW, count=2),
+                replace(
+                    login(NOW, result=LoginResult.BLOCKED, count=3),
+                    reason=LoginReason.BLOCKED_INACTIVE,
+                ),
+                replace(login(NOW, count=4), **token),
+                replace(login(NOW - timedelta(hours=2), count=9), **token),
+            ]
+        )
+        since = NOW - timedelta(minutes=1)
+        assert store.count_failed_since(since) == 6
+        assert store.count_failed_since(since, include_blocked=True) == 9
+        assert store.count_token_failures_since("203.0.113.7", since) == 4
+        assert store.count_token_failures_since("1.1.1.1", since) == 0
+    finally:
+        store.close()

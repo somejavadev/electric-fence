@@ -8,6 +8,8 @@ MAX_TEXT = 256
 REDACTED = "**REDACTED**"
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# Line breaks that Markdown renderers and logs may honour, beyond C0 controls.
+_LINE_BREAKS = str.maketrans({"\u2028": " ", "\u2029": " ", "\u0085": " "})
 
 
 def sanitise_text(value: str | None, limit: int = MAX_TEXT) -> str | None:
@@ -15,6 +17,15 @@ def sanitise_text(value: str | None, limit: int = MAX_TEXT) -> str | None:
     if value is None:
         return None
     return _CONTROL_RE.sub("", value)[:limit]
+
+
+def inline_text(value: str, limit: int = MAX_TEXT) -> str:
+    """Return `value` as a single line, safe to mask or put in `md_code`.
+
+    Strips C0 controls and DEL, truncates, and turns U+2028, U+2029 and U+0085
+    into spaces.
+    """
+    return (sanitise_text(value, limit) or "").translate(_LINE_BREAKS)
 
 
 def mask_username(value: str | None, exists: UserExists) -> tuple[str | None, bool]:

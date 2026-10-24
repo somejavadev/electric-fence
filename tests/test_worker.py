@@ -28,6 +28,7 @@ from custom_components.electric_fence.models import (
     Source,
     UserExists,
 )
+from custom_components.electric_fence.notifier import Notifier
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import (
     ChangeFilter,
@@ -469,7 +470,7 @@ async def test_setup_wires_runtime(
     """Setup builds the runtime and a running worker writing to the database."""
     runtime = setup_entry.runtime_data
     assert [type(c) for c in runtime.collectors] == COLLECTOR_TYPES
-    assert runtime.notifier is None
+    assert isinstance(runtime.notifier, Notifier)
     runtime.worker.submit(failed())
     await flush_worker(hass)
     rows = await hass.async_add_executor_job(logins, runtime.store)
