@@ -4,14 +4,24 @@ import inspect
 from typing import Any
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_capture_events,
+    async_fire_time_changed,
+)
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components import electric_fence as fence
 from custom_components.electric_fence import attribution
 from custom_components.electric_fence.attribution import ADMIN_WS_COMMANDS
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
+from custom_components.electric_fence.notifier import (
+    EVENT_LOGIN_FAILED,
+    NOTIFICATION_ID,
+)
+from custom_components.electric_fence.sensor import WRITE_INTERVAL, FailedLoginsSensor
 from custom_components.electric_fence.settings import Settings
+from homeassistant.components import persistent_notification
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_API_DOMAIN
 from homeassistant.config_entries import ConfigEntryState
@@ -19,6 +29,7 @@ from homeassistant.const import EVENT_COMPONENT_LOADED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER
 from homeassistant.setup import ATTR_COMPONENT
+from homeassistant.util import dt as dt_util
 from tests.helpers import (
     change_rows,
     create_hass_user,
@@ -196,6 +207,9 @@ async def test_reload_without_restart_records_again(
     }
     await hass.config.async_update(location_name="Reloaded")
     await flush_worker(hass)
+    # The sensor writes at most once a second; let its trailing write run.
+    async_fire_time_changed(hass, dt_util.utcnow() + WRITE_INTERVAL)
+    await hass.async_block_till_done()
 
     rows = store_rows(hass)
     assert [(r.username_typed, r.count) for r in rows] == [("after", 1), ("before", 1)]
@@ -232,3 +246,39 @@ async def test_unload_restores_ws_handlers_wrapped_after_config_loads(
 
     for command, original in core.items():
         assert handlers[command] is original, command
+
+
+async def test_unload_flushes_records_to_listeners(
+    hass: HomeAssistant,
+    config: None,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Records submitted just before unload still fire events and notify."""
+    await create_hass_user(hass, "alice", "right")
+    entry = await _setup(hass, monkeypatch)
+    events = async_capture_events(hass, EVENT_LOGIN_FAILED)
+    counted: list[int] = []
+    real_add = FailedLoginsSensor._add  # noqa: SLF001
+
+    def spy_add(self: FailedLoginsSensor, ts: Any, count: int) -> None:
+        counted.append(count)
+        real_add(self, ts, count)
+
+    monkeypatch.setattr(FailedLoginsSensor, "_add", spy_add)
+    assert (await login_flow(await hass_client_no_auth(), "last", "x"))["errors"] == {
+        "base": "invalid_auth"
+    }
+    # Still pending in the worker (it writes once a second).
+    assert events == []
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert [e.data["username"] for e in events] == ["la•••"]
+    notifications = persistent_notification._async_get_or_create_notifications(  # noqa: SLF001
+        hass
+    )
+    assert NOTIFICATION_ID in notifications
+    # The sensor counted it (its throttled write is moot: it is unavailable).
+    assert counted == [1]

@@ -1,6 +1,8 @@
 """Tests for Electric Fence setup and unload."""
 
 import asyncio
+from pathlib import Path
+import sqlite3
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -12,10 +14,12 @@ from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.geo.enrich import GeoEnricher
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
+from custom_components.electric_fence.storage import SCHEMA_VERSION
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 
 
 async def test_setup_and_unload(
@@ -145,3 +149,41 @@ async def test_geo_start_waits_for_started(
     hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
     await hass.async_block_till_done()
     geo_start.assert_awaited_once()
+
+
+async def test_newer_database_refused_with_repair_issue(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database from a newer version stops setup and raises a repair issue."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    path = Path(hass.config.path(".storage", "electric_fence.db"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    con.close()
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.reason is not None
+    assert "newer version of Electric Fence" in entry.reason
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "schema_too_new")
+    assert issue is not None
+    assert issue.translation_key == "schema_too_new"
+    assert issue.translation_placeholders == {
+        "version": str(SCHEMA_VERSION + 1),
+        "supported": str(SCHEMA_VERSION),
+    }
+    con = sqlite3.connect(path)
+    try:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
+    finally:
+        con.close()
+
+    # Once the database is usable again, setup works and clears the issue.
+    path.unlink()
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    assert entry.state is ConfigEntryState.LOADED
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "schema_too_new") is None

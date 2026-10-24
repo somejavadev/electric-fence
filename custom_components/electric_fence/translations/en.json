@@ -25,6 +25,10 @@
     "storage_error": {
       "title": "Electric Fence cannot write to its database",
       "description": "Electric Fence could not write to its database: {error}. Logins are not affected, but new records are being dropped until this is fixed."
+    },
+    "schema_too_new": {
+      "title": "Electric Fence database is from a newer version",
+      "description": "The Electric Fence database uses schema version {version}, but this version of Electric Fence supports up to {supported}. It was probably written by a newer Electric Fence. Electric Fence did not load and left the database unchanged. Update Electric Fence to that newer version. Logins are not affected."
     }
   },
   "options": {

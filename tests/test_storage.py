@@ -23,6 +23,7 @@ from custom_components.electric_fence.storage import (
     ChangeFilter,
     FenceStore,
     LoginFilter,
+    StoreSchemaTooNewError,
 )
 
 NOW = datetime(2026, 10, 24, 12, 0, 0, tzinfo=UTC)
@@ -485,3 +486,27 @@ def test_failed_buckets_since_lists_rows_ascending(store: FenceStore) -> None:
         (NOW - timedelta(hours=2), 2),
         (NOW, 3),
     ]
+
+
+def test_newer_schema_refused_and_left_alone(tmp_path: Path) -> None:
+    """A database from a newer Electric Fence is refused and never rewritten."""
+    path = tmp_path / "fence.db"
+    con = sqlite3.connect(path)
+    con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    con.execute("CREATE TABLE future (x INTEGER)")
+    con.close()
+
+    store = FenceStore(path)
+    with pytest.raises(StoreSchemaTooNewError) as err:
+        store.open()
+    assert err.value.version == SCHEMA_VERSION + 1
+    with pytest.raises(RuntimeError, match="not open"):
+        store.stats()
+
+    con = sqlite3.connect(path)
+    try:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
+        assert tables == {"future"}
+    finally:
+        con.close()

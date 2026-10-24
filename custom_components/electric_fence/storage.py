@@ -93,6 +93,22 @@ _CHANGE_COLUMNS = (
 )
 
 
+class StoreSchemaTooNewError(Exception):
+    """The database was written by a newer Electric Fence."""
+
+    def __init__(self, version: int) -> None:
+        """Initialise with the database's schema version."""
+        super().__init__(f"database schema {version} is newer than {SCHEMA_VERSION}")
+        self.version = version
+
+
+def _check_version(db: sqlite3.Connection) -> None:
+    """Raise StoreSchemaTooNewError for a schema newer than SCHEMA_VERSION."""
+    version = int(db.execute("PRAGMA user_version").fetchone()[0])
+    if version > SCHEMA_VERSION:
+        raise StoreSchemaTooNewError(version)
+
+
 def _to_text(ts: datetime) -> str:
     """Return a uniform UTC text form: fixed width, always with microseconds."""
     if ts.tzinfo is None:
@@ -284,7 +300,11 @@ class FenceStore:
         return self._db
 
     def open(self) -> None:
-        """Open the database and create the schema."""
+        """Open the database and create the schema.
+
+        Raises StoreSchemaTooNewError, before changing anything, when the
+        database has a newer schema version than this code knows.
+        """
         with self._lock:
             if self._db is not None:
                 return
@@ -293,6 +313,7 @@ class FenceStore:
                 self._path, check_same_thread=False, isolation_level=None
             )
             try:
+                _check_version(db)
                 db.execute("PRAGMA journal_mode = WAL")
                 db.executescript(_SCHEMA)
                 db.execute(

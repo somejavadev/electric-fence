@@ -1,5 +1,6 @@
 """Tests for the notifier: events and the persistent notification."""
 
+import asyncio
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
@@ -12,6 +13,7 @@ from pytest_homeassistant_custom_component.common import (
     async_capture_events,
 )
 
+from custom_components.electric_fence import notifier as notifier_module
 from custom_components.electric_fence.models import (
     ChangeAction,
     ChangeKind,
@@ -428,16 +430,35 @@ async def test_burst_is_coalesced_to_the_newest(
     assert "30 failed logins" in message
 
 
-async def test_stop_cancels_pending_update(
+async def test_stop_finishes_pending_update(
     hass: HomeAssistant, notifier: Notifier, store: FenceStore
 ) -> None:
-    """Stopping drops a pending update."""
+    """Stopping lets a pending update finish: the last record still notifies."""
     store.insert([attempt()])
     notifier.on_record(attempt())
-    notifier.async_stop()
+    await notifier.async_stop()
+    assert notification(hass) is not None
+    await notifier.async_stop()
+
+
+async def test_stop_cancels_hanging_update(
+    hass: HomeAssistant, notifier: Notifier, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An update that hangs past the stop timeout is cancelled."""
+    monkeypatch.setattr(notifier_module, "STOP_TIMEOUT", 0.01)
+
+    async def hang(record: LoginAttempt) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(notifier, "_async_update", hang)
+    notifier.on_record(attempt())
+    task = notifier._task  # noqa: SLF001
+    assert task is not None
+    await notifier.async_stop()
     await hass.async_block_till_done()
+    assert task.cancelled()
+    assert notifier._task is None  # noqa: SLF001
     assert notification(hass) is None
-    notifier.async_stop()
 
 
 async def test_raw_typed_username_not_in_event_or_notification(

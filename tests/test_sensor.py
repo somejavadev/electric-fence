@@ -21,10 +21,15 @@ from custom_components.electric_fence.models import (
     Source,
     UserExists,
 )
-from custom_components.electric_fence.sensor import FailedLoginsSensor, merge_seed
+from custom_components.electric_fence.sensor import (
+    WRITE_INTERVAL,
+    FailedLoginsSensor,
+    merge_seed,
+)
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import FenceStore
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from tests.helpers import flush_worker
@@ -53,11 +58,77 @@ def attempt(**kw: object) -> LoginAttempt:
 
 
 async def submit(hass: HomeAssistant, entry: MockConfigEntry, *records: object) -> None:
-    """Submit records to the worker, and wait until they are stored."""
+    """Submit records, wait until they are stored and the state is written."""
     for record in records:
         entry.runtime_data.worker.submit(record)
     await flush_worker(hass)
     await hass.async_block_till_done()
+    # The sensor writes at most once a second; let a trailing write run.
+    async_fire_time_changed(hass, dt_util.utcnow() + WRITE_INTERVAL)
+    await hass.async_block_till_done()
+
+
+def _writes(hass: HomeAssistant) -> list[str]:
+    """Collect the sensor's written states."""
+    writes: list[str] = []
+
+    @callback
+    def collect(event: Event[EventStateChangedData]) -> None:
+        if event.data["entity_id"] == ENTITY_ID and event.data["new_state"]:
+            writes.append(event.data["new_state"].state)
+
+    hass.bus.async_listen(EVENT_STATE_CHANGED, collect)
+    return writes
+
+
+async def test_sensor_writes_at_most_once_a_second(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """A burst of records is one trailing write with the final value."""
+    writes = _writes(hass)
+    worker = setup_entry.runtime_data.worker
+    for i in range(5):
+        worker.submit(attempt(ip=f"203.0.113.{i}"))
+        await flush_worker(hass)
+    await hass.async_block_till_done()
+    # Set up less than a second ago: the write waits.
+    assert writes == []
+
+    freezer.tick(WRITE_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert writes == ["5"]
+
+    # After a quiet second, the next record is written at once.
+    freezer.tick(timedelta(seconds=2))
+    worker.submit(attempt())
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+    assert writes == ["5", "6"]
+    worker.submit(attempt(ip="198.51.100.1"))
+    await flush_worker(hass)
+    await hass.async_block_till_done()
+    assert writes == ["5", "6"]
+
+    # Then the trailing write, with the final value.
+    freezer.tick(WRITE_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert writes == ["5", "6", "7"]
+
+
+async def test_sensor_unload_cancels_pending_write(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """A write still pending at unload is dropped, never run on a removed entity."""
+    writes = _writes(hass)
+    setup_entry.runtime_data.worker.submit(attempt())
+    await flush_worker(hass)
+    assert await hass.config_entries.async_unload(setup_entry.entry_id)
+    freezer.tick(WRITE_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert writes == ["unavailable"]
 
 
 async def test_sensor_counts_failures_in_24h(

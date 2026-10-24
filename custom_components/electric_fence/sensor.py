@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 import logging
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from . import ElectricFenceConfigEntry
@@ -23,6 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 WINDOW = timedelta(hours=24)
 EXPIRY_INTERVAL = timedelta(minutes=1)
 ATTRIBUTE_LIMIT = 64
+# The state is written at most this often; a trailing write keeps it current.
+WRITE_INTERVAL = timedelta(seconds=1)
 
 PARALLEL_UPDATES = 0
 
@@ -58,6 +60,8 @@ class FailedLoginsSensor(SensorEntity):
         self._total = 0
         self._last: LoginAttempt | None = None
         self._buffer: list[LoginAttempt] | None = None
+        self._last_write: datetime | None = None
+        self._pending_write: CALLBACK_TYPE | None = None
         self._attr_unique_id = f"{entry.entry_id}_failed_logins"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -89,6 +93,7 @@ class FailedLoginsSensor(SensorEntity):
         # The listener comes first and buffers while the seed query runs, so
         # no record falls in the gap.
         self._buffer = []
+        self.async_on_remove(self._cancel_write)
         self.async_on_remove(runtime.worker.add_listener(self._on_record))
         cutoff = dt_util.utcnow()
         try:
@@ -116,6 +121,37 @@ class FailedLoginsSensor(SensorEntity):
             )
         )
 
+    @callback
+    def _cancel_write(self) -> None:
+        """Drop a pending write: a removed entity can't write any more."""
+        if self._pending_write is not None:
+            self._pending_write()
+            self._pending_write = None
+
+    @callback
+    def _schedule_write(self) -> None:
+        """Write now, or once WRITE_INTERVAL has passed since the last write."""
+        if self._pending_write is not None:
+            return
+        now = dt_util.utcnow()
+        last = self._last_write
+        if last is None or now - last >= WRITE_INTERVAL:
+            self._write()
+            return
+        self._pending_write = async_call_later(
+            self.hass, last + WRITE_INTERVAL - now, self._write_later
+        )
+
+    @callback
+    def _write_later(self, _now: datetime) -> None:
+        self._pending_write = None
+        self._write()
+
+    @callback
+    def _write(self) -> None:
+        self._last_write = dt_util.utcnow()
+        self.async_write_ha_state()
+
     def _add(self, ts: datetime, count: int) -> None:
         self._events.append((ts, count))
         self._total += count
@@ -138,7 +174,7 @@ class FailedLoginsSensor(SensorEntity):
         cutoff = now - WINDOW
         while self._events and self._events[0][0] <= cutoff:
             self._total -= self._events.popleft()[1]
-        self.async_write_ha_state()
+        self._schedule_write()
 
 
 def merge_seed(

@@ -31,9 +31,10 @@ from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
 from .notifier import Notifier
 from .panel import async_register_panel, async_unregister_panel
+from .repairs import async_clear_schema_too_new, async_report_schema_too_new
 from .runtime import Runtime
 from .settings import Settings
-from .storage import FenceStore
+from .storage import SCHEMA_VERSION, FenceStore, StoreSchemaTooNewError
 from .websocket_api import async_end_subscriptions, async_register_commands
 from .worker import FenceWorker
 
@@ -89,7 +90,18 @@ async def async_setup_entry(
         _LOGGER.error("%s", message)
         raise ConfigEntryError(message)
 
-    store = await hass.async_add_executor_job(_open_store, _db_path(hass))
+    try:
+        store = await hass.async_add_executor_job(_open_store, _db_path(hass))
+    except StoreSchemaTooNewError as err:
+        async_report_schema_too_new(hass, err.version, SCHEMA_VERSION)
+        message = (
+            f"The Electric Fence database (schema {err.version}) was written by a "
+            f"newer version of Electric Fence, which supports schema "
+            f"{SCHEMA_VERSION} at most; it was left unchanged"
+        )
+        _LOGGER.error("%s", message)
+        raise ConfigEntryError(message) from err
+    async_clear_schema_too_new(hass)
     enricher = GeoEnricher(hass)
     worker = FenceWorker(hass, store, enricher)
     settings = Settings.from_options(entry.options)
@@ -132,9 +144,10 @@ async def async_setup_entry(
 
     notifier = Notifier(hass, runtime)
     runtime.notifier = notifier
+    # On unload, `async_unload_entry` has already stopped (flushed) the worker,
+    # so the notifier, sensor and live feed saw every last record.
     entry.async_on_unload(notifier.async_stop)
     entry.async_on_unload(worker.add_listener(notifier.on_record))
-    # Panel subscriptions end before the worker stops.
     entry.async_on_unload(lambda: async_end_subscriptions(hass, entry.entry_id))
 
     for collector_type in COLLECTOR_TYPES:
@@ -221,18 +234,27 @@ async def async_unload_entry(
 ) -> None:
     """Unload a config entry.
 
-    Collectors, worker and store are torn down by the on_unload callback
-    registered in setup, which also covers a setup that failed partway.
+    Stops recording first and flushes the worker while the notifier, the
+    sensor and the live feed still listen, so the last records still fire
+    their events. The rest (listeners, store) is torn down by the on_unload
+    callbacks registered in setup, which also cover a setup that failed
+    partway.
     """
+    await _async_stop_recording(entry.runtime_data)
     await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
 
-async def _async_teardown(hass: HomeAssistant, runtime: Runtime) -> None:
-    """Uninstall collectors in reverse, stop the worker, close the store."""
+async def _async_stop_recording(runtime: Runtime) -> None:
+    """Uninstall collectors in reverse, then stop (flush) the worker."""
     for collector in reversed(runtime.collectors):
         collector.uninstall()
     runtime.collectors.clear()
     await runtime.worker.async_stop()
+
+
+async def _async_teardown(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Stop recording (if still running), then close the store."""
+    await _async_stop_recording(runtime)
     await hass.async_add_executor_job(runtime.store.close)
 
 

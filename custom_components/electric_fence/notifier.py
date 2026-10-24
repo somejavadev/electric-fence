@@ -35,6 +35,8 @@ PANEL_LINK = "[Open Electric Fence](/electric-fence)"
 
 WINDOW = timedelta(hours=24)
 TOKEN_WINDOW = timedelta(hours=1)
+# How long a stop waits for the pending notification update.
+STOP_TIMEOUT = 5.0
 
 REASON_TEXT: dict[LoginReason, str] = {
     LoginReason.NO_SUCH_USER: "no such user",
@@ -164,13 +166,14 @@ class Notifier:
                     self._async_run(), "electric_fence notification", eager_start=False
                 )
 
-    @callback
-    def async_stop(self) -> None:
-        """Cancel a pending notification update."""
+    async def async_stop(self) -> None:
+        """Let a pending notification update finish (bounded), then stop."""
+        task = self._task
+        if task is not None:
+            await asyncio.wait({task}, timeout=STOP_TIMEOUT)
+            task.cancel()
         self._latest = None
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
+        self._task = None
 
     def _fire(self, record: Record) -> None:
         if isinstance(record, SettingsChange):

@@ -28,3 +28,26 @@ def async_report_disabled_collector(
 def async_clear_disabled_collector(hass: HomeAssistant, collector: str) -> None:
     """Remove the repair issue for a collector."""
     ir.async_delete_issue(hass, DOMAIN, _disabled_id(collector))
+
+
+SCHEMA_TOO_NEW = "schema_too_new"
+
+
+def async_report_schema_too_new(
+    hass: HomeAssistant, version: int, supported: int
+) -> None:
+    """Raise a repair issue for a database written by a newer version."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        SCHEMA_TOO_NEW,
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=SCHEMA_TOO_NEW,
+        translation_placeholders={"version": str(version), "supported": str(supported)},
+    )
+
+
+def async_clear_schema_too_new(hass: HomeAssistant) -> None:
+    """Remove the repair issue for a newer database."""
+    ir.async_delete_issue(hass, DOMAIN, SCHEMA_TOO_NEW)
