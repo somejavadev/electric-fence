@@ -18,7 +18,8 @@ already sees changed fields means that change's own dispatch is pending:
 the change is held back (`_pending`) and recorded at that dispatch, which
 then shows no diff of its own, in the admin's context. Changes dispatched
 while it is pending are the listener's follow-ups, and System. A hold-back
-lasts until the loop runs its next callback at most.
+lasts until the loop runs its next callback at most; one no dispatch
+claimed is then recorded as System (R28).
 
 Data and options are kept as a hash of each value's JSON dump, so the diff
 names the changed keys; values never leave the entry.
@@ -67,8 +68,24 @@ _SCOPED = (ChangeAction.RECONFIGURED, ChangeAction.OPTIONS_CHANGED)
 
 
 def _hash(value: Any) -> str:
-    dump = json.dumps(value, sort_keys=True, default=repr)
+    try:
+        dump = json.dumps(value, sort_keys=True, default=repr)
+    except TypeError:
+        # Keys of mixed types can't be sorted: order them by their text.
+        dump = repr(_sorted_by_text(value))
     return hashlib.sha256(dump.encode()).hexdigest()
+
+
+def _sorted_by_text(value: Any) -> Any:
+    """Return `value` with every mapping as items sorted by `str(key)`."""
+    if isinstance(value, Mapping):
+        return sorted(
+            ((str(k), repr(k), _sorted_by_text(v)) for k, v in value.items()),
+            key=lambda item: item[:2],
+        )
+    if isinstance(value, (list, tuple)):
+        return [_sorted_by_text(v) for v in value]
+    return value
 
 
 def _hashes(values: Mapping[str, Any]) -> dict[str, str]:
@@ -223,14 +240,20 @@ class ConfigEntryCollector(BaseCollector):
         before = self._pending.get(entry_id, (old, new))[0]
         pending = self._pending[entry_id] = (before, new)
         # The held-back dispatch comes before the loop runs anything else;
-        # never let a stale hold-back make a later change System.
+        # an unclaimed hold-back is recorded then, as System, so it neither
+        # gets lost nor makes a later change System.
         self.hass.loop.call_soon(self.guard.call, self._expire, entry_id, pending)
 
     def _expire(
         self, entry_id: str, pending: tuple[EntrySnapshot, EntrySnapshot]
     ) -> None:
-        if self._pending.get(entry_id) is pending:
-            del self._pending[entry_id]
+        """Record a hold-back no dispatch claimed, as System (R28)."""
+        if self._pending.get(entry_id) is not pending:
+            return
+        del self._pending[entry_id]
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is not None:
+            self._record_update(entry, *pending, credit=False)
 
     def _record_update(
         self,

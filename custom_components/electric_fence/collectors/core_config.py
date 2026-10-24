@@ -36,6 +36,9 @@ class CoreConfigCollector(BaseCollector):
         self.guard.call(self._handle, event)
 
     def _handle(self, event: Event[dict[str, Any]]) -> None:
+        if not event.data:
+            # Core fires it without data at startup: nothing changed.
+            return
         actor = attribution.credited_actor(
             ChangeKind.CORE_CONFIG, ChangeAction.UPDATED, None
         )

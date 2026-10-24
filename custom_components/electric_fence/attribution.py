@@ -329,15 +329,34 @@ def credited_actor(
 ) -> ActionScope | None:
     """Return the current scope only if its action implies this change.
 
+    A WebSocket scope credits only inside its command's handler task (R29).
     The first matching change uses up the scope's credit (R25): later ones,
     such as an integration's own update while it is set up again inline, are
     System. So call this exactly once per change, and only for a real change
     (saved fields changed), never for state-only updates.
     """
     scope = current_actor()
-    if scope is None or not _implies(scope, kind, change, target_id, domain):
+    if (
+        scope is None
+        or (scope.owner is None and not _in_ws_handler_task(scope))
+        or not _implies(scope, kind, change, target_id, domain)
+    ):
         return None
     return scope
+
+
+def _in_ws_handler_task(scope: ActionScope) -> bool:
+    """Return True in the `async_response` task that runs the scope's command.
+
+    A WebSocket scope has no owner (`_ws_enter`), so tasks that inherit its
+    context, such as an update listener's reload, would see it too (R29).
+    """
+    task = asyncio.current_task()
+    return (
+        task is not None
+        and task.get_name().startswith(WS_TASK_PREFIX)
+        and task.get_context().get(SCOPE) is scope
+    )
 
 
 # Targets captured when a scope opens.

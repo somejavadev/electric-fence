@@ -1,5 +1,7 @@
 """Test helpers shared by Electric Fence tests."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -258,16 +260,36 @@ async def _reloading_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> Non
     await _dummy_setup_entry(hass, entry)
 
 
-def mock_dummy(hass: HomeAssistant, *, reloading: bool = False) -> None:
-    """Register the `ef_dummy` integration (reloading on options change)."""
+async def _suspending_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Unload, suspending once as real integrations do."""
+    await asyncio.sleep(0)
+
+
+type DummySetup = Callable[[HomeAssistant, ConfigEntry], Awaitable[None]]
+
+
+def mock_dummy(
+    hass: HomeAssistant,
+    *,
+    reloading: bool = False,
+    suspending_unload: bool = False,
+    setup_entry: DummySetup | None = None,
+) -> None:
+    """Register the `ef_dummy` integration.
+
+    `reloading` reloads it on an options change; `suspending_unload` makes
+    its unload suspend; `setup_entry` replaces its setup.
+    """
+    if setup_entry is None:
+        setup_entry = _reloading_setup_entry if reloading else _dummy_setup_entry
     mock_integration(
         hass,
         MockModule(
             DUMMY,
-            async_setup_entry=_reloading_setup_entry
-            if reloading
-            else _dummy_setup_entry,
-            async_unload_entry=_dummy_unload_entry,
+            async_setup_entry=setup_entry,
+            async_unload_entry=_suspending_unload_entry
+            if suspending_unload
+            else _dummy_unload_entry,
         ),
     )
 

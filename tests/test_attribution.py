@@ -4,6 +4,7 @@
 
 import asyncio
 from collections.abc import Iterator
+import contextvars
 from datetime import timedelta
 from http import HTTPStatus
 from typing import Any
@@ -30,6 +31,7 @@ from custom_components.electric_fence.attribution import (
     ADMIN_WS_COMMANDS,
     HANDLE_REQUEST_QUALNAME,
     SCOPE,
+    WS_TASK_PREFIX,
     ActionScope,
     AttributionCollector,
     credited_actor,
@@ -655,7 +657,7 @@ async def test_ws_pref_disable_polling_credits_only_the_update(
     ]
 
 
-async def test_ws_update_with_listener_reload_credits_only_the_update(
+async def test_ws_update_with_listener_reload_never_credits_listener(
     hass: HomeAssistant,
     fence: AttributionCollector,
     hass_ws_client: WebSocketGenerator,
@@ -683,7 +685,11 @@ async def test_ws_update_with_listener_reload_credits_only_the_update(
         await hass.async_block_till_done()
 
     assert entry.data["setups"] == 2
-    assert [c for c, _ in _credited_changes(seen)] == [True, False]
+    # The reload ran in the listener's task ahead of the command's dispatch,
+    # so this naive watcher sees the change there, where nothing is credited
+    # (R29); H4 holds the change back for the command's own dispatch
+    # (`test_ws_update_with_reloading_listener_credited`).
+    assert [c for c, _ in _credited_changes(seen)] == [False, False]
 
 
 async def test_options_flow_reload_credits_first_change_only(
@@ -1304,6 +1310,13 @@ async def test_hass_user_id_lookup(hass: HomeAssistant) -> None:
 
 async def test_credited_actor_first_added_user_only(hass_admin_user: MockUser) -> None:
     """`config/auth/create` credits only the first user added."""
+
+    async def _in_handler() -> list[ActionScope | None]:
+        return [
+            credited_actor(_USER, A.ADDED, "u1"),
+            credited_actor(_USER, A.ADDED, "u2"),
+        ]
+
     with open_scope(
         user=hass_admin_user,
         ip=None,
@@ -1311,8 +1324,63 @@ async def test_credited_actor_first_added_user_only(hass_admin_user: MockUser) -
         details={"command": "config/auth/create"},
         owner=None,
     ) as scope:
-        assert credited_actor(_USER, A.ADDED, "u1") is scope
-        assert credited_actor(_USER, A.ADDED, "u2") is None
+        first, second = await asyncio.create_task(
+            _in_handler(), name=f"{WS_TASK_PREFIX}websocket_create"
+        )
+        assert first is scope
+        assert second is None
+
+
+async def test_ws_scope_credits_only_in_its_handler_task(
+    hass_admin_user: MockUser,
+) -> None:
+    """A WebSocket scope credits only in its `async_response` task (R29).
+
+    Not in the task that opened it, not in a task inheriting its context
+    (an update listener), and not where the scope isn't the task's own.
+    """
+    details = {"command": "config/core/update"}
+    core = ChangeKind.CORE_CONFIG, A.UPDATED, None
+
+    async def _credit() -> ActionScope | None:
+        return credited_actor(*core)
+
+    async def _handler_spawning_listener() -> ActionScope | None:
+        # Created inside the handler: inherits the scope, other name.
+        return await asyncio.create_task(_credit(), name="config entry update listener")
+
+    with open_scope(
+        user=hass_admin_user, ip=None, action=ACTION_WS, details=details, owner=None
+    ) as scope:
+        assert current_actor() is scope
+        assert credited_actor(*core) is None
+        assert (
+            await asyncio.create_task(
+                _handler_spawning_listener(), name=f"{WS_TASK_PREFIX}handler"
+            )
+            is None
+        )
+        other = ActionScope("x", None, None, ACTION_WS, dict(details), owner=None)
+
+        async def _other_scope_inside() -> ActionScope | None:
+            # The task's own context still holds `scope`.
+            def _run() -> ActionScope | None:
+                SCOPE.set(other)
+                return credited_actor(*core)
+
+            return contextvars.copy_context().run(_run)
+
+        assert (
+            await asyncio.create_task(
+                _other_scope_inside(), name=f"{WS_TASK_PREFIX}handler"
+            )
+            is None
+        )
+        assert "credited" not in details
+        assert (
+            await asyncio.create_task(_credit(), name=f"{WS_TASK_PREFIX}handler")
+            is scope
+        )
 
 
 async def test_credited_actor_without_scope_is_system() -> None:

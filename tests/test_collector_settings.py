@@ -15,6 +15,7 @@ from pytest_homeassistant_custom_component.typing import (
 from custom_components.electric_fence import COLLECTOR_TYPES
 from custom_components.electric_fence.collectors.config_entries import (
     ConfigEntryCollector,
+    EntrySnapshot,
 )
 from custom_components.electric_fence.collectors.core_config import CoreConfigCollector
 from custom_components.electric_fence.collectors.users import UserCollector
@@ -22,7 +23,12 @@ from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.models import ChangeAction, ChangeKind
 from custom_components.electric_fence.storage import ChangeRow
 from homeassistant.auth.providers.homeassistant import HassAuthProvider, InvalidUser
-from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryDisabler,
+    ConfigEntryState,
+)
+from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant
 from tests.helpers import (
     CLIENT_ID,
@@ -317,8 +323,111 @@ async def test_stale_hold_back_expires(
     )
     assert (await ws.receive_json())["success"]
 
-    (row,) = await _entry_rows(hass, after=mark)
+    # The expired change is kept, as System; the next change is the admin's.
+    expired, row = await _entry_rows(hass, after=mark)
+    assert expired.action is ChangeAction.UPDATED
+    assert expired.details["changed"] == ["title"]
+    assert expired.target_name == f"{DUMMY}: Sneaky"
+    assert _is_system(expired)
     assert _by_admin(row, hass_admin_user)
+
+
+async def test_expired_hold_back_of_removed_entry_dropped(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """A hold-back of an entry gone by expiry records nothing more."""
+    entry = await dummy_entry(hass, {"quiet": True})
+    collector = _collector(hass, ConfigEntryCollector)
+    object.__setattr__(entry, "title", "Sneaky")
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    pending = collector._pending[entry.entry_id]
+    mark = await _mark(hass)
+
+    collector._pending.clear()
+    hass.config_entries._entries.pop(entry.entry_id)
+    collector._pending[entry.entry_id] = pending
+    collector._expire(entry.entry_id, pending)
+
+    assert await _rows(hass, after=mark) == []
+    assert collector._pending == {}
+
+
+async def test_hold_back_with_suspending_unload(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    hass_client: ClientSessionGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """A reload whose unload suspends: the admin's change is still credited."""
+    mock_dummy(hass, reloading=True, suspending_unload=True)
+    entry = await dummy_entry(hass)
+    mark = await _mark(hass)
+    client = await hass_client()
+
+    resp = await client.post(
+        "/api/config/config_entries/options/flow", json={"handler": entry.entry_id}
+    )
+    form = await resp.json()
+    resp = await client.post(
+        f"/api/config/config_entries/options/flow/{form['flow_id']}", json={}
+    )
+
+    assert (await resp.json())["type"] == "create_entry"
+    assert entry.data["setups"] == 2
+    options, reload_update = await _entry_rows(hass, after=mark)
+    assert options.action is ChangeAction.OPTIONS_CHANGED
+    assert options.details["changed"] == ["options"]
+    assert _by_admin(options, hass_admin_user)
+    assert reload_update.details["changed"] == ["data"]
+    assert _is_system(reload_update)
+
+
+async def test_ws_listener_change_before_reload_never_credited(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """A listener's own change, before any state dispatch, is System (R29).
+
+    It runs in the listener's task, which inherits the WebSocket scope; the
+    admin is never credited with the listener's keys.
+    """
+    ran: list[bool] = []
+
+    async def _setup(hass: HomeAssistant, entry: ConfigEntry) -> None:
+        async def _on_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
+            if ran:
+                return
+            ran.append(True)
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, "listener_key": True}
+            )
+            await hass.config_entries.async_reload(entry.entry_id)
+
+        entry.async_on_unload(entry.add_update_listener(_on_update))
+
+    mock_dummy(hass, setup_entry=_setup)
+    entry = await dummy_entry(hass)
+    mark = await _mark(hass)
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json_auto_id(
+        {"type": "config_entries/update", "entry_id": entry.entry_id, "title": "T"}
+    )
+    assert (await ws.receive_json())["success"]
+
+    assert ran
+    assert entry.data["listener_key"] is True
+    rows = await _entry_rows(hass, after=mark)
+    assert rows
+    listener_rows = [
+        r for r in rows if "listener_key" in r.details["data_keys_changed"]
+    ]
+    assert listener_rows
+    assert all(_is_system(r) for r in listener_rows)
+    for row in rows:
+        assert _is_system(row) or "listener_key" not in row.details["data_keys_changed"]
 
 
 async def test_untracked_fields_not_recorded(
@@ -348,7 +457,10 @@ async def test_follow_up_of_untracked_fields_not_recorded(
     hass.config_entries.async_update_entry(entry, unique_id="u2")
     assert collector._pending[entry.entry_id][0] is before
 
-    assert await _rows(hass, after=mark) == []
+    # Only the expired title change (R28), nothing for the unique ID.
+    (expired,) = await _rows(hass, after=mark)
+    assert expired.details["changed"] == ["title"]
+    assert _is_system(expired)
 
 
 async def test_entry_state_change_not_recorded(
@@ -896,6 +1008,16 @@ async def test_core_config_update_attributed(
     assert "Hut-XYZZY" not in dump_db(hass)
 
 
+async def test_core_config_startup_event_without_data_ignored(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """Core fires the event with no data at startup: no row."""
+    hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE)
+    hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE, {})
+
+    assert await _rows(hass, ChangeKind.CORE_CONFIG) == []
+
+
 async def test_core_config_update_by_code_is_system(
     hass: HomeAssistant, fence: MockConfigEntry
 ) -> None:
@@ -905,3 +1027,15 @@ async def test_core_config_update_by_code_is_system(
     (row,) = await _rows(hass, ChangeKind.CORE_CONFIG)
     assert row.details == {"keys": ["elevation", "location_name"]}
     assert _is_system(row)
+
+
+def test_hash_of_mixed_type_keys() -> None:
+    """Data with keys JSON can't sort still hashes, by `str(key)` order."""
+
+    def _data(entry_data: dict[Any, Any]) -> Any:
+        return EntrySnapshot.of(MockConfigEntry(domain=DUMMY, data=entry_data)).data
+
+    assert _data({1: "a", "b": 2}) == _data({"b": 2, 1: "a"})
+    nested = {"x": [{1: "a", "b": 2}]}
+    assert _data(nested) == _data({"x": [{"b": 2, 1: "a"}]})
+    assert _data(nested) != _data({"x": [{1: "a", "b": 3}]})

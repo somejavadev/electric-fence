@@ -3,6 +3,7 @@
 import asyncio
 from http import HTTPStatus
 from typing import Any
+from unittest.mock import Mock
 
 from aiohttp.web_protocol import RequestHandler
 import pytest
@@ -18,6 +19,7 @@ from custom_components.electric_fence.attribution import (
     WS_TASK_PREFIX,
 )
 from custom_components.electric_fence.contracts import CONTRACTS, check_contracts
+from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import (
     DOMAIN as WEBSOCKET_API_DOMAIN,
     ActiveConnection,
@@ -233,6 +235,28 @@ async def test_admin_ws_commands_run_in_named_async_tasks(
 
     assert seen == [f"{WS_TASK_PREFIX}websocket_update_config"]
     assert "config/core/update" in ADMIN_WS_COMMANDS
+
+
+async def test_async_response_task_name_prefix(hass: HomeAssistant) -> None:
+    """`async_response` runs a handler in `websocket_api.async:<name>` (R29).
+
+    `credited_actor` credits a WebSocket scope only in that task.
+    """
+    seen: dict[str, Any] = {}
+
+    async def handler_name(
+        hass: HomeAssistant, connection: Any, msg: dict[str, Any]
+    ) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        seen["name"] = task.get_name()
+
+    wrapped = websocket_api.async_response(handler_name)
+    connection = Mock()
+    wrapped(hass, connection, {"id": 1})
+    await hass.async_block_till_done()
+
+    assert seen["name"] == f"{WS_TASK_PREFIX}handler_name"
 
 
 async def test_auth_store_keeps_users_in_memory(hass: HomeAssistant) -> None:
