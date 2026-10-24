@@ -10,7 +10,7 @@ from pytest_homeassistant_custom_component.common import register_auth_provider
 from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
-from custom_components.electric_fence.storage import FenceStore
+from custom_components.electric_fence.storage import FenceStore, LoginFilter, LoginRow
 from custom_components.electric_fence.worker import FenceWorker, NullEnricher
 from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
 from homeassistant.auth.models import User
@@ -69,6 +69,23 @@ async def flush_worker(hass: HomeAssistant) -> None:
     """Wait until the worker's queue is empty and the pending batch is written."""
     for entry in hass.config_entries.async_loaded_entries(DOMAIN):
         await entry.runtime_data.worker.async_flush()
+
+
+def store_rows(hass: HomeAssistant) -> list[LoginRow]:
+    """Return all stored login rows of the loaded entry, newest first."""
+    rows: list[LoginRow] = []
+    for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+        rows.extend(entry.runtime_data.store.query_logins(LoginFilter(), limit=500))
+    return rows
+
+
+def dump_db(hass: HomeAssistant) -> str:
+    """Return the text of the database file and its WAL, for leak checks."""
+    base = Path(hass.config.path(".storage", "electric_fence.db"))
+    paths = (base, base.with_name(base.name + "-wal"))
+    return "\n".join(
+        p.read_bytes().decode(errors="replace") for p in paths if p.exists()
+    )
 
 
 def make_runtime(hass: HomeAssistant, store: FenceStore | None = None) -> Runtime:

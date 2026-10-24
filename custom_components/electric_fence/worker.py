@@ -8,11 +8,19 @@ import logging
 import sqlite3
 from typing import Protocol
 
+from homeassistant.auth.models import Credentials
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .failopen import FailOpen
-from .models import LoginAttempt, LoginReason, LoginResult, Record, SettingsChange
+from .models import (
+    LoginAttempt,
+    LoginReason,
+    LoginResult,
+    Record,
+    SettingsChange,
+    Source,
+)
 from .storage import FenceStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -108,6 +116,7 @@ class FenceWorker:
         self._flush_waiters: list[asyncio.Future[None]] = []
         self._listeners: list[tuple[RecordListener, FailOpen]] = []
         self._enrich_guard = FailOpen("enricher")
+        self._resolve_guard = FailOpen("success resolution")
         self._loop_guard = FailOpen("worker")
         self._storage_ok = True
         # Records never stored: queue full, or lost in a failed write.
@@ -273,13 +282,45 @@ class FenceWorker:
                 # Includes the timeout: store the record un-enriched.
                 item.source, item.country_code, item.hostname = before
                 self._enrich_guard.call(_reraise, err)
+            if (credentials := item.credentials) is not None:
+                # Never kept past this point, whatever the result.
+                item.credentials = None
+                await self._resolve_success(item, credentials)
             if item.result is LoginResult.FAILED:
                 self._merge_or_add(item)
                 return
-            if item.result is LoginResult.SUCCESS and not item.confirmed:
+            if (
+                item.result is LoginResult.SUCCESS
+                and not item.confirmed
+                and item.user_id is not None
+            ):
                 self._hold(item)
                 return
         self._add(item)
+
+    async def _resolve_success(
+        self, rec: LoginAttempt, credentials: Credentials
+    ) -> None:
+        """Set the user of a success and apply the login view's block rules.
+
+        On failure, the record keeps `user_id=None` and is stored unconfirmed.
+        """
+        if rec.result is not LoginResult.SUCCESS:
+            return
+        try:
+            user = await self._hass.auth.async_get_user_by_credentials(credentials)
+        except Exception as err:  # noqa: BLE001
+            self._resolve_guard.call(_reraise, err)
+            return
+        if user is None:
+            # Credentials not linked to a user yet: nothing to confirm against.
+            return
+        rec.user_id = user.id
+        # Same rules as Core's async_user_not_allowed_do_auth.
+        if not user.is_active:
+            rec.result, rec.reason = LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE
+        elif user.local_only and rec.source is not Source.LOCAL:
+            rec.result, rec.reason = LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY
 
     def _merge_or_add(self, rec: LoginAttempt) -> None:
         """Merge into a pending identical failure within the window, or add."""

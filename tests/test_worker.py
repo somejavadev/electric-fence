@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
 import sqlite3
+from unittest.mock import AsyncMock
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
@@ -13,6 +14,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
+from custom_components.electric_fence import COLLECTOR_TYPES
 from custom_components.electric_fence.collectors.base import BaseCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.models import (
@@ -23,6 +25,7 @@ from custom_components.electric_fence.models import (
     LoginResult,
     Record,
     SettingsChange,
+    Source,
     UserExists,
 )
 from custom_components.electric_fence.settings import Settings
@@ -33,9 +36,10 @@ from custom_components.electric_fence.storage import (
     LoginRow,
 )
 from custom_components.electric_fence.worker import FenceWorker, NullEnricher
+from homeassistant.auth.models import User
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
-from tests.helpers import flush_worker
+from tests.helpers import create_hass_user, flush_worker
 
 # Raised by name, so traceback source lines never contain the value.
 SECRET = "secret-username"
@@ -464,7 +468,7 @@ async def test_setup_wires_runtime(
 ) -> None:
     """Setup builds the runtime and a running worker writing to the database."""
     runtime = setup_entry.runtime_data
-    assert runtime.collectors == []
+    assert [type(c) for c in runtime.collectors] == COLLECTOR_TYPES
     assert runtime.notifier is None
     runtime.worker.submit(failed())
     await flush_worker(hass)
@@ -704,3 +708,132 @@ async def test_stop_logs_worker_that_died(
     async with asyncio.timeout(2):
         await worker.async_stop()
     assert "Electric Fence worker ended: _Spin" in caplog.text
+
+
+async def _credential_success(
+    hass: HomeAssistant, *, source: Source | None = Source.LOCAL
+) -> tuple[LoginAttempt, User]:
+    """Return a success carrying credentials, as the login hook submits it."""
+    await create_hass_user(hass, "owner", "pw")  # the owner can't be deactivated
+    user = await create_hass_user(hass, "alice", "right")
+    rec = success(user_id="unused")
+    rec.user_id = None
+    rec.source = source
+    rec.credentials = user.credentials[0]
+    return rec, user
+
+
+async def test_success_resolved_to_user_and_held(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A success with credentials is resolved, then held until confirmed."""
+    rec, user = await _credential_success(hass)
+    worker.submit(rec)
+    await worker.async_flush()
+    assert logins(store) == []
+    assert rec.credentials is None
+    assert rec.user_id == user.id
+    worker.confirm_success(user.id, "https://app.example/", None)
+    await worker.async_flush()
+    rows = logins(store)
+    assert [(r.result, r.user_id, r.confirmed) for r in rows] == [
+        (LoginResult.SUCCESS, user.id, True)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("is_active", "local_only", "source", "reason"),
+    [
+        (False, False, Source.LOCAL, LoginReason.BLOCKED_INACTIVE),
+        (False, True, Source.REMOTE, LoginReason.BLOCKED_INACTIVE),
+        (True, True, Source.REMOTE, LoginReason.BLOCKED_LOCAL_ONLY),
+        (True, True, Source.CLOUD, LoginReason.BLOCKED_LOCAL_ONLY),
+        (True, True, None, LoginReason.BLOCKED_LOCAL_ONLY),
+    ],
+)
+async def test_blocked_success_stored_at_once(
+    hass: HomeAssistant,
+    worker: FenceWorker,
+    store: FenceStore,
+    is_active: bool,
+    local_only: bool,
+    source: Source | None,
+    reason: LoginReason,
+) -> None:
+    """A success the login view refuses is stored as blocked, not held."""
+    rec, user = await _credential_success(hass, source=source)
+    await hass.auth.async_update_user(user, is_active=is_active, local_only=local_only)
+    worker.submit(rec)
+    await worker.async_flush()
+    rows = logins(store)
+    assert [(r.result, r.reason, r.user_id) for r in rows] == [
+        (LoginResult.BLOCKED, reason, user.id)
+    ]
+    assert rec.credentials is None
+
+
+async def test_local_only_user_from_local_network_not_blocked(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A local-only user logging in locally is a normal success."""
+    rec, user = await _credential_success(hass, source=Source.LOCAL)
+    await hass.auth.async_update_user(user, local_only=True)
+    worker.submit(rec)
+    worker.confirm_success(user.id, None, None)
+    await worker.async_flush()
+    assert [(r.result, r.confirmed) for r in logins(store)] == [
+        (LoginResult.SUCCESS, True)
+    ]
+
+
+async def test_success_resolution_failure_contained(
+    hass: HomeAssistant,
+    worker: FenceWorker,
+    store: FenceStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If the user can't be resolved, the success is stored unconfirmed at once."""
+    rec, _ = await _credential_success(hass)
+    monkeypatch.setattr(
+        hass.auth,
+        "async_get_user_by_credentials",
+        AsyncMock(side_effect=KeyError(SECRET)),
+    )
+    worker.submit(rec)
+    await worker.async_flush()
+    rows = logins(store)
+    assert [(r.result, r.user_id, r.confirmed) for r in rows] == [
+        (LoginResult.SUCCESS, None, False)
+    ]
+    assert rec.credentials is None
+    assert SECRET not in caplog.text
+
+
+async def test_success_for_unlinked_credentials_stored_at_once(
+    hass: HomeAssistant,
+    worker: FenceWorker,
+    store: FenceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Credentials without a user yet are stored unconfirmed, not held."""
+    rec, _ = await _credential_success(hass)
+    monkeypatch.setattr(
+        hass.auth, "async_get_user_by_credentials", AsyncMock(return_value=None)
+    )
+    worker.submit(rec)
+    await worker.async_flush()
+    assert [(r.user_id, r.confirmed) for r in logins(store)] == [(None, False)]
+
+
+async def test_credentials_cleared_on_any_record(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """Credentials never stay on a record, whatever its result."""
+    rec, _ = await _credential_success(hass)
+    rec.result, rec.reason = LoginResult.FAILED, LoginReason.WRONG_PASSWORD
+    worker.submit(rec)
+    await worker.async_flush()
+    assert rec.credentials is None
+    assert rec.user_id is None
+    assert [r.result for r in logins(store)] == [LoginResult.FAILED]
