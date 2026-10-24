@@ -2,6 +2,7 @@
 
 import asyncio
 from collections import OrderedDict
+from functools import partial
 import socket
 import time
 
@@ -43,19 +44,41 @@ class ReverseDns:
         self._timeout = timeout
         self._maxsize = maxsize
         self._cache: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
+        self._inflight: dict[str, asyncio.Task[str | None]] = {}
 
     async def async_lookup(self, ip: str) -> str | None:
-        """Return the hostname of `ip`, or None (also on timeout)."""
-        now = time.monotonic()
-        if (hit := self._cache.get(ip)) is not None and hit[0] > now:
+        """Return the hostname of `ip`, or None (also on timeout).
+
+        Concurrent lookups of one IP share a single resolution.
+        """
+        if (hit := self._cache.get(ip)) is not None and hit[0] > time.monotonic():
             self._cache.move_to_end(ip)
             return hit[1]
+        task = self._inflight.get(ip)
+        if task is None or task.done():
+            task = self._hass.async_create_background_task(
+                self._resolve(ip), "electric_fence rdns"
+            )
+            self._inflight[ip] = task
+            # Not in _resolve: an eagerly started task can finish before the
+            # line above runs.
+            task.add_done_callback(partial(self._forget, ip))
+        # A cancelled waiter must not cancel the lookup the others wait for.
+        return await asyncio.shield(task)
+
+    def _forget(self, ip: str, task: asyncio.Task[str | None]) -> None:
+        if self._inflight.get(ip) is task:
+            del self._inflight[ip]
+
+    async def _resolve(self, ip: str) -> str | None:
+        name: str | None = None
         try:
             async with asyncio.timeout(self._timeout):
                 name = await self._hass.async_add_executor_job(_lookup, ip)
-        except TimeoutError:
-            # Not cached: the next attempt may succeed.
-            return None
+        except Exception:  # noqa: BLE001
+            # Includes the timeout: cached as a miss, so a slow resolver is
+            # not asked again for every attempt from the same address.
+            name = None
         self._cache[ip] = (time.monotonic() + self._ttl, name)
         self._cache.move_to_end(ip)
         while len(self._cache) > self._maxsize:

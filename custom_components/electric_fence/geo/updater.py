@@ -6,9 +6,9 @@ import logging
 from pathlib import Path
 import time
 
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from ..settings import Settings
@@ -20,6 +20,8 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_AGE = timedelta(days=35)
 REFRESH_INTERVAL = timedelta(days=30)
+# A failed download is retried once after this delay.
+RETRY_DELAY = timedelta(hours=1)
 
 
 def geoip_dir(hass: HomeAssistant) -> Path:
@@ -58,6 +60,7 @@ class GeoUpdater:
         self.reader = GeoReader()
         self._task: asyncio.Task[None] | None = None
         self._unsub: CALLBACK_TYPE | None = None
+        self._retry: CALLBACK_TYPE | None = None
 
     async def async_start(self) -> None:
         """Open the existing database, download if needed, schedule refreshes."""
@@ -86,6 +89,7 @@ class GeoUpdater:
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+        self._cancel_retry()
         await self._cancel()
         await self._hass.async_add_executor_job(self.reader.close)
 
@@ -93,12 +97,23 @@ class GeoUpdater:
         """Download a fresh database now (the monthly timer calls this)."""
         self._schedule(force=True)
 
-    def _schedule(self, *, force: bool) -> None:
+    async def _async_retry(self, _now: datetime) -> None:
+        self._retry = None
+        self._schedule(force=True, is_retry=True)
+
+    def _cancel_retry(self) -> None:
+        if self._retry is not None:
+            self._retry()
+            self._retry = None
+
+    def _schedule(self, *, force: bool, is_retry: bool = False) -> None:
         # Callers always run on the loop; the previous task is replaced.
+        self._cancel_retry()
         if (old := self._task) is not None:
             old.cancel()
         self._task = self._hass.async_create_background_task(
-            self._async_refresh(force=force), "electric_fence geoip"
+            self._async_refresh(force=force, is_retry=is_retry),
+            "electric_fence geoip",
         )
 
     async def _cancel(self) -> None:
@@ -107,7 +122,7 @@ class GeoUpdater:
             task.cancel()
             await asyncio.wait({task})
 
-    async def _async_refresh(self, *, force: bool) -> None:
+    async def _async_refresh(self, *, force: bool, is_retry: bool) -> None:
         provider = make_provider(self._settings)
         status = self.status
         status.last_error = None
@@ -127,7 +142,7 @@ class GeoUpdater:
         status.db_date = None
         opened = await self._async_open(path)
         if not opened or force or self._is_stale(path):
-            await self._async_download(provider, path)
+            await self._async_download(provider, path, is_retry=is_retry)
 
     def _is_stale(self, path: Path) -> bool:
         try:
@@ -146,7 +161,21 @@ class GeoUpdater:
         self.status.db_date = await self._hass.async_add_executor_job(_file_date, path)
         return True
 
-    async def _async_download(self, provider: GeoProvider, path: Path) -> None:
+    def _retry_later(self, is_retry: bool) -> None:
+        if not is_retry:
+            self._retry = async_call_later(
+                self._hass,
+                RETRY_DELAY,
+                HassJob(
+                    self._async_retry,
+                    "electric_fence geoip retry",
+                    cancel_on_shutdown=True,
+                ),
+            )
+
+    async def _async_download(
+        self, provider: GeoProvider, path: Path, *, is_retry: bool
+    ) -> None:
         session = async_get_clientsession(self._hass)
         try:
             await provider.async_download(session, path)
@@ -154,12 +183,14 @@ class GeoUpdater:
             # Keep serving the old file, if any.
             self.status.last_error = str(err)
             _LOGGER.warning("Electric Fence GeoIP update failed: %s", err)
+            self._retry_later(is_retry)
             return
         except Exception as err:  # noqa: BLE001
             self.status.last_error = f"download failed ({type(err).__name__})"
             _LOGGER.warning(
                 "Electric Fence GeoIP update failed: %s", type(err).__name__
             )
+            self._retry_later(is_retry)
             return
         self.status.last_error = None
         await self._async_open(path)

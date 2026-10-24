@@ -5,7 +5,7 @@ from pathlib import Path
 from mmdb_writer import MMDBWriter
 from netaddr import IPSet
 
-COUNTRIES = {"203.0.113.0/24": "RU", "2001:db8::/32": "NL"}
+COUNTRIES = {"8.8.8.0/24": "US", "2606:4700::/32": "NL"}
 
 
 def build_mmdb_bytes(tmp_dir: Path) -> bytes:

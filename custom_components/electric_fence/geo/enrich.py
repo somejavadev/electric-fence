@@ -33,12 +33,9 @@ class GeoEnricher:
             if record.source is None:
                 record.source = local_source
             return
-        if not is_public:
-            return
         if record.source is None:
             record.source = Source.REMOTE
-        runtime = self.runtime
-        if runtime is None:
+        if not is_public or (runtime := self.runtime) is None:
             return
         updater = runtime.geo_updater
         if updater is not None and updater.reader.is_open:
@@ -49,4 +46,7 @@ class GeoEnricher:
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("GeoIP lookup failed: %s", type(err).__name__)
         if runtime.settings.reverse_dns:
-            record.hostname = await self._rdns.async_lookup(ip)
+            try:
+                record.hostname = await self._rdns.async_lookup(ip)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Reverse DNS lookup failed: %s", type(err).__name__)

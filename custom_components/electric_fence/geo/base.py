@@ -1,23 +1,29 @@
 """GeoIP building blocks: IP classification, provider interface, reader, status."""
 
 from abc import ABC, abstractmethod
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 import ipaddress
 import os
 from pathlib import Path
 import tempfile
-from typing import ClassVar
+from typing import IO, ClassVar
+import zlib
 
-from aiohttp import ClientSession
+from aiohttp import ClientResponse, ClientSession
 import maxminddb
 
 from ..models import Source
 
-# Largest database accepted after decompression. Real country files are
-# a few MB; this only stops a decompression bomb.
+# Largest database accepted after decompression, and largest compressed
+# download. Real country files are a few MB; these only stop abuse.
 MAX_DB_BYTES = 256 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+# Read, decompress and write in pieces of this size, so memory stays small.
+CHUNK_SIZE = 64 * 1024
 
 _LOCAL_NETWORKS = tuple(
     ipaddress.ip_network(n)
@@ -43,9 +49,9 @@ def classify_ip(ip: str | None) -> tuple[str | None, Source | None, bool]:
     """Return `(normalised_ip, source_if_local, is_public)`.
 
     IPv4-mapped IPv6 is normalised to IPv4. Private, loopback, link-local,
-    ULA and CGNAT addresses are local. Other non-routable addresses
-    (unspecified, multicast, reserved) are neither local nor public.
-    Documentation ranges are treated as public, so test data can use them.
+    ULA and CGNAT addresses are local. Public means globally routable;
+    addresses that are neither local nor global (documentation ranges,
+    reserved, multicast, ...) are not public.
     """
     if not ip:
         return None, None, False
@@ -62,9 +68,7 @@ def classify_ip(ip: str | None) -> tuple[str | None, Source | None, bool]:
         or any(addr in net for net in _LOCAL_NETWORKS if net.version == addr.version)
     ):
         return text, Source.LOCAL, False
-    if addr.is_unspecified or addr.is_multicast or addr.is_reserved:
-        return text, None, False
-    return text, None, True
+    return text, None, addr.is_global
 
 
 @dataclass
@@ -100,21 +104,103 @@ def validate_mmdb(path: Path) -> None:
         raise GeoDownloadError("downloaded file is not a valid database") from err
 
 
-def install_database(dest: Path, produce: Callable[[Path], None]) -> None:
-    """Write via `produce` to a temp file next to `dest`, validate, replace.
+async def stream_to_temp(resp: ClientResponse, dest: Path) -> Path:
+    """Stream a response body into a temp file next to `dest`, size-capped.
 
-    Runs in the executor. The temp file is always removed on failure.
+    The temp file is removed if anything fails.
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".download-")
-    os.close(fd)
-    tmp = Path(tmp_name)
+    loop = asyncio.get_running_loop()
+    declared = resp.headers.get("Content-Length")
+    if (
+        declared is not None
+        and declared.isdigit()
+        and int(declared) > MAX_DOWNLOAD_BYTES
+    ):
+        raise GeoDownloadError("download is too large")
+    tmp = await loop.run_in_executor(None, _make_temp, dest.parent, ".download-")
     try:
-        produce(tmp)
-        validate_mmdb(tmp)
-        tmp.replace(dest)
+        handle = await loop.run_in_executor(None, tmp.open, "wb")
+        try:
+            total = 0
+            async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise GeoDownloadError("download is too large")
+                await loop.run_in_executor(None, handle.write, chunk)
+        finally:
+            await loop.run_in_executor(None, handle.close)
+    except BaseException:
+        await loop.run_in_executor(None, partial(tmp.unlink, missing_ok=True))
+        raise
+    return tmp
+
+
+def _make_temp(directory: Path, prefix: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=directory, prefix=prefix)
+    os.close(fd)
+    return Path(name)
+
+
+def gunzip_to(src: Path, dst: Path) -> None:
+    """Decompress gzip `src` into `dst`, failing as soon as it exceeds the limit."""
+    decomp = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    total = 0
+    try:
+        with src.open("rb") as fin, dst.open("wb") as fout:
+            while block := fin.read(CHUNK_SIZE):
+                pending = block
+                while True:
+                    data = decomp.decompress(pending, CHUNK_SIZE)
+                    total += len(data)
+                    if total > MAX_DB_BYTES:
+                        raise GeoDownloadError("downloaded database is too large")
+                    fout.write(data)
+                    pending = decomp.unconsumed_tail
+                    if not pending and len(data) < CHUNK_SIZE:
+                        break
+    except zlib.error as err:
+        raise GeoDownloadError("downloaded file is not valid gzip") from err
+    if not decomp.eof:
+        raise GeoDownloadError("downloaded file is not valid gzip")
+
+
+def copy_limited(src: IO[bytes], dst: Path) -> None:
+    """Copy `src` to `dst`, failing as soon as it exceeds the limit."""
+    total = 0
+    with dst.open("wb") as fout:
+        while block := src.read(CHUNK_SIZE):
+            total += len(block)
+            if total > MAX_DB_BYTES:
+                raise GeoDownloadError("downloaded database is too large")
+            fout.write(block)
+
+
+def _finish(raw: Path, dest: Path, extract: Callable[[Path, Path], None]) -> None:
+    """Extract `raw` to a second temp file, validate it, replace `dest`."""
+    out = _make_temp(dest.parent, ".extract-")
+    try:
+        extract(raw, out)
+        validate_mmdb(out)
+        out.replace(dest)
     finally:
-        tmp.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)
+
+
+async def install_response(
+    resp: ClientResponse, dest: Path, extract: Callable[[Path, Path], None]
+) -> None:
+    """Download `resp` and install the database it contains at `dest`.
+
+    `extract(raw_file, output_file)` runs in the executor. On any failure
+    `dest` is untouched and no temp file remains.
+    """
+    loop = asyncio.get_running_loop()
+    raw = await stream_to_temp(resp, dest)
+    try:
+        await loop.run_in_executor(None, _finish, raw, dest, extract)
+    finally:
+        await loop.run_in_executor(None, partial(raw.unlink, missing_ok=True))
 
 
 class GeoReader:
