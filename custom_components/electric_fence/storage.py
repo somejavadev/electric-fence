@@ -8,6 +8,7 @@ import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import threading
@@ -25,7 +26,10 @@ from .models import (
     UserExists,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 SCHEMA_VERSION = 1
+_MAX_LIMIT = 500
 
 _VACUUM_FRACTION = 0.2
 
@@ -333,15 +337,16 @@ class FenceStore:
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     changes,
                 )
+                db.execute("COMMIT")
             except BaseException:
-                db.execute("ROLLBACK")
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
                 raise
-            db.execute("COMMIT")
 
     def query_logins(
         self, f: LoginFilter, *, limit: int = 50, before_id: int | None = None
     ) -> list[LoginRow]:
-        """Return login attempts, newest first (by id), with keyset paging."""
+        """Return login attempts, newest first (ts, id), with keyset paging."""
         where: list[str] = []
         params: list[Any] = []
         if f.result is not None:
@@ -361,13 +366,13 @@ class FenceStore:
             params.append(f.country_code)
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
-            where.append("id < ?")
+            where.append("(ts, id) < (SELECT ts, id FROM login_attempts WHERE id = ?)")
             params.append(before_id)
         sql = f"SELECT {_LOGIN_COLUMNS} FROM login_attempts"  # noqa: S608
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        params.append(max(1, min(limit, _MAX_LIMIT)))
         with self._lock:
             rows = self._conn().execute(sql, params).fetchall()
         return [_login_row(r) for r in rows]
@@ -375,7 +380,7 @@ class FenceStore:
     def query_changes(
         self, f: ChangeFilter, *, limit: int = 50, before_id: int | None = None
     ) -> list[ChangeRow]:
-        """Return settings changes, newest first (by id), with keyset paging."""
+        """Return settings changes, newest first (ts, id), with keyset paging."""
         where: list[str] = []
         params: list[Any] = []
         if f.kind is not None:
@@ -388,13 +393,15 @@ class FenceStore:
             where.append("actor_user_id IS NOT NULL")
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
-            where.append("id < ?")
+            where.append(
+                "(ts, id) < (SELECT ts, id FROM settings_changes WHERE id = ?)"
+            )
             params.append(before_id)
         sql = f"SELECT {_CHANGE_COLUMNS} FROM settings_changes"  # noqa: S608
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        params.append(max(1, min(limit, _MAX_LIMIT)))
         with self._lock:
             rows = self._conn().execute(sql, params).fetchall()
         return [_change_row(r) for r in rows]
@@ -419,7 +426,7 @@ class FenceStore:
             f"SELECT {_LOGIN_COLUMNS} FROM ("  # noqa: S608
             f"SELECT {_LOGIN_COLUMNS}, ROW_NUMBER() OVER ("
             "PARTITION BY user_id ORDER BY ts DESC, id DESC) AS rn "
-            "FROM login_attempts WHERE result = ? AND user_id IS NOT NULL"
+            "FROM login_attempts WHERE result = ? AND confirmed = 1 AND user_id IS NOT NULL"
             ") WHERE rn = 1"
         )
         with self._lock:
@@ -447,12 +454,16 @@ class FenceStore:
                         f"DELETE FROM {table} WHERE ts < ?",  # noqa: S608
                         (text,),
                     ).rowcount
+                db.execute("COMMIT")
             except BaseException:
-                db.execute("ROLLBACK")
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
                 raise
-            db.execute("COMMIT")
             if deleted and deleted > total * _VACUUM_FRACTION:
-                db.execute("VACUUM")
+                try:
+                    db.execute("VACUUM")
+                except sqlite3.Error:
+                    _LOGGER.debug("VACUUM failed after purge")
         return deleted
 
     def stats(self) -> StoreStats:

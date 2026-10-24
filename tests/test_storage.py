@@ -1,5 +1,7 @@
 """Tests for the SQLite storage."""
+# ruff: noqa: SLF001
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
@@ -329,3 +331,108 @@ def test_credentials_never_persisted(store: FenceStore, tmp_path: Path) -> None:
     assert "flow_id" not in cols
     assert "count" in cols
     store.open()
+
+
+def test_paging_orders_by_ts_not_id(store: FenceStore) -> None:
+    """Rows inserted out of ts order page by (ts, id) without gaps or repeats."""
+    order = [3, 0, 4, 1, 2, 2]  # minutes; last two share a ts
+    store.insert(
+        [
+            login(NOW + timedelta(minutes=m), username=f"n{i}")
+            for i, m in enumerate(order)
+        ]
+    )
+    seen: list[str | None] = []
+    before = None
+    while page := store.query_logins(LoginFilter(), limit=2, before_id=before):
+        seen += [r.username_typed for r in page]
+        before = page[-1].id
+    # ts desc, then id desc for the tie (n5 and n4 share a ts).
+    assert seen == ["n2", "n0", "n5", "n4", "n3", "n1"]
+
+
+def test_changes_paging_orders_by_ts(store: FenceStore) -> None:
+    """Changes page by (ts, id) too."""
+    for m in (2, 0, 3, 1):
+        store.insert([change(NOW + timedelta(minutes=m), actor=f"m{m}")])
+    seen = []
+    before = None
+    while page := store.query_changes(ChangeFilter(), limit=3, before_id=before):
+        seen += [r.actor_user_id for r in page]
+        before = page[-1].id
+    assert seen == ["m3", "m2", "m1", "m0"]
+
+
+class _Proxy:
+    """Connection wrapper that fails chosen statements."""
+
+    def __init__(self, db: sqlite3.Connection, fail_on: str) -> None:
+        self._db = db
+        self._fail_on = fail_on
+
+    def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+        if sql == self._fail_on:
+            raise sqlite3.OperationalError("boom")
+        return self._db.execute(sql, *args)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str):
+        return getattr(self._db, name)
+
+
+def test_failed_commit_rolls_back_and_store_recovers(store: FenceStore) -> None:
+    """A failing COMMIT leaves no open transaction."""
+    real = store._db
+    store._db = _Proxy(real, "COMMIT")  # type: ignore[assignment]
+    with pytest.raises(sqlite3.OperationalError, match="boom"):
+        store.insert([login(username="lost")])
+    store._db = real
+    store.insert([login(username="kept")])
+    assert [r.username_typed for r in store.query_logins(LoginFilter())] == ["kept"]
+
+
+def test_failed_commit_in_purge_rolls_back(store: FenceStore) -> None:
+    """Purge with a failing COMMIT raises, then works again."""
+    store.insert([login(NOW - timedelta(days=100))])
+    real = store._db
+    store._db = _Proxy(real, "COMMIT")  # type: ignore[assignment]
+    with pytest.raises(sqlite3.OperationalError):
+        store.purge_older_than(NOW - timedelta(days=90))
+    store._db = real
+    assert store.stats().logins == 1
+    assert store.purge_older_than(NOW - timedelta(days=90)) == 1
+
+
+def test_limit_is_clamped(store: FenceStore) -> None:
+    """Zero, negative and huge limits are clamped to 1..500."""
+    store.insert([login(NOW + timedelta(seconds=i)) for i in range(3)])
+    assert len(store.query_logins(LoginFilter(), limit=0)) == 1
+    assert len(store.query_logins(LoginFilter(), limit=-5)) == 1
+    assert len(store.query_logins(LoginFilter(), limit=10**9)) == 3
+    store.insert([change()])
+    assert len(store.query_changes(ChangeFilter(), limit=0)) == 1
+
+
+def test_purge_survives_vacuum_failure(store: FenceStore) -> None:
+    """A VACUUM error after commit doesn't hide the deleted count."""
+    store.insert([login(NOW - timedelta(days=100))])
+    store._db = _Proxy(store._db, "VACUUM")  # type: ignore[arg-type,assignment]
+    assert store.purge_older_than(NOW - timedelta(days=90)) == 1
+    assert store.stats().logins == 0
+
+
+def test_last_success_ignores_unconfirmed(store: FenceStore) -> None:
+    """Only confirmed successes count."""
+    ok = login(
+        NOW - timedelta(days=1), result=LoginResult.SUCCESS, user_id="u1", ip="1.1.1.1"
+    )
+    pending = replace(
+        login(NOW, result=LoginResult.SUCCESS, user_id="u1", ip="2.2.2.2"),
+        confirmed=False,
+    )
+    only_pending = replace(
+        login(NOW, result=LoginResult.SUCCESS, user_id="u2"), confirmed=False
+    )
+    store.insert([ok, pending, only_pending])
+    result = store.last_success_per_user()
+    assert set(result) == {"u1"}
+    assert result["u1"].ip == "1.1.1.1"
