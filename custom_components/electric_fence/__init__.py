@@ -15,6 +15,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
 from .attribution import AttributionCollector
@@ -29,6 +30,7 @@ from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
 from .notifier import Notifier
+from .panel import async_register_panel, async_unregister_panel
 from .runtime import Runtime
 from .settings import Settings
 from .storage import FenceStore
@@ -164,6 +166,10 @@ async def async_setup_entry(
 
     # Applies option changes live; it never reloads, so the hooks stay put.
     entry.async_on_unload(entry.add_update_listener(async_apply_settings))
+
+    integration = await async_get_integration(hass, DOMAIN)
+    await async_register_panel(hass, str(integration.version))
+    entry.async_on_unload(lambda: async_unregister_panel(hass))
 
     # Last, so nothing that can fail runs after the platform is forwarded.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
