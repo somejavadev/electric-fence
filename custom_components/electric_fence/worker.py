@@ -1,0 +1,343 @@
+"""Background worker: enrich, merge, hold and store records off the login path."""
+
+import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import logging
+import sqlite3
+from typing import Protocol
+
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.util import dt as dt_util
+
+from .failopen import FailOpen
+from .models import LoginAttempt, LoginReason, LoginResult, Record
+from .storage import FenceStore
+
+_LOGGER = logging.getLogger(__name__)
+
+type RecordListener = Callable[[Record], None]
+
+
+class Enricher(Protocol):
+    """Adds source, country and hostname to a login attempt."""
+
+    async def async_enrich(self, record: LoginAttempt) -> None:
+        """Mutate only `source`, `country_code` and `hostname`."""
+
+
+class NullEnricher:
+    """Enricher that does nothing."""
+
+    async def async_enrich(self, record: LoginAttempt) -> None:
+        """Leave the record unchanged."""
+
+
+@dataclass(slots=True)
+class _Confirm:
+    """A success confirmation, queued so it is processed after its record."""
+
+    user_id: str
+    client_id: str | None
+    client_name: str | None
+
+
+@dataclass(slots=True)
+class _Held:
+    """A success waiting for confirmation."""
+
+    deadline: float
+    record: LoginAttempt
+
+
+@dataclass(slots=True)
+class _Merge:
+    """The pending row that identical failures are merged into."""
+
+    row: LoginAttempt
+    last_ts: datetime
+
+
+type _MergeKey = tuple[str | None, str | None, LoginReason]
+# None in the queue wakes the worker to check for stop.
+type _Item = Record | _Confirm | None
+
+
+class FenceWorker:
+    """Single background task that stores records in batches.
+
+    `submit` and `confirm_success` are safe to call from any hook: they only
+    queue, never raise, never await.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        store: FenceStore,
+        enricher: Enricher,
+        *,
+        max_queue: int = 10_000,
+        flush_interval: float = 1.0,
+        flush_size: int = 200,
+        merge_window: float = 1.0,
+        confirm_timeout: float = 60.0,
+    ) -> None:
+        """Initialise the worker (not started)."""
+        self._hass = hass
+        self._store = store
+        self._enricher = enricher
+        self._max_queue = max_queue
+        self._flush_interval = flush_interval
+        self._flush_size = flush_size
+        self._merge_window = timedelta(seconds=merge_window)
+        self._confirm_timeout = confirm_timeout
+        self._queue: asyncio.Queue[_Item] = asyncio.Queue(maxsize=max_queue)
+        self._wake = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._stopping = False
+        self._batch: list[Record] = []
+        self._flush_at: float | None = None
+        self._merges: dict[_MergeKey, _Merge] = {}
+        self._held: list[_Held] = []
+        self._flush_waiters: list[asyncio.Future[None]] = []
+        self._listeners: list[tuple[RecordListener, FailOpen]] = []
+        self._enrich_guard = FailOpen("enricher")
+        self._storage_ok = True
+        # Records never stored: queue full, or lost in a failed write.
+        self.dropped = 0
+        self.storage_errors = 0
+        self.last_storage_error: str | None = None
+        self.last_storage_error_at: datetime | None = None
+
+    @property
+    def queued(self) -> int:
+        """Return the number of items waiting in the queue."""
+        return self._queue.qsize()
+
+    @callback
+    def submit(self, record: Record) -> None:
+        """Queue a record. O(1), never raises, never awaits."""
+        try:
+            if self._stopping:
+                self.dropped += 1
+                return
+            self._queue.put_nowait(record)
+            self._wake.set()
+        except asyncio.QueueFull:
+            self.dropped += 1
+
+    @callback
+    def confirm_success(
+        self, user_id: str, client_id: str | None, client_name: str | None
+    ) -> None:
+        """Confirm the oldest held success of `user_id`. Never raises."""
+        try:
+            if self._stopping:
+                return
+            self._queue.put_nowait(_Confirm(user_id, client_id, client_name))
+            self._wake.set()
+        except asyncio.QueueFull:
+            # The success is stored unconfirmed after the timeout.
+            return
+
+    @callback
+    def add_listener(self, cb: RecordListener) -> CALLBACK_TYPE:
+        """Call `cb` for each record after it has been stored."""
+        entry = (cb, FailOpen(f"listener {getattr(cb, '__name__', 'callback')}"))
+        self._listeners.append(entry)
+
+        @callback
+        def _remove() -> None:
+            if entry in self._listeners:
+                self._listeners.remove(entry)
+
+        return _remove
+
+    async def async_start(self) -> None:
+        """Start the background task."""
+        if self._task is not None:
+            return
+        self._stopping = False
+        self._task = self._hass.async_create_background_task(
+            self._run(), "electric_fence worker"
+        )
+
+    async def async_stop(self) -> None:
+        """Store everything queued and held, then stop. Idempotent."""
+        task = self._task
+        if task is None:
+            return
+        self._stopping = True
+        self._wake.set()
+        try:
+            await task
+        finally:
+            self._task = None
+
+    async def async_flush(self) -> None:
+        """Wait until the queue is processed and the pending batch is written."""
+        task = self._task
+        if task is None or task.done():
+            return
+        fut: asyncio.Future[None] = self._hass.loop.create_future()
+        self._flush_waiters.append(fut)
+        self._wake.set()
+        await fut
+
+    async def _run(self) -> None:
+        """Worker loop."""
+        loop = self._hass.loop
+        while True:
+            self._wake.clear()
+            try:
+                while not self._queue.empty():
+                    item = self._queue.get_nowait()
+                    if item is not None:
+                        await self._process(item)
+                    if len(self._batch) >= self._flush_size:
+                        await self._flush()
+                now = loop.time()
+                self._release_expired(now)
+                if self._stopping:
+                    self._release_all()
+                if self._batch and (
+                    self._stopping
+                    or self._flush_waiters
+                    or (self._flush_at is not None and now >= self._flush_at)
+                ):
+                    await self._flush()
+                if self._queue.empty():
+                    self._resolve_waiters()
+                    if self._stopping:
+                        return
+            except Exception as err:  # noqa: BLE001
+                # Never let a bug end the worker. Type only: no usernames.
+                _LOGGER.error("Electric Fence worker error: %s", type(err).__name__)
+                continue
+            # A submit during processing has set the event: no wait then.
+            try:
+                async with asyncio.timeout(self._next_timeout(loop.time())):
+                    await self._wake.wait()
+            except TimeoutError:
+                pass
+
+    def _next_timeout(self, now: float) -> float | None:
+        deadlines: list[float] = []
+        if self._batch and self._flush_at is not None:
+            deadlines.append(self._flush_at)
+        if self._held:
+            deadlines.append(self._held[0].deadline)
+        if not deadlines:
+            return None
+        return max(0.0, min(deadlines) - now)
+
+    async def _process(self, item: Record | _Confirm) -> None:
+        if isinstance(item, _Confirm):
+            self._confirm(item)
+            return
+        if isinstance(item, LoginAttempt):
+            try:
+                await self._enricher.async_enrich(item)
+            except Exception as err:  # noqa: BLE001
+                self._enrich_guard.call(_reraise, err)
+            if item.result is LoginResult.FAILED:
+                self._merge_or_add(item)
+                return
+            if item.result is LoginResult.SUCCESS and not item.confirmed:
+                self._hold(item)
+                return
+        self._add(item)
+
+    def _merge_or_add(self, rec: LoginAttempt) -> None:
+        """Merge into a pending identical failure within the window, or add."""
+        key: _MergeKey = (rec.ip, rec.username_typed, rec.reason)
+        state = self._merges.get(key)
+        window = self._merge_window
+        if state is not None and (
+            abs(rec.ts - state.row.ts) <= window
+            or abs(rec.ts - state.last_ts) <= window
+        ):
+            state.row.count += rec.count
+            state.last_ts = max(state.last_ts, rec.ts)
+            return
+        self._merges[key] = _Merge(row=rec, last_ts=rec.ts)
+        self._add(rec)
+
+    def _hold(self, rec: LoginAttempt) -> None:
+        if len(self._held) >= self._max_queue:
+            self._add(self._held.pop(0).record)
+        self._held.append(
+            _Held(deadline=self._hass.loop.time() + self._confirm_timeout, record=rec)
+        )
+
+    def _confirm(self, conf: _Confirm) -> None:
+        for i, held in enumerate(self._held):
+            rec = held.record
+            if rec.user_id == conf.user_id:
+                del self._held[i]
+                rec.confirmed = True
+                if conf.client_id is not None:
+                    rec.client_id = conf.client_id
+                if conf.client_name is not None:
+                    rec.client_name = conf.client_name
+                self._add(rec)
+                return
+
+    def _release_expired(self, now: float) -> None:
+        while self._held and self._held[0].deadline <= now:
+            self._add(self._held.pop(0).record)
+
+    def _release_all(self) -> None:
+        held, self._held = self._held, []
+        for h in held:
+            self._add(h.record)
+
+    def _add(self, rec: Record) -> None:
+        if not self._batch:
+            self._flush_at = self._hass.loop.time() + self._flush_interval
+        self._batch.append(rec)
+
+    def _resolve_waiters(self) -> None:
+        waiters, self._flush_waiters = self._flush_waiters, []
+        for fut in waiters:
+            if not fut.done():
+                fut.set_result(None)
+
+    async def _flush(self) -> None:
+        batch, self._batch = self._batch, []
+        self._flush_at = None
+        # Stored rows can't be merged into any more.
+        self._merges.clear()
+        try:
+            await self._hass.async_add_executor_job(self._store.insert, batch)
+        except Exception as err:  # noqa: BLE001
+            self.storage_errors += 1
+            self.dropped += len(batch)
+            self.last_storage_error_at = dt_util.utcnow()
+            # sqlite messages carry no row data; other messages might.
+            self.last_storage_error = (
+                f"{type(err).__name__}: {err}"
+                if isinstance(err, sqlite3.Error)
+                else type(err).__name__
+            )
+            if self._storage_ok:
+                self._storage_ok = False
+                _LOGGER.warning(
+                    "Electric Fence could not store %d records: %s",
+                    len(batch),
+                    self.last_storage_error,
+                )
+            return
+        if not self._storage_ok:
+            self._storage_ok = True
+            _LOGGER.info("Electric Fence storage recovered")
+        listeners = list(self._listeners)
+        for rec in batch:
+            for cb, guard in listeners:
+                guard.call(cb, rec)
+
+
+def _reraise(err: Exception) -> None:
+    """Re-raise `err` inside a FailOpen guard so it is counted and logged."""
+    raise err

@@ -13,9 +13,9 @@ from custom_components.electric_fence.contracts import (
     register_contract,
 )
 from custom_components.electric_fence.runtime import Runtime
-from custom_components.electric_fence.settings import Settings
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from tests.helpers import make_runtime
 
 
 class _Handle:
@@ -74,7 +74,7 @@ async def test_install_skipped_and_issue_raised_when_contract_fails(
     register_contract(
         Contract("dummy", "dummy_collector", lambda hass: "missing thing")
     )
-    c = DummyCollector(hass, Runtime(Settings()))
+    c = DummyCollector(hass, make_runtime(hass))
     assert c.install() is False
     assert c.disabled_reason == ["missing thing"]
     assert c.installed == 0
@@ -94,7 +94,7 @@ async def test_install_clears_issue_and_uninstall_is_idempotent(
 ) -> None:
     """Passing contracts install, clear the issue, and teardown restores."""
     register_contract(Contract("a", "dummy_collector", lambda hass: "bad"))
-    c = DummyCollector(hass, Runtime(Settings()))
+    c = DummyCollector(hass, make_runtime(hass))
     assert c.install() is False
     assert _issue(hass) is not None
     CONTRACTS.pop("a")
@@ -128,7 +128,7 @@ async def test_install_failure_rolls_back_and_raises_issue(
     hass: HomeAssistant,
 ) -> None:
     """An exception in _install is contained, rolled back and reported."""
-    c = DummyCollector(hass, Runtime(Settings()))
+    c = DummyCollector(hass, make_runtime(hass))
     c.fail_install = True
     assert c.install() is False
     assert c.disabled_reason == ["install raised ValueError"]
@@ -141,7 +141,7 @@ async def test_install_is_noop_when_installed_and_uninstall_runs_once(
     hass: HomeAssistant,
 ) -> None:
     """Double install does nothing; repeated uninstall tears down once."""
-    c = DummyCollector(hass, Runtime(Settings()))
+    c = DummyCollector(hass, make_runtime(hass))
     assert c.install() is True
     assert c.install() is True
     assert c.installed == 1
@@ -165,7 +165,7 @@ async def test_uninstall_survives_failing_restore_and_unsub(
         def _uninstall(self) -> None:
             raise RuntimeError("x")
 
-    c = Boom(hass, Runtime(Settings()))
+    c = Boom(hass, make_runtime(hass))
     assert c.install() is True
     c._handles.insert(0, Bad())  # type: ignore[arg-type]  # noqa: SLF001
     c._unsubs.insert(0, Bad().restore)  # noqa: SLF001

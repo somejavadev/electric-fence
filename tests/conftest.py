@@ -14,6 +14,12 @@ def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
 
 
 @pytest.fixture
+def hass_config_dir(hass_tmp_config_dir: str) -> str:
+    """Use a temporary config folder, so the database never lands in the repo."""
+    return hass_tmp_config_dir
+
+
+@pytest.fixture
 async def setup_entry(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> MockConfigEntry:

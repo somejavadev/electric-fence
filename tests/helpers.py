@@ -1,14 +1,21 @@
 """Test helpers shared by Electric Fence tests."""
 
+from pathlib import Path
 from typing import Any, cast
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient
 from pytest_homeassistant_custom_component.common import register_auth_provider
 
+from custom_components.electric_fence.const import DOMAIN
+from custom_components.electric_fence.runtime import Runtime
+from custom_components.electric_fence.settings import Settings
+from custom_components.electric_fence.storage import FenceStore
+from custom_components.electric_fence.worker import FenceWorker, NullEnricher
 from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
 from homeassistant.auth.models import User
 from homeassistant.auth.providers.homeassistant import HassAuthProvider
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 
 CLIENT_ID = "http://127.0.0.1:8123/"
@@ -56,3 +63,27 @@ async def login_flow(
         json={"client_id": CLIENT_ID, "username": username, "password": password},
     )
     return cast(dict[str, Any], await resp.json())
+
+
+async def flush_worker(hass: HomeAssistant) -> None:
+    """Wait until the worker's queue is empty and the pending batch is written."""
+    for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+        await entry.runtime_data.worker.async_flush()
+
+
+def make_runtime(hass: HomeAssistant, store: FenceStore | None = None) -> Runtime:
+    """Return a Runtime with a worker that is not started.
+
+    Without `store`, the store is never opened (for tests that don't store).
+    """
+    if store is None:
+        store = FenceStore(Path(hass.config.path(".storage", "unused.db")))
+    enricher = NullEnricher()
+    return Runtime(
+        settings=Settings(),
+        store=store,
+        worker=FenceWorker(hass, store, enricher),
+        enricher=enricher,
+        collectors=[],
+        ha_version=HA_VERSION,
+    )

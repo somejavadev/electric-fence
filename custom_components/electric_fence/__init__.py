@@ -1,20 +1,47 @@
 """The Electric Fence integration."""
 
+from datetime import datetime, timedelta
 import logging
+from pathlib import Path
+import shutil
 
 from awesomeversion import AwesomeVersion
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as HA_VERSION
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HassJob, HomeAssistant
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.util import dt as dt_util
 
+from .collectors.base import BaseCollector
 from .const import MIN_HA_VERSION
 from .runtime import Runtime
 from .settings import Settings
+from .storage import FenceStore
+from .worker import FenceWorker, NullEnricher
 
 _LOGGER = logging.getLogger(__name__)
 
 type ElectricFenceConfigEntry = ConfigEntry[Runtime]
+
+DB_FILENAME = "electric_fence.db"
+DATA_DIRNAME = "electric_fence"
+PURGE_INTERVAL = timedelta(hours=24)
+FIRST_PURGE_DELAY = timedelta(minutes=5)
+
+# Each collector task appends its class here.
+COLLECTOR_TYPES: list[type[BaseCollector]] = []
+
+
+def _db_path(hass: HomeAssistant) -> Path:
+    return Path(hass.config.path(".storage", DB_FILENAME))
+
+
+def _open_store(path: Path) -> FenceStore:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    store = FenceStore(path)
+    store.open()
+    return store
 
 
 async def async_setup_entry(
@@ -28,7 +55,61 @@ async def async_setup_entry(
             HA_VERSION,
         )
         return False
-    entry.runtime_data = Runtime(settings=Settings.from_options(entry.options))
+
+    store = await hass.async_add_executor_job(_open_store, _db_path(hass))
+    enricher = NullEnricher()
+    worker = FenceWorker(hass, store, enricher)
+    runtime = Runtime(
+        settings=Settings.from_options(entry.options),
+        store=store,
+        worker=worker,
+        enricher=enricher,
+        collectors=[],
+        ha_version=HA_VERSION,
+    )
+    entry.runtime_data = runtime
+
+    await worker.async_start()
+
+    async def _async_shutdown() -> None:
+        # Store what is queued before shutdown cancels background tasks.
+        await worker.async_stop()
+        await hass.async_add_executor_job(store.close)
+
+    entry.async_on_unload(hass.async_add_shutdown_job(HassJob(_async_shutdown)))
+
+    for collector_type in COLLECTOR_TYPES:
+        collector = collector_type(hass, runtime)
+        collector.install()
+        runtime.collectors.append(collector)
+
+    async def _async_purge(_now: datetime | None = None) -> None:
+        cutoff = dt_util.utcnow() - timedelta(days=runtime.settings.retention_days)
+        try:
+            deleted = await hass.async_add_executor_job(store.purge_older_than, cutoff)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Electric Fence purge failed: %s", type(err).__name__)
+            return
+        _LOGGER.debug("Electric Fence purged %d rows", deleted)
+
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            _async_purge,
+            PURGE_INTERVAL,
+            name="electric_fence purge",
+            cancel_on_shutdown=True,
+        )
+    )
+    entry.async_on_unload(
+        async_call_later(
+            hass,
+            FIRST_PURGE_DELAY,
+            HassJob(
+                _async_purge, "electric_fence first purge", cancel_on_shutdown=True
+            ),
+        )
+    )
     return True
 
 
@@ -36,4 +117,24 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> bool:
     """Unload a config entry."""
+    runtime = entry.runtime_data
+    for collector in reversed(runtime.collectors):
+        collector.uninstall()
+    runtime.collectors.clear()
+    await runtime.worker.async_stop()
+    await hass.async_add_executor_job(runtime.store.close)
     return True
+
+
+def _remove_data(config_dir: Path) -> None:
+    storage = config_dir / ".storage"
+    for suffix in ("", "-wal", "-shm"):
+        (storage / f"{DB_FILENAME}{suffix}").unlink(missing_ok=True)
+    shutil.rmtree(storage / DATA_DIRNAME, ignore_errors=True)
+
+
+async def async_remove_entry(
+    hass: HomeAssistant, entry: ElectricFenceConfigEntry
+) -> None:
+    """Delete the database and GeoIP files when the integration is removed."""
+    await hass.async_add_executor_job(_remove_data, Path(hass.config.config_dir))
