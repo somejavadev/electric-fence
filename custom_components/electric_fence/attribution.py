@@ -6,6 +6,11 @@ Everything else is System. Wrappers open a scope around the admin entry
 points: the config, options and subentry flow managers, entry delete, and
 the admin WebSocket commands.
 
+IP: HTTP scopes use `request.remote`. WebSocket scopes use
+`ActiveConnection.remote`, which Core copies from the upgrade request's
+`remote` at auth (after its forwarded-header handling, so it is the same
+address as for HTTP); `current_request.remote` is the fallback.
+
 Safety (spec §4): every wrapper calls Core's original and returns its result,
 or lets its exception propagate, unchanged. Reading the actor and targets and
 opening or closing the scope run inside `self.guard`; when any of that fails,
@@ -20,6 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.auth.models import User
+from homeassistant.auth.providers.homeassistant import HassAuthProvider
 from homeassistant.components.http.const import KEY_HASS_USER
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.components.websocket_api.const import (
@@ -59,6 +65,7 @@ _ENTRY_PATH = "/api/config/config_entries/entry/{entry_id}"
 _CONFIG = "config"
 
 _CMD_CHANGE_PASSWORD = "config/auth_provider/homeassistant/change_password"
+_CMD_HA_DELETE = "config/auth_provider/homeassistant/delete"
 
 ADMIN_WS_COMMANDS: tuple[str, ...] = (
     "config_entries/update",
@@ -198,7 +205,6 @@ class _Rule:
     changes: frozenset[ChangeAction]
     # Details key the target must equal; None credits any target.
     target: str | None
-    first_only: bool = False
 
 
 _ENTRY_RULE = _Rule(
@@ -218,13 +224,11 @@ _WS_RULES: dict[str, _Rule] = {
     "config_entries/disable": _ENTRY_RULE,
     "config_entries/subentries/update": _ENTRY_RULE,
     "config_entries/subentries/delete": _ENTRY_RULE,
-    "config/auth/create": _Rule(
-        ChangeKind.USER, frozenset({ChangeAction.ADDED}), None, first_only=True
-    ),
+    "config/auth/create": _Rule(ChangeKind.USER, frozenset({ChangeAction.ADDED}), None),
     "config/auth/update": _USER_UPDATED_RULE,
     "config/auth_provider/homeassistant/admin_change_username": _USER_UPDATED_RULE,
     "config/auth_provider/homeassistant/create": _USER_UPDATED_RULE,
-    "config/auth_provider/homeassistant/delete": _USER_UPDATED_RULE,
+    _CMD_HA_DELETE: _USER_UPDATED_RULE,
     "config/auth/delete": _Rule(
         ChangeKind.USER, frozenset({ChangeAction.REMOVED}), "user_id"
     ),
@@ -260,7 +264,12 @@ def _same(value: str | None, expected: Any) -> bool:
 
 
 def _first(details: dict[str, Any]) -> bool:
-    """Credit only once per scope."""
+    """Credit only once per scope (R25).
+
+    A scope has one kind and one target, so this is once per (kind, target).
+    Core dispatches the admin's own change before any follow-up (setup,
+    reload) in every wrapped handler.
+    """
     if details.get("credited"):
         return False
     details["credited"] = True
@@ -302,7 +311,7 @@ def _implies(
         return False
     if rule.target is not None and not _same(target_id, details.get(rule.target)):
         return False
-    return not rule.first_only or _first(details)
+    return _first(details)
 
 
 def credited_actor(
@@ -312,7 +321,13 @@ def credited_actor(
     *,
     domain: str | None = None,
 ) -> ActionScope | None:
-    """Return the current scope only if its action implies this change."""
+    """Return the current scope only if its action implies this change.
+
+    The first matching change uses up the scope's credit (R25): later ones,
+    such as an integration's own update while it is set up again inline, are
+    System. So call this exactly once per change, and only for a real change
+    (saved fields changed), never for state-only updates.
+    """
     scope = current_actor()
     if scope is None or not _implies(scope, kind, change, target_id, domain):
         return None
@@ -368,9 +383,39 @@ def _ws_details(
     if command == _CMD_CHANGE_PASSWORD:
         # The connection's own password.
         details["user_id"] = connection.user.id
+    elif command == _CMD_HA_DELETE:
+        # The message names the username only (R24).
+        details["user_id"] = _hass_user_id(connection.hass, msg.get("username"))
     else:
         details[rule.target] = _str(msg.get(rule.target))
     return details
+
+
+def _hass_user_id(hass: HomeAssistant, username: Any) -> str | None:
+    """Return the ID of the user with this `homeassistant` provider username.
+
+    Memory only: the provider's credentials on each user, normalised on both
+    sides as the provider does. The user list is the auth store's private
+    `_users` (pinned by a contract test); anything unexpected gives None.
+    """
+    if not isinstance(username, str):
+        return None
+    provider = next(
+        (p for p in hass.auth.auth_providers if isinstance(p, HassAuthProvider)),
+        None,
+    )
+    if provider is None or provider.data is None:
+        return None
+    data = provider.data
+    users = getattr(getattr(hass.auth, "_store", None), "_users", None)
+    if not isinstance(users, Mapping):
+        return None
+    name = data.normalize_username(username)
+    for user in users.values():
+        found = provider.async_get_username(user)
+        if found is not None and data.normalize_username(found) == name:
+            return str(user.id)
+    return None
 
 
 def _ws_ip(connection: ActiveConnection) -> str | None:

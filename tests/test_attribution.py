@@ -149,26 +149,47 @@ class _DummyFlow(config_entries.ConfigFlow):
 
 
 async def _dummy_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Update the own entry during setup, as integrations do."""
-    hass.config_entries.async_update_entry(entry, data={**entry.data, "touched": True})
+    """Update the own entry during every setup, as integrations do."""
+    setups = entry.data.get("setups", 0) + 1
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "touched": True, "setups": setups}
+    )
 
 
-async def _dummy_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    return True
+async def _dummy_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Unload (HA 2026.11 rejects a boolean result)."""
+
+
+async def _reloading_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Set up like `ef_dummy`, and reload when the options change."""
+    options = dict(entry.options)
+
+    async def _on_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
+        if entry.options != options:
+            await hass.config_entries.async_reload(entry.entry_id)
+
+    entry.async_on_unload(entry.add_update_listener(_on_update))
+    await _dummy_setup_entry(hass, entry)
+
+
+def _mock_dummy(hass: HomeAssistant, *, reloading: bool = False) -> None:
+    mock_integration(
+        hass,
+        MockModule(
+            DUMMY,
+            async_setup_entry=_reloading_setup_entry
+            if reloading
+            else _dummy_setup_entry,
+            async_unload_entry=_dummy_unload_entry,
+        ),
+    )
 
 
 @pytest.fixture
 def dummy(hass: HomeAssistant) -> Iterator[None]:
     """Register the `ef_dummy` test integration with its config flow."""
     PROBE.spawned = {}
-    mock_integration(
-        hass,
-        MockModule(
-            DUMMY,
-            async_setup_entry=_dummy_setup_entry,
-            async_unload_entry=_dummy_unload_entry,
-        ),
-    )
+    _mock_dummy(hass)
     mock_platform(hass, f"{DUMMY}.config_flow", None)
     with mock_config_flow(DUMMY, _DummyFlow):
         yield
@@ -216,18 +237,54 @@ def _qualname(task: asyncio.Task[Any] | None) -> str | None:
     return getattr(task.get_coro(), "__qualname__", None)
 
 
-def _watch_entries(hass: HomeAssistant) -> list[_EntrySeen]:
-    """Record `(change, entry, credited, current)` for each entry change."""
-    seen: list[_EntrySeen] = []
+def _saved(entry: ConfigEntry) -> tuple[Any, ...]:
+    """Return the saved fields of an entry (state changes leave them alone)."""
+    return (
+        entry.title,
+        dict(entry.data),
+        dict(entry.options),
+        entry.disabled_by,
+        entry.pref_disable_polling,
+        entry.pref_disable_new_entities,
+        tuple(entry.subentries),
+    )
+
+
+class _Seen(list[_EntrySeen]):
+    """Seen changes, plus each entry's data at the time of the change."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.data: list[dict[str, Any]] = []
+
+
+def _watch_entries(hass: HomeAssistant, *, dedupe: bool = True) -> _Seen:
+    """Record `(change, entry, credited, current)` for each real entry change.
+
+    Like the Task 10 listener, `credited_actor` is called once per real
+    change only: UPDATEDs that leave the saved fields alone are skipped.
+    Without `dedupe`, every dispatch is recorded.
+    """
+    seen = _Seen()
+    saved = {e.entry_id: _saved(e) for e in hass.config_entries.async_entries()}
 
     @callback
     def _on_change(change: ConfigEntryChange, entry: ConfigEntry) -> None:
         if entry.domain != DUMMY:
             return
+        now = _saved(entry)
+        if (
+            dedupe
+            and change is ConfigEntryChange.UPDATED
+            and saved.get(entry.entry_id) == now
+        ):
+            return
+        saved[entry.entry_id] = now
         credited = credited_actor(
             ChangeKind.CONFIG_ENTRY, _CHANGE[change], entry.entry_id, domain=DUMMY
         )
         seen.append((change, entry, credited, current_actor()))
+        seen.data.append(dict(entry.data))
         if credited is not None:
             # A finished task drops its coroutine: look while it runs.
             OWNER_QUALNAMES[id(credited)] = _qualname(asyncio.current_task())
@@ -389,7 +446,7 @@ async def test_scope_for_options_flow(
 
     (seen_update,) = _credited(seen, ConfigEntryChange.UPDATED)
     assert seen_update.action == "options_flow"
-    assert seen_update.details == {"entry_id": entry.entry_id}
+    assert seen_update.details == {"entry_id": entry.entry_id, "credited": True}
     _assert_request_scope(seen_update, hass_admin_user, ACTION_OPTIONS_FLOW)
     assert entry.options == {"opt": True}
 
@@ -413,7 +470,7 @@ async def test_scope_for_subentry_flow(
     await hass.async_block_till_done()
 
     (seen_update,) = _credited(seen, ConfigEntryChange.UPDATED)
-    assert seen_update.details == {"entry_id": entry.entry_id}
+    assert seen_update.details == {"entry_id": entry.entry_id, "credited": True}
     _assert_request_scope(seen_update, hass_admin_user, ACTION_SUBENTRY_FLOW)
     assert len(entry.subentries) == 1
 
@@ -435,7 +492,7 @@ async def test_scope_for_entry_delete_view(
     await hass.async_block_till_done()
     (seen_removed,) = _credited(seen, ConfigEntryChange.REMOVED)
     assert seen_removed.action == "entry_delete"
-    assert seen_removed.details == {"entry_id": entry.entry_id}
+    assert seen_removed.details == {"entry_id": entry.entry_id, "credited": True}
     assert seen_removed.user_id == hass_admin_user.id
     assert seen_removed.ip == "127.0.0.1"
     assert seen_removed.active is False
@@ -578,11 +635,11 @@ async def test_ws_scope_stays_open_until_handler_task_finishes(
 
     async def _link(*args: Any, **kwargs: Any) -> Any:
         observed["task"] = asyncio.current_task()
-        observed["during"] = credited_actor(
-            ChangeKind.USER, ChangeAction.UPDATED, user.id
-        )
         observed["other_user"] = credited_actor(
             ChangeKind.USER, ChangeAction.UPDATED, hass_admin_user.id
+        )
+        observed["during"] = credited_actor(
+            ChangeKind.USER, ChangeAction.UPDATED, user.id
         )
         return await original(*args, **kwargs)
 
@@ -606,6 +663,7 @@ async def test_ws_scope_stays_open_until_handler_task_finishes(
     assert scope.details == {
         "command": "config/auth_provider/homeassistant/create",
         "user_id": user.id,
+        "credited": True,
     }
     assert observed["other_user"] is None
     assert observed["task"].get_name().startswith("websocket_api.async:")
@@ -639,13 +697,152 @@ async def test_scope_for_entry_ws_commands(
 
     assert msg["success"], msg
     await hass.async_block_till_done()
-    credited = _credited(seen, ConfigEntryChange.UPDATED)
-    assert credited
-    assert all(
-        c.details == {"command": command, "entry_id": entry.entry_id} for c in credited
-    )
-    assert all(e is entry for ch, e, c, _ in seen if c is not None)
+    (credited,) = [c for _, _, c, _ in seen if c is not None]
+    assert credited.details == {
+        "command": command,
+        "entry_id": entry.entry_id,
+        "credited": True,
+    }
+    assert credited.user_id == hass_admin_user.id
+    assert [e for _, e, c, _ in seen if c is not None] == [entry]
     assert other.title != "New title"
+
+
+def _credited_changes(seen: _Seen) -> list[tuple[bool, dict[str, Any]]]:
+    """Return `(credited, data then)` for each real change, in order."""
+    return [(c is not None, d) for (_, _, c, _), d in zip(seen, seen.data, strict=True)]
+
+
+async def test_ws_reenable_credits_enable_not_setup_update(
+    hass: HomeAssistant,
+    fence: AttributionCollector,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Re-enabling sets the entry up inline; its own update is System (R25)."""
+    entry = await _dummy_entry(hass)
+    await hass.config_entries.async_set_disabled_by(
+        entry.entry_id, config_entries.ConfigEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+    seen = _watch_entries(hass)
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json_auto_id(
+        {
+            "type": "config_entries/disable",
+            "entry_id": entry.entry_id,
+            "disabled_by": None,
+        }
+    )
+    msg = await ws.receive_json()
+
+    assert msg["success"], msg
+    await hass.async_block_till_done()
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+    assert entry.data["setups"] == 2
+    assert _credited_changes(seen) == [
+        (True, {"touched": True, "setups": 1}),
+        (False, {"touched": True, "setups": 2}),
+    ]
+    assert seen[0][2] is not None
+    assert seen[0][2].active is False
+
+
+async def test_ws_pref_disable_polling_credits_only_the_update(
+    hass: HomeAssistant,
+    fence: AttributionCollector,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """A polling change reloads inline; the setup's own update is System."""
+    entry = await _dummy_entry(hass)
+    seen = _watch_entries(hass)
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json_auto_id(
+        {
+            "type": "config_entries/update",
+            "entry_id": entry.entry_id,
+            "pref_disable_polling": True,
+        }
+    )
+    msg = await ws.receive_json()
+
+    assert msg["success"], msg
+    await hass.async_block_till_done()
+    assert entry.pref_disable_polling is True
+    assert _credited_changes(seen) == [
+        (True, {"touched": True, "setups": 1}),
+        (False, {"touched": True, "setups": 2}),
+    ]
+
+
+async def test_ws_update_with_listener_reload_credits_only_the_update(
+    hass: HomeAssistant,
+    fence: AttributionCollector,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """An update listener's eager reload inherits the scope, but is System."""
+    _mock_dummy(hass, reloading=True)
+    entry = await _dummy_entry(hass)
+    seen = _watch_entries(hass)
+    ws = await hass_ws_client(hass)
+
+    # A title change doesn't reload; a WS options change isn't possible,
+    # so the options change comes from code inside the command's scope.
+    original = hass.config_entries.async_update_entry
+
+    def _update(entry_: ConfigEntry, **kwargs: Any) -> bool:
+        return original(entry_, **kwargs, options={"opt": "ws"})
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hass.config_entries, "async_update_entry", _update)
+        await ws.send_json_auto_id(
+            {"type": "config_entries/update", "entry_id": entry.entry_id, "title": "T"}
+        )
+        msg = await ws.receive_json()
+        assert msg["success"], msg
+        await hass.async_block_till_done()
+
+    assert entry.data["setups"] == 2
+    assert [c for c, _ in _credited_changes(seen)] == [True, False]
+
+
+async def test_options_flow_reload_credits_first_change_only(
+    hass: HomeAssistant,
+    fence: AttributionCollector,
+    hass_client: ClientSessionGenerator,
+) -> None:
+    """The options change is credited once; the reload's own update is System.
+
+    Every dispatch is recorded here: Core runs the update listener (an eager
+    task that starts the reload) *before* it dispatches the options change,
+    so the first dispatch showing the new options is the reload's state
+    change, from the listener task (see the Task 9 fix report).
+    """
+    _mock_dummy(hass, reloading=True)
+    entry = await _dummy_entry(hass)
+    seen = _watch_entries(hass, dedupe=False)
+    client = await hass_client()
+
+    resp = await client.post(
+        "/api/config/config_entries/options/flow", json={"handler": entry.entry_id}
+    )
+    form = await resp.json()
+    resp = await client.post(
+        f"/api/config/config_entries/options/flow/{form['flow_id']}", json={}
+    )
+    assert (await resp.json())["type"] == "create_entry"
+    await hass.async_block_till_done()
+
+    assert entry.options == {"opt": True}
+    assert entry.data["setups"] == 2
+    (credited,) = [c for _, _, c, _ in seen if c is not None]
+    assert credited.action == ACTION_OPTIONS_FLOW
+    # The setup's own update: the dispatch where `setups` turns 2.
+    setups = [d["setups"] for d in seen.data]
+    setup_update = setups.index(2)
+    assert setups[setup_update - 1] == 1
+    assert seen[setup_update][2] is None
 
 
 async def test_scope_for_core_config_update(
@@ -1050,6 +1247,7 @@ _ENTRY_WS = (
     "config_entries/subentries/update",
     "config_entries/subentries/delete",
 )
+_HA_DELETE = "config/auth_provider/homeassistant/delete"
 _USER_UPDATE_WS = (
     "config/auth/update",
     "config/auth_provider/homeassistant/admin_change_username",
@@ -1131,6 +1329,100 @@ async def test_credited_actor_table(
     assert result is None or result is scope
 
 
+@pytest.mark.parametrize(
+    ("action", "details", "kind", "change", "target"),
+    [row[:5] for row in _TABLE if row[5]],
+)
+async def test_credited_actor_credits_once_per_scope(
+    hass_admin_user: MockUser,
+    action: str,
+    details: dict[str, Any],
+    kind: ChangeKind,
+    change: ChangeAction,
+    target: str | None,
+) -> None:
+    """A scope credits only its first matching change (R25)."""
+    with open_scope(
+        user=hass_admin_user,
+        ip=None,
+        action=action,
+        details=dict(details),
+        owner=asyncio.current_task(),
+    ) as scope:
+        assert credited_actor(kind, change, target, domain="d") is scope
+        assert credited_actor(kind, change, target, domain="d") is None
+
+
+async def test_non_matching_change_does_not_use_up_the_credit(
+    hass_admin_user: MockUser,
+) -> None:
+    """Changes to other targets leave the credit for the scope's own change."""
+    with open_scope(
+        user=hass_admin_user,
+        ip=None,
+        action=ACTION_ENTRY_DELETE,
+        details={"entry_id": "e"},
+        owner=asyncio.current_task(),
+    ) as scope:
+        assert credited_actor(_CE, A.UPDATED, "e") is None
+        assert credited_actor(_CE, A.REMOVED, "f") is None
+        assert credited_actor(_CE, A.REMOVED, "e") is scope
+
+
+async def test_ha_delete_resolves_username_to_user(
+    hass: HomeAssistant,
+    fence: AttributionCollector,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """Deleting a username's credentials credits that user's update (R24)."""
+    user = await create_hass_user(hass, "dave", "secret", admin=False)
+    observed: dict[str, Any] = {}
+    original = hass.auth.async_remove_credentials
+
+    async def _remove(*args: Any, **kwargs: Any) -> Any:
+        observed["credited"] = credited_actor(_USER, A.UPDATED, user.id)
+        return await original(*args, **kwargs)
+
+    hass.auth.async_remove_credentials = _remove  # type: ignore[method-assign]
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json_auto_id({"type": _HA_DELETE, "username": "dave"})
+    msg = await ws.receive_json()
+
+    assert msg["success"], msg
+    scope = observed["credited"]
+    assert scope is not None
+    assert scope.user_id == hass_admin_user.id
+    assert scope.details == {
+        "command": _HA_DELETE,
+        "user_id": user.id,
+        "credited": True,
+    }
+    assert user.credentials == []
+
+
+async def test_hass_user_id_lookup(hass: HomeAssistant) -> None:
+    """The username matches normalised; anything unknown is None."""
+    user = await create_hass_user(hass, "dave", "secret")
+    await create_hass_user(hass, "erin", "secret")
+    lookup = attribution._hass_user_id
+
+    assert lookup(hass, " DAVE ") == user.id
+    assert lookup(hass, "nobody") is None
+    assert lookup(hass, None) is None
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hass.auth._store, "_users", None)
+        assert lookup(hass, "dave") is None
+    provider = hass.auth.get_auth_provider("homeassistant", None)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(provider, "data", None)
+        assert lookup(hass, "dave") is None
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hass.auth, "_providers", {})
+        assert lookup(hass, "dave") is None
+
+
 async def test_credited_actor_first_added_user_only(hass_admin_user: MockUser) -> None:
     """`config/auth/create` credits only the first user added."""
     with open_scope(
@@ -1152,6 +1444,7 @@ async def test_credited_actor_without_scope_is_system() -> None:
 def _conn(user_id: str = "admin", remote: str | None = "10.0.0.2") -> Mock:
     connection = Mock(remote=remote)
     connection.user.id = user_id
+    connection.hass.auth.auth_providers = []
     return connection
 
 
@@ -1159,8 +1452,9 @@ def _conn(user_id: str = "admin", remote: str | None = "10.0.0.2") -> Mock:
     ("command", "msg", "expected"),
     [
         *[(c, {"entry_id": "e", "x": 1}, {"entry_id": "e"}) for c in _ENTRY_WS],
-        *[(c, {"user_id": "u"}, {"user_id": "u"}) for c in _USER_UPDATE_WS],
-        ("config/auth_provider/homeassistant/delete", {"username": "x"}, {"user_id": None}),
+        *[(c, {"user_id": "u"}, {"user_id": "u"}) for c in _USER_UPDATE_WS if c != _HA_DELETE],
+        (_HA_DELETE, {"username": "x"}, {"user_id": None}),
+        (_HA_DELETE, {"user_id": "u"}, {"user_id": None}),
         ("config/auth/delete", {"user_id": "u"}, {"user_id": "u"}),
         ("config/auth_provider/homeassistant/admin_change_password", {"user_id": "u"}, {"user_id": "u"}),
         ("config/auth_provider/homeassistant/change_password", {"user_id": "u"}, {"user_id": "admin"}),

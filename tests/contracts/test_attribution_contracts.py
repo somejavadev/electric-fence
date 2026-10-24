@@ -233,3 +233,11 @@ async def test_admin_ws_commands_run_in_named_async_tasks(
 
     assert seen == [f"{WS_TASK_PREFIX}websocket_update_config"]
     assert "config/core/update" in ADMIN_WS_COMMANDS
+
+
+async def test_auth_store_keeps_users_in_memory(hass: HomeAssistant) -> None:
+    """The username lookup for `homeassistant/delete` reads `_store._users`."""
+    users = hass.auth._store._users  # noqa: SLF001
+    assert isinstance(users, dict)
+    assert {u.id for u in await hass.auth.async_get_users()} == set(users)
+    assert all(user.id == key for key, user in users.items())

@@ -214,9 +214,8 @@ async def _observe_flow_setup_update(
     """
     seen: dict[str, Any] = {}
 
-    async def _async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    async def _async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         hass.config_entries.async_update_entry(entry, data={"touched": True})
-        return True
 
     class _FlowHandler(config_entries.ConfigFlow):
         VERSION = 1
