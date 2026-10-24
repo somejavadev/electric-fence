@@ -10,6 +10,13 @@
       "single_instance_allowed": "Electric Fence is already set up. Only one instance is allowed."
     }
   },
+  "entity": {
+    "sensor": {
+      "failed_logins": {
+        "name": "Failed logins"
+      }
+    }
+  },
   "issues": {
     "collector_disabled": {
       "title": "Electric Fence collector disabled",
