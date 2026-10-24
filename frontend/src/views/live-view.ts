@@ -62,6 +62,11 @@ export abstract class LiveView extends LitElement {
     this._scheduleRefresh();
   }
 
+  /** Clear per-run flags (such as a Load more in flight) on every start. */
+  protected _resetRun(): void {
+    // Nothing by default.
+  }
+
   /** Extra loads that start with the view; failures must be swallowed. */
   protected _loadExtras(generation: number): void {
     void generation;
@@ -101,6 +106,7 @@ export abstract class LiveView extends LitElement {
     this._liveFailed = false;
     const generation = ++this._generation;
     this._phase = "loading";
+    this._resetRun();
     void this._refresh();
     void this._subscribe(generation);
     this._loadExtras(generation);

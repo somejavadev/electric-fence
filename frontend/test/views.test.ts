@@ -732,3 +732,57 @@ describe("users accessibility", () => {
     ).not.toBeNull();
   });
 });
+
+describe("Load more flag across a restart", () => {
+  const cases = [
+    {
+      tag: "ef-activity",
+      command: "logins",
+      make: (id: number) => login({ id }),
+    },
+    {
+      tag: "ef-audit",
+      command: "changes",
+      make: (id: number) => change({ id }),
+    },
+  ] as const;
+
+  for (const c of cases) {
+    for (const how of ["unloaded then retry", "disconnect then reconnect"]) {
+      it(`${c.tag}: ${how} leaves Load more enabled`, async () => {
+        const late = deferred<unknown>();
+        let calls = 0;
+        const fake = fakeApi({
+          users: { items: [] },
+          [c.command]: (m: Record<string, unknown>) => {
+            calls += 1;
+            return m["before_id"] !== undefined && calls === 2
+              ? late.promise
+              : { items: [c.make(9)], next_before_id: 9 };
+          },
+        });
+        const el = await mount<
+          HTMLElement & { updateComplete: Promise<unknown> }
+        >(c.tag, fake);
+        loadMoreButton(el)?.click();
+        await settle(el);
+        if (how === "unloaded then retry") {
+          fake.push({ type: "unloaded" });
+          await settle(el);
+          late.resolve({ items: [c.make(1)], next_before_id: 1 });
+          await settle(el);
+          el.shadowRoot
+            ?.querySelector<HTMLButtonElement>(".notice button")
+            ?.click();
+        } else {
+          el.remove();
+          late.resolve({ items: [c.make(1)], next_before_id: 1 });
+          await settle();
+          document.body.append(el);
+        }
+        await settle(el);
+        expect(loadMoreButton(el)?.disabled).toBe(false);
+      });
+    }
+  }
+});

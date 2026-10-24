@@ -179,6 +179,10 @@ export class EfAudit extends LiveView {
     void this._refresh();
   };
 
+  protected override _resetRun(): void {
+    this._loadingMore = false;
+  }
+
   /** Drop what the old filters showed, so no cursor or row outlives them. */
   private _resetList(): void {
     this._items = [];
