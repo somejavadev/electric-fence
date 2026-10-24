@@ -1,6 +1,7 @@
 pytest-homeassistant-custom-component==0.13.374
 home-assistant-frontend==20260930.5
 maxminddb==3.2.0
+pyotp==2.10.0
 mypy
 ruff
 pre-commit
