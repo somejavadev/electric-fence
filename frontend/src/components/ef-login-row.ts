@@ -6,6 +6,15 @@ import type { HomeAssistant, LoginItem } from "../types.ts";
 
 export const MAX_TEXT = 64;
 
+/** Flag and code; "local" only when the login really came from the local network. */
+export function locationLabel(item: LoginItem): string {
+  return item.country_code !== null
+    ? `${countryFlag(item.country_code)} ${item.country_code}`.trim()
+    : item.source === "local"
+      ? strings.local
+      : strings.unknownCountry;
+}
+
 /** One login attempt. Typed usernames are text, never markup. */
 export class EfLoginRow extends LitElement {
   static override properties = {
@@ -32,13 +41,7 @@ export class EfLoginRow extends LitElement {
       return nothing;
     }
     const user = truncate(item.username_typed ?? strings.unknownUser, MAX_TEXT);
-    // "local" only when the login really came from the local network.
-    const where =
-      item.country_code !== null
-        ? `${countryFlag(item.country_code)} ${item.country_code}`.trim()
-        : item.source === "local"
-          ? strings.local
-          : strings.unknownCountry;
+    const where = locationLabel(item);
     return html`
       <div class="row">
         <span class="time">${formatTime(item.ts, this.hass)}</span>

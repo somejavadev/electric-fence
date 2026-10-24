@@ -104,3 +104,116 @@ export const rowStyles = css`
     border-color: var(--warning-color);
   }
 `;
+
+/** Shared by the Activity, Audit, Users and Settings tabs. */
+export const viewStyles = css`
+  :host {
+    display: block;
+  }
+  h2 {
+    font-size: 16px;
+    font-weight: 500;
+    margin: 0 0 8px;
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  li + li {
+    border-top: 1px solid var(--divider-color);
+  }
+  .empty,
+  .loading,
+  .hint {
+    margin: 8px 0 0;
+    font-size: 14px;
+    color: var(--secondary-text-color);
+  }
+  .notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border: 1px solid var(--warning-color);
+    border-radius: var(--ha-card-border-radius, 12px);
+    background: var(--card-background-color);
+  }
+  .notice.error {
+    border-color: var(--error-color);
+  }
+  button {
+    padding: 6px 12px;
+    border: 1px solid var(--primary-color);
+    border-radius: 8px;
+    background: none;
+    color: var(--primary-color);
+    font: inherit;
+    cursor: pointer;
+  }
+  button.toggle {
+    border: 0;
+    padding: 2px 4px;
+    color: var(--primary-text-color);
+    text-align: start;
+  }
+  .more {
+    margin-top: 16px;
+  }
+  bdi {
+    unicode-bidi: isolate;
+  }
+  .card {
+    padding: 16px;
+    margin-bottom: 16px;
+    border-radius: var(--ha-card-border-radius, 12px);
+    background: var(--card-background-color);
+    border: 1px solid var(--divider-color);
+    overflow-x: auto;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th,
+  td {
+    padding: 6px 8px;
+    text-align: start;
+    vertical-align: top;
+    border-bottom: 1px solid var(--divider-color);
+    overflow-wrap: anywhere;
+  }
+  th {
+    color: var(--secondary-text-color);
+    font-weight: 500;
+  }
+  .tag {
+    display: inline-block;
+    margin-inline-end: 4px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    border: 1px solid var(--divider-color);
+    color: var(--secondary-text-color);
+  }
+  .tag.good {
+    color: var(--success-color);
+    border-color: var(--success-color);
+  }
+  .tag.warn {
+    color: var(--warning-color);
+    border-color: var(--warning-color);
+  }
+  .sub {
+    color: var(--secondary-text-color);
+    font-size: 12px;
+  }
+  .details {
+    font-size: 12px;
+    color: var(--secondary-text-color);
+    padding-bottom: 6px;
+  }
+`;

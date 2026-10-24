@@ -49,3 +49,30 @@ export function truncate(
 export function reasonLabel(reason: LoginReason | string): string {
   return (REASON_LABELS as Record<string, string>)[reason] ?? reason;
 }
+
+export type TimeRange = "24h" | "7d" | "30d" | "90d" | "all";
+
+export const TIME_RANGES: readonly TimeRange[] = [
+  "24h",
+  "7d",
+  "30d",
+  "90d",
+  "all",
+];
+
+const RANGE_MS: Record<Exclude<TimeRange, "all">, number> = {
+  "24h": 24 * 3600_000,
+  "7d": 7 * 24 * 3600_000,
+  "30d": 30 * 24 * 3600_000,
+  "90d": 90 * 24 * 3600_000,
+};
+
+/** ISO UTC start of a range; `undefined` for "all" (no lower bound). */
+export function sinceFor(
+  range: TimeRange,
+  now: number = Date.now(),
+): string | undefined {
+  return range === "all"
+    ? undefined
+    : new Date(now - RANGE_MS[range]).toISOString();
+}

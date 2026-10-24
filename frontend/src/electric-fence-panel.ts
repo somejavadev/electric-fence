@@ -1,5 +1,9 @@
 import { LitElement, html } from "lit";
+import "./views/ef-activity.ts";
+import "./views/ef-audit.ts";
 import "./views/ef-overview.ts";
+import "./views/ef-settings.ts";
+import "./views/ef-users.ts";
 import { navigate } from "./fire-event.ts";
 import { panelStyles } from "./styles.ts";
 import type { HomeAssistant, Route } from "./types.ts";
@@ -74,9 +78,16 @@ export class ElectricFencePanel extends LitElement {
     if (tab === "overview") {
       return html`<ef-overview .hass=${this.hass}></ef-overview>`;
     }
-    // Placeholders until the other tab bodies are built.
-    const label = TABS.find((t) => t.id === tab)?.label ?? "";
-    return html`<p class="placeholder">${label}</p>`;
+    switch (tab) {
+      case "activity":
+        return html`<ef-activity .hass=${this.hass}></ef-activity>`;
+      case "users":
+        return html`<ef-users .hass=${this.hass}></ef-users>`;
+      case "audit":
+        return html`<ef-audit .hass=${this.hass}></ef-audit>`;
+      default:
+        return html`<ef-settings .hass=${this.hass}></ef-settings>`;
+    }
   }
 
   private _select(tab: TabId): void {

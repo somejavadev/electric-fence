@@ -142,3 +142,56 @@ export function fakeHass(
     subscriptions: () => subs,
   };
 }
+
+export interface FakeApi {
+  hass: HomeAssistant;
+  push(event: SubscribeEvent): void;
+  /** Every message sent, in order. */
+  sent: ({ type: string } & Record<string, unknown>)[];
+  of(type: string): Record<string, unknown>[];
+  subscriptions: () => number;
+}
+
+/** A hass whose commands are answered by `answers[type]` (value or function). */
+export function fakeApi(
+  answers: Record<
+    string,
+    unknown | ((message: Record<string, unknown>) => unknown)
+  >,
+): FakeApi {
+  let callback: ((event: SubscribeEvent) => void) | undefined;
+  let subs = 0;
+  const sent: FakeApi["sent"] = [];
+  const hass = {
+    locale: { language: "en" },
+    config: { time_zone: "UTC" },
+    language: "en",
+    connection: {
+      sendMessagePromise: (
+        message: { type: string } & Record<string, unknown>,
+      ) => {
+        sent.push(message);
+        const name = message.type.replace("electric_fence/", "");
+        if (!(name in answers)) {
+          return Promise.reject(new Error(`unexpected ${message.type}`));
+        }
+        const answer = answers[name];
+        return Promise.resolve(
+          typeof answer === "function" ? answer(message) : answer,
+        );
+      },
+      subscribeMessage: (cb: (event: SubscribeEvent) => void) => {
+        callback = cb;
+        subs += 1;
+        return Promise.resolve(() => undefined);
+      },
+    },
+  } as unknown as HomeAssistant;
+  return {
+    hass,
+    push: (event) => callback?.(event),
+    sent,
+    of: (type) => sent.filter((m) => m.type === `electric_fence/${type}`),
+    subscriptions: () => subs,
+  };
+}
