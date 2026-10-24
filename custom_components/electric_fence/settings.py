@@ -19,9 +19,39 @@ class Settings:
 
     @classmethod
     def from_options(cls, options: Mapping[str, Any]) -> Settings:
-        """Build settings from stored options, ignoring unknown keys."""
-        known = cls.__dataclass_fields__.keys()
-        return cls(**{k: v for k, v in options.items() if k in known})
+        """Build settings from stored options.
+
+        Unknown keys are ignored. A value of the wrong type or out of range
+        falls back to its default; retention is clamped to 1..3650.
+        """
+        d = cls()
+        retention = options.get("retention_days", d.retention_days)
+        if isinstance(retention, bool) or not isinstance(retention, int | float):
+            retention = d.retention_days
+        else:
+            retention = min(max(int(retention), 1), 3650)
+
+        def flag(key: str) -> bool:
+            value = options.get(key)
+            return value if isinstance(value, bool) else getattr(d, key)
+
+        def choice(key: str, allowed: tuple[str, ...]) -> Any:
+            value = options.get(key)
+            return value if value in allowed else getattr(d, key)
+
+        def text(key: str) -> str | None:
+            value = options.get(key)
+            return value if isinstance(value, str) else None
+
+        return cls(
+            notify_failed_login=flag("notify_failed_login"),
+            ha_login_notification=choice("ha_login_notification", ("replace", "keep")),
+            retention_days=retention,
+            geoip_provider=choice("geoip_provider", ("dbip_lite", "maxmind", "none")),
+            maxmind_account_id=text("maxmind_account_id"),
+            maxmind_license_key=text("maxmind_license_key"),
+            reverse_dns=flag("reverse_dns"),
+        )
 
     def to_options(self) -> dict[str, Any]:
         """Return the settings as a plain dict for storing in options."""

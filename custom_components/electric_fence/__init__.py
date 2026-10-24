@@ -128,13 +128,7 @@ async def async_setup_entry(
         collector.install()
 
     async def _async_purge(_now: datetime | None = None) -> None:
-        cutoff = dt_util.utcnow() - timedelta(days=runtime.settings.retention_days)
-        try:
-            deleted = await hass.async_add_executor_job(store.purge_older_than, cutoff)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Electric Fence purge failed: %s", type(err).__name__)
-            return
-        _LOGGER.debug("Electric Fence purged %d rows", deleted)
+        await async_purge(hass, runtime)
 
     entry.async_on_unload(
         async_track_time_interval(
@@ -155,8 +149,43 @@ async def async_setup_entry(
         )
     )
 
+    # Applies option changes live; it never reloads, so the hooks stay put.
+    entry.async_on_unload(entry.add_update_listener(async_apply_settings))
+
     # Last, so nothing that can fail runs after the platform is forwarded.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+
+async def async_purge(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Delete records older than the retention period."""
+    cutoff = dt_util.utcnow() - timedelta(days=runtime.settings.retention_days)
+    try:
+        deleted = await hass.async_add_executor_job(
+            runtime.store.purge_older_than, cutoff
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Electric Fence purge failed: %s", type(err).__name__)
+        return
+    _LOGGER.debug("Electric Fence purged %d rows", deleted)
+
+
+async def async_apply_settings(
+    hass: HomeAssistant, entry: ElectricFenceConfigEntry
+) -> None:
+    """Apply changed options live (update listener). Never reloads the entry."""
+    runtime = entry.runtime_data
+    old = runtime.settings
+    settings = Settings.from_options(entry.options)
+    # Collectors, notifier and sensor read runtime.settings on every use.
+    runtime.settings = settings
+    if runtime.geo_updater is not None and (
+        settings.geoip_provider != old.geoip_provider
+        or settings.maxmind_account_id != old.maxmind_account_id
+        or settings.maxmind_license_key != old.maxmind_license_key
+    ):
+        await runtime.geo_updater.async_set_provider(settings)
+    if settings.retention_days < old.retention_days:
+        await async_purge(hass, runtime)
 
 
 async def async_unload_entry(

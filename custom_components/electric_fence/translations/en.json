@@ -26,5 +26,54 @@
       "title": "Electric Fence cannot write to its database",
       "description": "Electric Fence could not write to its database: {error}. Logins are not affected, but new records are being dropped until this is fixed."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Electric Fence settings",
+        "description": "IP geolocation by DB-IP (https://db-ip.com) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away.",
+        "data": {
+          "notify_failed_login": "Notify on failed login",
+          "ha_login_notification": "Home Assistant's own login notification",
+          "retention_days": "History retention",
+          "geoip_provider": "GeoIP provider",
+          "reverse_dns": "Reverse DNS lookups"
+        },
+        "data_description": {
+          "notify_failed_login": "Create a persistent notification when a login fails.",
+          "ha_login_notification": "Replace dismisses Home Assistant's own login notification, but only while notifications above are on.",
+          "retention_days": "Days of history to keep, from 1 to 3650.",
+          "geoip_provider": "Where country lookups come from. DB-IP Lite needs no account. MaxMind GeoLite2 needs an account ID and license key.",
+          "reverse_dns": "Look up host names for IP addresses."
+        }
+      },
+      "maxmind": {
+        "title": "MaxMind GeoLite2 credentials",
+        "description": "Enter your MaxMind account ID and license key. They are checked with MaxMind before saving.",
+        "data": {
+          "maxmind_account_id": "Account ID",
+          "maxmind_license_key": "License key"
+        }
+      }
+    },
+    "error": {
+      "invalid_maxmind_credentials": "MaxMind rejected the account ID or license key.",
+      "cannot_connect": "Could not reach MaxMind. Check the connection and try again."
+    }
+  },
+  "selector": {
+    "ha_login_notification": {
+      "options": {
+        "replace": "Replace it with Electric Fence's notification",
+        "keep": "Keep it"
+      }
+    },
+    "geoip_provider": {
+      "options": {
+        "dbip_lite": "DB-IP Lite",
+        "maxmind": "MaxMind GeoLite2",
+        "none": "None"
+      }
+    }
   }
 }
