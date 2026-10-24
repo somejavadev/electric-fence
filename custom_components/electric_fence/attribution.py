@@ -4,7 +4,9 @@ A change is credited to a person only while that person's own admin action
 runs, and only for the change that action implies (`credited_actor`).
 Everything else is System. Wrappers open a scope around the admin entry
 points: the config, options and subentry flow managers, entry delete, and
-the admin WebSocket commands.
+the admin WebSocket commands (`ADMIN_WS_COMMANDS`, plus a user renaming
+themselves with `person/update_own_profile`). Each command is wrapped once
+the component that registers it (`config` or `person`) is loaded.
 
 IP: HTTP scopes use `request.remote`. WebSocket scopes use
 `ActiveConnection.remote`, which Core copies from the upgrade request's
@@ -63,9 +65,12 @@ WS_TASK_PREFIX = "websocket_api.async:"
 _REMOVE_TASK_NAME = "config entry remove {entry_id}"
 _ENTRY_PATH = "/api/config/config_entries/entry/{entry_id}"
 _CONFIG = "config"
+_PERSON = "person"
 
 _CMD_CHANGE_PASSWORD = "config/auth_provider/homeassistant/change_password"
 _CMD_HA_DELETE = "config/auth_provider/homeassistant/delete"
+# Not admin only: renames the calling user (and their person).
+_CMD_OWN_PROFILE = "person/update_own_profile"
 
 ADMIN_WS_COMMANDS: tuple[str, ...] = (
     "config_entries/update",
@@ -81,7 +86,14 @@ ADMIN_WS_COMMANDS: tuple[str, ...] = (
     "config/auth_provider/homeassistant/admin_change_password",
     "config/auth_provider/homeassistant/admin_change_username",
     "config/core/update",
+    _CMD_OWN_PROFILE,
 )
+
+
+def command_component(command: str) -> str:
+    """Return the component that registers a wrapped WebSocket command."""
+    return _PERSON if command.startswith(f"{_PERSON}/") else _CONFIG
+
 
 type _AsyncFn = Callable[..., Awaitable[Any]]
 
@@ -235,6 +247,7 @@ _WS_RULES: dict[str, _Rule] = {
         ChangeKind.USER, frozenset({ChangeAction.REMOVED}), "user_id"
     ),
     _CMD_CHANGE_PASSWORD: _PASSWORD_RULE,
+    _CMD_OWN_PROFILE: _USER_UPDATED_RULE,
     "config/auth_provider/homeassistant/admin_change_password": _PASSWORD_RULE,
     "config/core/update": _Rule(
         ChangeKind.CORE_CONFIG, frozenset({ChangeAction.UPDATED}), None
@@ -407,8 +420,8 @@ def _ws_details(
     rule = _WS_RULES.get(command)
     if rule is None or rule.target is None:
         return details
-    if command == _CMD_CHANGE_PASSWORD:
-        # The connection's own password.
+    if command in (_CMD_CHANGE_PASSWORD, _CMD_OWN_PROFILE):
+        # The connection's own password, or its own name.
         details["user_id"] = connection.user.id
     elif command == _CMD_HA_DELETE:
         # The message names the username only (R24).
@@ -501,7 +514,10 @@ class AttributionCollector(BaseCollector):
     def __init__(self, hass: HomeAssistant, runtime: Runtime) -> None:
         """Initialise the collector."""
         super().__init__(hass, runtime)
-        self._config_unsub: CALLBACK_TYPE | None = None
+        # Components whose commands wait for them to load, and the listener.
+        self._waiting: set[str] = set()
+        self._loaded_unsub: CALLBACK_TYPE | None = None
+        self._wrapped: set[str] = set()
 
     def _install(self) -> None:
         entries = self.hass.config_entries
@@ -522,27 +538,38 @@ class AttributionCollector(BaseCollector):
         self._handles.append(
             wrap_async_method(entries, "async_remove", self._wrap_remove)
         )
-        # `config` registers the commands, and may load after us. Its
-        # contract already passed if it is loaded.
-        if _CONFIG in self.hass.config.components:
-            self._wrap_ws_commands()
-        else:
-            self._config_unsub = self.hass.bus.async_listen(
+        # `config` and `person` register the commands, and may load after us.
+        # The contract already passed for those that are loaded.
+        self._wrap_ws_commands()
+        self._waiting = {
+            component
+            for component in map(command_component, ADMIN_WS_COMMANDS)
+            if component not in self.hass.config.components
+        }
+        if self._waiting:
+            self._loaded_unsub = self.hass.bus.async_listen(
                 EVENT_COMPONENT_LOADED,
-                self._on_config_loaded,
-                event_filter=_is_config,
+                self._on_component_loaded,
+                event_filter=self._is_waiting,
             )
 
     def _uninstall(self) -> None:
-        if self._config_unsub is not None:
-            unsub, self._config_unsub = self._config_unsub, None
+        self._waiting.clear()
+        self._wrapped.clear()
+        if self._loaded_unsub is not None:
+            unsub, self._loaded_unsub = self._loaded_unsub, None
             unsub()
 
     @callback
-    def _on_config_loaded(self, event: Event[EventComponentLoaded]) -> None:
-        """Wrap the WebSocket commands once `config` has registered them."""
-        unsub, self._config_unsub = self._config_unsub, None
-        if unsub is not None:
+    def _is_waiting(self, event_data: EventComponentLoaded) -> bool:
+        return event_data[ATTR_COMPONENT] in self._waiting
+
+    @callback
+    def _on_component_loaded(self, event: Event[EventComponentLoaded]) -> None:
+        """Wrap a component's WebSocket commands once it has registered them."""
+        self._waiting.discard(event.data[ATTR_COMPONENT])
+        if not self._waiting and self._loaded_unsub is not None:
+            unsub, self._loaded_unsub = self._loaded_unsub, None
             unsub()
         if self._installed:
             self.guard.call(self._install_ws_late)
@@ -558,12 +585,19 @@ class AttributionCollector(BaseCollector):
         async_report_disabled_collector(self.hass, self.name, [reason])
 
     def _wrap_ws_commands(self) -> None:
-        handlers = self.hass.data[WEBSOCKET_API_DOMAIN]
+        """Wrap the registered commands of loaded components, each once."""
+        handlers = self.hass.data.get(WEBSOCKET_API_DOMAIN, {})
+        loaded = self.hass.config.components
         for command in ADMIN_WS_COMMANDS:
-            if command in handlers:
+            if (
+                command not in self._wrapped
+                and command_component(command) in loaded
+                and command in handlers
+            ):
                 self._handles.append(
                     wrap_ws_command(self.hass, command, self._wrap_ws(command))
                 )
+                self._wrapped.add(command)
 
     # Wrappers. Core's call runs untouched; ours never raises.
 
@@ -712,8 +746,3 @@ class AttributionCollector(BaseCollector):
             ACTION_ENTRY_DELETE,
             {"entry_id": entry_id},
         )
-
-
-@callback
-def _is_config(event_data: EventComponentLoaded) -> bool:
-    return event_data[ATTR_COMPONENT] == _CONFIG

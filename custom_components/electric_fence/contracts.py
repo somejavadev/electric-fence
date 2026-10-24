@@ -189,18 +189,24 @@ def _check_ws_connection(hass: HomeAssistant) -> str | None:
 
 
 def _check_admin_ws_commands(hass: HomeAssistant) -> str | None:
-    """Once `config` is loaded, every admin command H9 wraps is registered."""
+    """Every command H9 wraps is registered once its component is loaded.
+
+    `config` registers most; `person` registers `person/update_own_profile`.
+    A component not loaded yet is checked again when it loads.
+    """
     from homeassistant.components.websocket_api.const import (  # noqa: PLC0415
         DOMAIN as WEBSOCKET_API_DOMAIN,
     )
 
     from . import attribution  # noqa: PLC0415
 
-    if "config" not in hass.config.components:
-        # Checked again when `config` loads.
-        return None
     handlers = hass.data.get(WEBSOCKET_API_DOMAIN, {})
-    missing = [c for c in attribution.ADMIN_WS_COMMANDS if c not in handlers]
+    missing = [
+        c
+        for c in attribution.ADMIN_WS_COMMANDS
+        if attribution.command_component(c) in hass.config.components
+        and c not in handlers
+    ]
     if missing:
         return f"WebSocket commands not registered: {', '.join(missing)}"
     return None

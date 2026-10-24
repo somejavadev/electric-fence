@@ -49,6 +49,7 @@ from custom_components.electric_fence.models import ChangeAction, ChangeKind
 from homeassistant import config_entries
 from homeassistant.auth import EVENT_USER_ADDED
 from homeassistant.auth.models import User
+from homeassistant.components import person
 from homeassistant.components.config import core as config_core
 from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_API_DOMAIN
 from homeassistant.config_entries import (
@@ -974,7 +975,9 @@ async def test_unload_restores_flow_managers_and_ws_handlers(
         assert "async_init" in vars(mgr)
         assert "async_configure" in vars(mgr)
     assert "async_remove" in vars(entries)
-    wrapped = {c: handlers[c] for c in ADMIN_WS_COMMANDS}
+    # `person` is not loaded here: its command is covered in test_unload_reload.
+    wrapped = {c: handlers[c] for c in ADMIN_WS_COMMANDS if c in handlers}
+    assert len(wrapped) == len(ADMIN_WS_COMMANDS) - 1
 
     assert await hass.config_entries.async_unload(setup_entry.entry_id)
 
@@ -1013,15 +1016,31 @@ def _core_update_handler(hass: HomeAssistant) -> Any:
 async def test_ws_wrapping_waits_for_config(
     hass: HomeAssistant, late: AttributionCollector
 ) -> None:
-    """Without `config`, WebSocket commands are wrapped once it loads."""
-    assert late._config_unsub is not None
+    """Without `config` and `person`, their commands are wrapped as they load."""
+    assert late._waiting == {"config", "person"}
+    assert late._loaded_unsub is not None
 
     assert await async_setup_component(hass, "config", {})
 
-    assert late._config_unsub is None
+    assert late._waiting == {"person"}
     assert _core_update_handler(hass) is not config_core.websocket_update_config
+    assert len(late._handles) == 7 + len(ADMIN_WS_COMMANDS) - 1
+    assert late.disabled_reason == []
+
+    assert await async_setup_component(hass, "person", {})
+
+    assert late._waiting == set()
+    assert late._loaded_unsub is None
+    own = hass.data[WEBSOCKET_API_DOMAIN]["person/update_own_profile"][0]
+    assert own.__wrapped__ is person.ws_update_own_profile
     assert len(late._handles) == 7 + len(ADMIN_WS_COMMANDS)
     assert late.disabled_reason == []
+
+
+async def test_person_command_component() -> None:
+    """Each wrapped command belongs to the component that registers it."""
+    assert attribution.command_component("person/update_own_profile") == "person"
+    assert attribution.command_component("config/core/update") == "config"
 
 
 async def test_uninstall_cancels_pending_config_listener(
@@ -1424,6 +1443,7 @@ def _conn(user_id: str = "admin", remote: str | None = "10.0.0.2") -> Mock:
         ("config/auth/delete", {"user_id": "u"}, {"user_id": "u"}),
         ("config/auth_provider/homeassistant/admin_change_password", {"user_id": "u"}, {"user_id": "u"}),
         ("config/auth_provider/homeassistant/change_password", {"user_id": "u"}, {"user_id": "admin"}),
+        ("person/update_own_profile", {"name": "n", "user_id": "u"}, {"user_id": "admin"}),
         ("config/auth/create", {"name": "n"}, {}),
         ("config/core/update", {"location_name": "n"}, {}),
         ("config_entries/update", {}, {"entry_id": None}),
@@ -1495,5 +1515,6 @@ async def test_install_wraps_only_registered_commands(
     collector._wrap_ws_commands()
 
     assert "config/core/update" not in hass.data[WEBSOCKET_API_DOMAIN]
-    assert len(collector._handles) == len(ADMIN_WS_COMMANDS) - 1
+    # Minus the missing one, and `person`'s (not loaded).
+    assert len(collector._handles) == len(ADMIN_WS_COMMANDS) - 2
     collector.uninstall()

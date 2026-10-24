@@ -30,6 +30,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
 from tests.helpers import (
     CLIENT_ID,
     DUMMY,
@@ -872,6 +873,33 @@ async def test_own_password_change_attributed(
     assert msg["success"], msg
     *_, row = await _rows(hass, ChangeKind.USER)
     assert row.action is ChangeAction.PASSWORD_CHANGED
+    assert row.target_id == user.id
+    assert row.actor_user_id == user.id
+    assert row.actor_ip == IP
+
+
+async def test_own_profile_rename_attributed(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """A user renaming themselves (`person/update_own_profile`) is credited."""
+    # Loaded after Electric Fence: its command is wrapped once it loads.
+    assert await async_setup_component(hass, "person", {})
+    user = await create_hass_user(hass, "kim", "secret", admin=False)
+    refresh_token = await hass.auth.async_create_refresh_token(
+        user, CLIENT_ID, credential=user.credentials[0]
+    )
+    ws = await hass_ws_client(hass, hass.auth.async_create_access_token(refresh_token))
+
+    await ws.send_json_auto_id(
+        {"type": "person/update_own_profile", "name": "Kimberly"}
+    )
+    msg = await ws.receive_json()
+
+    assert msg["success"], msg
+    *_, row = await _rows(hass, ChangeKind.USER)
+    assert row.action is ChangeAction.UPDATED
     assert row.target_id == user.id
     assert row.actor_user_id == user.id
     assert row.actor_ip == IP

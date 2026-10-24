@@ -28,7 +28,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_COMPONENT_LOADED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER
-from homeassistant.setup import ATTR_COMPONENT
+from homeassistant.setup import ATTR_COMPONENT, async_setup_component
 from homeassistant.util import dt as dt_util
 from tests.helpers import (
     change_rows,
@@ -86,6 +86,7 @@ async def test_unload_restores_every_hook(
     hass: HomeAssistant, config: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """After unload every hooked attribute and WS handler is Core's own object."""
+    assert await async_setup_component(hass, "person", {})
     await create_hass_user(hass, "alice", "right")
     before_attrs, before_ws = _snapshot(hass)
 
@@ -229,14 +230,21 @@ async def test_unload_restores_ws_handlers_wrapped_after_config_loads(
     fired.
     """
     handlers = hass.data[WEBSOCKET_API_DOMAIN]
-    core = {command: handlers[command] for command in ADMIN_WS_COMMANDS}
-    monkeypatch.setattr(attribution, "_CONFIG", "config (not loaded yet)")
+    core = {
+        command: handlers[command]
+        for command in ADMIN_WS_COMMANDS
+        if attribution.command_component(command) == "config"
+    }
+    # The collector waits for a component of this name, which never loads...
+    late = "config (not loaded yet)"
+    monkeypatch.setattr(attribution, "_CONFIG", late)
     entry = await _setup(hass, monkeypatch)
     for command, original in core.items():
         assert handlers[command] is original, command
 
+    # ...until it "loads" as the real, loaded `config`.
     monkeypatch.setattr(attribution, "_CONFIG", "config")
-    hass.bus.async_fire(EVENT_COMPONENT_LOADED, {ATTR_COMPONENT: "config"})
+    hass.bus.async_fire(EVENT_COMPONENT_LOADED, {ATTR_COMPONENT: late})
     await hass.async_block_till_done()
     for command, original in core.items():
         assert handlers[command] is not original, command
