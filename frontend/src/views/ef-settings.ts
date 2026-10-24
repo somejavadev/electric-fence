@@ -2,7 +2,7 @@ import { html, nothing } from "lit";
 import { fetchStatus } from "../api.ts";
 import { MAX_TEXT } from "../components/ef-login-row.ts";
 import { navigate } from "../fire-event.ts";
-import { formatTime, truncate } from "../format.ts";
+import { formatDate, truncate } from "../format.ts";
 import { strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type { Status } from "../types.ts";
@@ -53,7 +53,7 @@ export class EfSettings extends LiveView {
           <tr>
             <th scope="row">${s.databaseDate}</th>
             <td>
-              ${geo.db_date === null ? s.unknown : formatTime(geo.db_date, this.hass)}
+              ${geo.db_date === null ? s.unknown : formatDate(geo.db_date, this.hass)}
             </td>
           </tr>
           <tr>

@@ -45,6 +45,8 @@ export interface LoginItem {
   username_typed: string | null;
   user_exists: "yes" | "no" | "unknown";
   user_id: string | null;
+  /** The user's name from the auth store, looked up by `user_id`. */
+  user_name: string | null;
   provider: string | null;
   ip: string | null;
   /** Uppercase ISO 3166-1 alpha-2, or null. */
@@ -172,8 +174,11 @@ export interface Overview {
   posture: PostureItem[];
 }
 
+/** A `result` filter: one result, or failed and blocked together. */
+export type ResultFilter = LoginResult | "failed_or_blocked";
+
 export interface LoginFilter {
-  result?: LoginResult;
+  result?: ResultFilter;
   user_id?: string;
   username?: string;
   ip?: string;

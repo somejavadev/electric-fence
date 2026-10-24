@@ -11,17 +11,22 @@ import type {
   ChangeItem,
   LoginFilter,
   LoginItem,
-  LoginResult,
+  ResultFilter,
   UserItem,
 } from "../types.ts";
 import { LIVE_CAP, LiveView } from "./live-view.ts";
 
 export const DEFAULT_RANGE: TimeRange = "24h";
 
-const RESULTS: readonly LoginResult[] = ["success", "failed", "blocked"];
+const RESULTS: readonly ResultFilter[] = [
+  "success",
+  "failed",
+  "blocked",
+  "failed_or_blocked",
+];
 
 export interface ActivityFilters {
-  result: LoginResult | "";
+  result: ResultFilter | "";
   user: string;
   username: string;
   ip: string;
@@ -98,7 +103,12 @@ export function matchesLogin(
   filters: ActivityFilters,
   now: number = Date.now(),
 ): boolean {
-  if (filters.result !== "" && item.result !== filters.result) {
+  // "failed_or_blocked" is anything but a success.
+  if (
+    filters.result === "failed_or_blocked"
+      ? item.result === "success"
+      : filters.result !== "" && item.result !== filters.result
+  ) {
     return false;
   }
   if (filters.user !== "" && item.user_id !== filters.user) {
@@ -155,7 +165,7 @@ export class EfActivity extends LiveView {
   }
 
   override connectedCallback(): void {
-    // The Overview links here with `?result=failed`.
+    // The Overview links here with `?result=failed_or_blocked&range=24h`.
     this._filters = filtersFromQuery(location.search);
     super.connectedCallback();
   }
@@ -318,6 +328,7 @@ export class EfActivity extends LiveView {
                         variant=${
                           item.result === "success" ? "success" : "failed"
                         }
+                        detailed
                       ></ef-login-row>
                     </li>`,
                 )}

@@ -115,9 +115,9 @@ describe("ef-overview", () => {
     }
     window.removeEventListener("location-changed", listener);
     expect(seen).toEqual([
-      "/electric-fence/activity?result=failed",
+      "/electric-fence/activity?result=failed_or_blocked&range=24h",
       "/electric-fence/audit",
-      "/electric-fence/activity?result=success",
+      "/electric-fence/activity?result=success&range=all",
       "/electric-fence/settings",
     ]);
   });

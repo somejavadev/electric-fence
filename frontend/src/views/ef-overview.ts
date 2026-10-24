@@ -16,6 +16,11 @@ import type {
 /** Wait this long after a push before refetching, to merge bursts. */
 export const REFRESH_DELAY_MS = 1000;
 
+/** Where the cards lead: the same rows the card counts, over the same range. */
+export const FAILED_LINK =
+  "/electric-fence/activity?result=failed_or_blocked&range=24h";
+export const SUCCESS_LINK = "/electric-fence/activity?result=success&range=all";
+
 type Phase = "loading" | "ready" | "error" | "unloaded";
 
 const isNotLoaded = (err: unknown): boolean =>
@@ -315,7 +320,7 @@ export class EfOverview extends LitElement {
       <div class="grid">
         <ef-answer-card
           heading=${strings.cards.failed}
-          path="/electric-fence/activity?result=failed"
+          path=${FAILED_LINK}
           .count=${overview?.failed_24h.count}
         >
           ${this._list(
@@ -344,10 +349,7 @@ export class EfOverview extends LitElement {
               ></ef-change-row>`,
           )}
         </ef-answer-card>
-        <ef-answer-card
-          heading=${strings.cards.success}
-          path="/electric-fence/activity?result=success"
-        >
+        <ef-answer-card heading=${strings.cards.success} path=${SUCCESS_LINK}>
           ${this._list(
             overview?.recent_success.items,
             strings.empty.success,

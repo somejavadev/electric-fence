@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EfLoginRow } from "../src/components/ef-login-row.ts";
 import {
   EfActivity,
   filtersFromQuery,
@@ -10,7 +11,7 @@ import type { AuditFilters } from "../src/views/ef-audit.ts";
 import { EfSettings } from "../src/views/ef-settings.ts";
 import { EfUsers } from "../src/views/ef-users.ts";
 import { LIVE_CAP, REFRESH_DELAY_MS } from "../src/views/live-view.ts";
-import type { Status, UserItem } from "../src/types.ts";
+import type { LoginItem, Status, UserItem } from "../src/types.ts";
 import { change, fakeApi, login, status } from "./helpers.ts";
 import type { FakeApi } from "./helpers.ts";
 
@@ -97,6 +98,39 @@ describe("ef-activity", () => {
     const el = await mount<EfActivity>("ef-activity", fake);
     expect(fake.of("logins")[0]).toMatchObject({ result: "failed" });
     expect(select(bar(el), "result").value).toBe("failed");
+  });
+
+  it("offers failed or blocked together", async () => {
+    history.replaceState(
+      null,
+      "",
+      "/electric-fence/activity?result=failed_or_blocked&range=24h",
+    );
+    const fake = api();
+    const el = await mount<EfActivity>("ef-activity", fake);
+    expect(fake.of("logins")[0]).toMatchObject({ result: "failed_or_blocked" });
+    const control = select(bar(el), "result");
+    expect(control.value).toBe("failed_or_blocked");
+    expect(control.selectedOptions[0]?.textContent.trim()).toBe(
+      "Failed or blocked",
+    );
+    const filters = filtersFromQuery("?result=failed_or_blocked");
+    expect(filters.result).toBe("failed_or_blocked");
+    const now = Date.parse("2026-10-24T10:00:00Z");
+    for (const [result, expected] of [
+      ["failed", true],
+      ["blocked", true],
+      ["success", false],
+    ] as const) {
+      expect(matchesLogin(login({ result }), filters, now)).toBe(expected);
+    }
+  });
+
+  it("shows request details on its rows", async () => {
+    const el = await mount<EfActivity>("ef-activity", api());
+    const row = el.shadowRoot?.querySelector("ef-login-row");
+    expect(row?.detailed).toBe(true);
+    expect(row?.shadowRoot?.querySelector("button.toggle")).not.toBeNull();
   });
 
   it("ignores bad query values", () => {
@@ -308,6 +342,24 @@ describe("ef-users", () => {
 
 describe("ef-settings", () => {
   const withStatus = (s: Status) => fakeApi({ status: s });
+
+  it("shows the database date as a date, without a time zone shift", async () => {
+    const s = status();
+    s.geo = {
+      provider: "dbip_lite",
+      db_date: "2026-10-01",
+      last_error: null,
+      attribution: null,
+    };
+    const fake = withStatus(s);
+    (fake.hass as { config: { time_zone: string } }).config.time_zone =
+      "Pacific/Honolulu";
+    const el = await mount<EfSettings>("ef-settings", fake);
+    const text = el.shadowRoot?.textContent ?? "";
+    expect(text).toMatch(/Database date\s*Oct 1, 2026\s/);
+    expect(text).not.toContain("Sep 30");
+    expect(text).not.toMatch(/\d:\d\d/);
+  });
 
   it("shows the attribution when present", async () => {
     const el = await mount<EfSettings>(
@@ -785,4 +837,118 @@ describe("Load more flag across a restart", () => {
       });
     }
   }
+});
+
+describe("ef-login-row", () => {
+  const hass = fakeApi({}).hass;
+
+  async function row(
+    item: Partial<LoginItem>,
+    variant: "failed" | "success" = "failed",
+    detailed = false,
+  ): Promise<ShadowRoot> {
+    const el = document.createElement("ef-login-row");
+    el.hass = hass;
+    el.variant = variant;
+    el.detailed = detailed;
+    el.item = login(item);
+    document.body.append(el);
+    await el.updateComplete;
+    return el.shadowRoot as ShadowRoot;
+  }
+
+  const name = (root: ShadowRoot) =>
+    root.querySelector(".username")?.textContent ?? "";
+
+  it("names the user on success and blocked rows, the typed text on failures", async () => {
+    const named = { username_typed: "typed", user_name: "Anna" };
+    expect(name(await row({ ...named, result: "success" }, "success"))).toBe(
+      "Anna",
+    );
+    expect(name(await row({ ...named, result: "blocked" }))).toBe("Anna");
+    expect(name(await row({ ...named, result: "failed" }))).toBe("typed");
+    // trusted_networks: no typed username at all.
+    expect(
+      name(
+        await row(
+          { result: "success", username_typed: null, user_name: "Anna" },
+          "success",
+        ),
+      ),
+    ).toBe("Anna");
+    expect(
+      name(await row({ result: "success", user_name: null }, "success")),
+    ).toBe("admin");
+    expect(
+      name(
+        await row(
+          { result: "success", user_name: null, username_typed: null },
+          "success",
+        ),
+      ),
+    ).toBe("unknown user");
+  });
+
+  it("tags unconfirmed successes", async () => {
+    const tags = async (confirmed: boolean) =>
+      [
+        ...(
+          await row({ result: "success", confirmed }, "success")
+        ).querySelectorAll(".tag"),
+      ].map((t) => t.textContent.trim());
+    expect(await tags(false)).toContain("unconfirmed");
+    expect(await tags(true)).not.toContain("unconfirmed");
+  });
+
+  it("shows the URL of an invalid token, truncated", async () => {
+    const url = `/api/${"x".repeat(100)}`;
+    const root = await row({
+      reason: "invalid_token",
+      url,
+      username_typed: null,
+    });
+    const shown = root.querySelector(".url");
+    expect(shown?.getAttribute("title")).toBe(url);
+    expect(shown?.textContent.length).toBe(65);
+    expect((await row({ url })).querySelector(".url")).toBeNull();
+  });
+
+  it("expands a detail line with the request details", async () => {
+    const root = await row(
+      {
+        url: "/auth/login_flow/abc",
+        hostname: "host.example.net",
+        user_agent: "Firefox/140",
+        provider: "homeassistant",
+        mfa_module: "totp",
+        confirmed: true,
+      },
+      "failed",
+      true,
+    );
+    const toggle = root.querySelector<HTMLButtonElement>("button.toggle");
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(root.querySelector(".details")).toBeNull();
+    toggle?.click();
+    await (root.host as EfLoginRow).updateComplete;
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    const details = root.querySelector(".details")?.textContent ?? "";
+    for (const value of [
+      "/auth/login_flow/abc",
+      "host.example.net",
+      "Firefox/140",
+      "homeassistant",
+      "totp",
+      "confirmed",
+    ]) {
+      expect(details).toContain(value);
+    }
+    expect((await row({}, "failed", false)).querySelector("button")).toBeNull();
+    const unconfirmed = await row({ confirmed: false }, "success", true);
+    unconfirmed.querySelector<HTMLButtonElement>("button.toggle")?.click();
+    await (unconfirmed.host as EfLoginRow).updateComplete;
+    expect(unconfirmed.querySelector(".details")?.textContent).toContain(
+      "unconfirmed",
+    );
+  });
 });

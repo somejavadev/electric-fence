@@ -101,6 +101,8 @@ describe("hostile values across the whole overview", () => {
       "actorip",
       "successip",
       "successuser",
+      "successname",
+      "tokenurl",
     ] as const;
     const h = Object.fromEntries(labels.map((l) => [l, hostile(l)])) as Record<
       (typeof labels)[number],
@@ -117,6 +119,11 @@ describe("hostile values across the whole overview", () => {
               hostname: h.host,
               client_name: h.client,
               user_agent: h.client,
+            }),
+            login({
+              reason: "invalid_token",
+              username_typed: null,
+              url: h.tokenurl,
             }),
           ],
         },
@@ -145,6 +152,7 @@ describe("hostile values across the whole overview", () => {
             login({
               result: "success",
               username_typed: h.successuser,
+              user_name: h.successname,
               client_name: h.client,
               ip: h.successip,
               mfa_module: null,
@@ -220,9 +228,10 @@ describe("hostile values across the whole overview", () => {
     const shown = allShadowElements(el.shadowRoot as ShadowRoot)
       .map((e) => e.textContent)
       .join("\n");
-    // Rendered fields (hostname, user agent and the success IP are never shown).
+    // Rendered fields (hostname, user agent and the success IP are never
+    // shown, and the success row names the user instead of the typed text).
     for (const label of labels.filter(
-      (l) => l !== "host" && l !== "successip",
+      (l) => l !== "host" && l !== "successip" && l !== "successuser",
     )) {
       expect(shown, label).toContain(h[label]);
     }
@@ -295,14 +304,23 @@ describe("hostile values in the other tabs", () => {
     "input",
   ];
 
-  it("activity", async () => {
+  it("activity, with every detail line expanded", async () => {
     const fake = fakeApi({
       logins: {
         items: [
-          login({ username_typed: H("username"), ip: H("ip") }),
+          login({
+            username_typed: H("username"),
+            ip: H("ip"),
+            url: H("url"),
+            hostname: H("host"),
+            user_agent: H("agent"),
+            provider: H("provider"),
+            mfa_module: H("mfa"),
+          }),
           login({
             result: "success",
-            username_typed: H("username"),
+            username_typed: H("typed"),
+            user_name: H("name"),
             client_name: H("client"),
           }),
         ],
@@ -311,6 +329,12 @@ describe("hostile values in the other tabs", () => {
       users: { items: [] },
     });
     const el = await render("ef-activity", fake);
+    for (const row of el.shadowRoot?.querySelectorAll("ef-login-row") ?? []) {
+      row.shadowRoot
+        ?.querySelector<HTMLButtonElement>("button.toggle")
+        ?.click();
+      await (row as EfLoginRow).updateComplete;
+    }
     inspect(
       el,
       [
@@ -322,9 +346,41 @@ describe("hostile values in the other tabs", () => {
         "div",
         "span",
         "bdi",
+        "button",
+        "dl",
+        "dt",
+        "dd",
       ],
-      ["username", "ip", "client"],
+      [
+        "username",
+        "ip",
+        "client",
+        "url",
+        "host",
+        "agent",
+        "provider",
+        "mfa",
+        "name",
+      ],
     );
+    const long = "u".repeat(10_000);
+    const rowEl = document.createElement("ef-login-row");
+    rowEl.hass = fake.hass;
+    rowEl.detailed = true;
+    rowEl.item = login({ url: long, user_agent: long, hostname: long });
+    document.body.append(rowEl);
+    await rowEl.updateComplete;
+    rowEl.shadowRoot
+      ?.querySelector<HTMLButtonElement>("button.toggle")
+      ?.click();
+    await rowEl.updateComplete;
+    const values = [
+      ...(rowEl.shadowRoot?.querySelectorAll(".details bdi") ?? []),
+    ].filter((b) => b.getAttribute("title") === long);
+    expect(values).toHaveLength(3);
+    for (const value of values) {
+      expect(value.textContent.length).toBe(65);
+    }
   });
 
   it("audit", async () => {

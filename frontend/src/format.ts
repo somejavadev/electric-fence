@@ -24,6 +24,34 @@ export function formatTime(iso: string, hass: HomeAssistant): string {
   }).format(date);
 }
 
+/**
+ * Format a `YYYY-MM-DD` date as a calendar date only. It is read and shown in
+ * UTC, so no time zone moves it to another day. Other input is returned as is.
+ */
+export function formatDate(day: string, hass: HomeAssistant): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (match === null) {
+    return day;
+  }
+  const [year, month, date] = match.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const value = new Date(Date.UTC(year, month - 1, date));
+  if (
+    value.getUTCFullYear() !== year ||
+    value.getUTCMonth() !== month - 1 ||
+    value.getUTCDate() !== date
+  ) {
+    return day;
+  }
+  return new Intl.DateTimeFormat(hass.locale.language, {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(value);
+}
+
 /** Regional-indicator flag emoji for an ISO alpha-2 code, else "". */
 export function countryFlag(code: string | null): string {
   if (code === null || !/^[A-Za-z]{2}$/.test(code)) {

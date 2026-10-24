@@ -16,6 +16,7 @@ export function login(over: Partial<LoginItem> = {}): LoginItem {
     username_typed: "admin",
     user_exists: "yes",
     user_id: null,
+    user_name: null,
     provider: null,
     ip: "203.0.113.7",
     country_code: "RU",

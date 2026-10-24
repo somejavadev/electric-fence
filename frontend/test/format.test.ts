@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   countryFlag,
+  formatDate,
   formatTime,
   reasonLabel,
   truncate,
@@ -63,5 +64,19 @@ describe("reasonLabel", () => {
     expect(reasonLabel("wrong_2fa_code")).toBe("wrong two-factor code");
     expect(reasonLabel("blocked_local_only")).toBe("blocked: local only");
     expect(reasonLabel("something_new")).toBe("something_new");
+  });
+});
+
+describe("formatDate", () => {
+  it("shows the calendar date only, with no time zone shift", () => {
+    for (const zone of ["UTC", "Pacific/Honolulu", "Pacific/Kiritimati"]) {
+      expect(formatDate("2026-10-01", fakeHass(zone))).toBe("Oct 1, 2026");
+    }
+  });
+  it("returns other input unchanged", () => {
+    expect(formatDate("2026-10-01T00:00:00Z", fakeHass("UTC"))).toBe(
+      "2026-10-01T00:00:00Z",
+    );
+    expect(formatDate("2026-13-45", fakeHass("UTC"))).toBe("2026-13-45");
   });
 });
