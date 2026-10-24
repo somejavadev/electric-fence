@@ -14,8 +14,7 @@ import type {
   LoginItem,
   UserItem,
 } from "../types.ts";
-import { LIVE_CAP } from "./ef-activity.ts";
-import { LiveView } from "./live-view.ts";
+import { LIVE_CAP, LiveView } from "./live-view.ts";
 
 const KINDS: readonly ChangeKind[] = ["config_entry", "user", "core_config"];
 
@@ -70,19 +69,31 @@ export function matchesChange(
   return since === undefined || Date.parse(item.ts) >= Date.parse(since);
 }
 
-/** Names of what changed: a `field`, a list of `keys`, else the detail keys. */
-export function detailNames(details: Record<string, unknown>): {
-  field: string | null;
-  keys: string[];
-} {
-  const field = typeof details["field"] === "string" ? details["field"] : null;
-  const listed = details["keys"];
-  const keys = Array.isArray(listed)
-    ? listed.filter((key): key is string => typeof key === "string")
-    : field === null
-      ? Object.keys(details)
+export interface DetailGroup {
+  label: string;
+  values: string[];
+}
+
+const names = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string" && v !== "")
+    : typeof value === "string" && value !== ""
+      ? [value]
       : [];
-  return { field, keys };
+
+/**
+ * What changed, from the collectors' payloads: `changed`, `data_keys_changed`,
+ * `options_keys_changed`, `field` and `keys`. Other detail keys are not shown.
+ */
+export function detailGroups(details: Record<string, unknown>): DetailGroup[] {
+  const a = strings.audit;
+  return [
+    { label: a.changed, values: names(details["changed"]) },
+    { label: a.dataKeys, values: names(details["data_keys_changed"]) },
+    { label: a.optionKeys, values: names(details["options_keys_changed"]) },
+    { label: a.field, values: names(details["field"]) },
+    { label: a.keys, values: names(details["keys"]) },
+  ].filter((group) => group.values.length > 0);
 }
 
 /** Audit tab: who changed which settings, with live additions. */
@@ -164,8 +175,17 @@ export class EfAudit extends LiveView {
       return;
     }
     this._filters = next;
+    this._resetList();
     void this._refresh();
   };
+
+  /** Drop what the old filters showed, so no cursor or row outlives them. */
+  private _resetList(): void {
+    this._items = [];
+    this._live = [];
+    this._next = null;
+    this._phase = "loading";
+  }
 
   private async _loadMore(): Promise<void> {
     const before = this._next;
@@ -185,7 +205,7 @@ export class EfAudit extends LiveView {
         this._next = page.next_before_id;
       }
     } catch (err) {
-      if (generation === this._generation) {
+      if (generation === this._generation && request === this._requests) {
         this._fail(err);
       }
     } finally {
@@ -228,25 +248,16 @@ export class EfAudit extends LiveView {
   }
 
   private _details(item: ChangeItem) {
-    const { field, keys } = detailNames(item.details);
-    if (field === null && keys.length === 0) {
+    const groups = detailGroups(item.details);
+    if (groups.length === 0) {
       return nothing;
     }
-    const list = truncate(keys.join(", "), 128);
-    const name = truncate(field ?? "", 64);
     return html`<div class="details">
-      ${
-        field === null
-          ? nothing
-          : html`${strings.audit.field}:
-              <bdi class="field" title=${name.full}>${name.short}</bdi> `
-      }
-      ${
-        keys.length === 0
-          ? nothing
-          : html`${strings.audit.keys}:
-              <bdi class="keys" title=${list.full}>${list.short}</bdi>`
-      }
+      ${groups.map((group, i) => {
+        const list = truncate(group.values.join(", "), 128);
+        return html`${i > 0 ? " · " : nothing}${group.label}:
+          <bdi title=${list.full}>${list.short}</bdi>`;
+      })}
     </div>`;
   }
 

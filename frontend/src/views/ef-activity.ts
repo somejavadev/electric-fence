@@ -14,10 +14,8 @@ import type {
   LoginResult,
   UserItem,
 } from "../types.ts";
-import { LiveView } from "./live-view.ts";
+import { LIVE_CAP, LiveView } from "./live-view.ts";
 
-/** Most live items kept above the fetched pages. */
-export const LIVE_CAP = 200;
 export const DEFAULT_RANGE: TimeRange = "24h";
 
 const RESULTS: readonly LoginResult[] = ["success", "failed", "blocked"];
@@ -30,6 +28,10 @@ export interface ActivityFilters {
   country: string;
   range: TimeRange;
 }
+
+/** SQLite LIKE folds ASCII letters only; so does this. */
+const asciiLower = (text: string): string =>
+  text.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 const clean = (value: string | null): string => (value ?? "").trim();
 
@@ -104,9 +106,9 @@ export function matchesLogin(
   }
   if (
     filters.username !== "" &&
-    !(item.username_typed ?? "")
-      .toLowerCase()
-      .includes(filters.username.toLowerCase())
+    !asciiLower(item.username_typed ?? "").includes(
+      asciiLower(filters.username),
+    )
   ) {
     return false;
   }
@@ -203,6 +205,7 @@ export class EfActivity extends LiveView {
       return;
     }
     this._filters = next;
+    this._resetList();
     const query = queryFromFilters(next);
     history.replaceState(
       null,
@@ -211,6 +214,14 @@ export class EfActivity extends LiveView {
     );
     void this._refresh();
   };
+
+  /** Drop what the old filters showed, so no cursor or row outlives them. */
+  private _resetList(): void {
+    this._items = [];
+    this._live = [];
+    this._next = null;
+    this._phase = "loading";
+  }
 
   private async _loadMore(): Promise<void> {
     const before = this._next;
@@ -230,7 +241,7 @@ export class EfActivity extends LiveView {
         this._next = page.next_before_id;
       }
     } catch (err) {
-      if (generation === this._generation) {
+      if (generation === this._generation && request === this._requests) {
         this._fail(err);
       }
     } finally {

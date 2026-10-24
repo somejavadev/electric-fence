@@ -111,11 +111,11 @@ export class EfUsers extends LiveView {
             type="button"
             class="toggle"
             aria-expanded=${open ? "true" : "false"}
-            aria-controls=${panelId}
+            aria-controls=${open ? panelId : nothing}
             title=${open ? strings.users.collapse : strings.users.expand}
             @click=${() => this._toggle(user.id)}
           >
-            ${open ? "▾" : "▸"}
+            <span aria-hidden="true">${open ? "▾" : "▸"}</span>
             ${text(user.name ?? user.username ?? strings.unknownUser)}
           </button>
         </th>

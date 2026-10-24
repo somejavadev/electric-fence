@@ -12,6 +12,9 @@ import type {
 /** Wait this long after a push before refetching, to merge bursts. */
 export const REFRESH_DELAY_MS = 1000;
 
+/** Most live items kept above the fetched pages. */
+export const LIVE_CAP = 200;
+
 export type Phase = "loading" | "ready" | "error" | "unloaded";
 
 export const isNotLoaded = (err: unknown): boolean =>

@@ -335,7 +335,13 @@ describe("hostile values in the other tabs", () => {
             actor_name: H("actor"),
             actor_ip: H("actorip"),
             target_name: H("target"),
-            details: { keys: [H("key")] },
+            details: {
+              changed: [H("changed")],
+              data_keys_changed: [H("datakey")],
+              options_keys_changed: [H("optkey")],
+              field: H("field"),
+              keys: [H("key")],
+            },
           }),
         ],
         next_before_id: null,
@@ -355,7 +361,16 @@ describe("hostile values in the other tabs", () => {
         "span",
         "bdi",
       ],
-      ["actor", "actorip", "target", "key"],
+      [
+        "actor",
+        "actorip",
+        "target",
+        "changed",
+        "datakey",
+        "optkey",
+        "field",
+        "key",
+      ],
     );
   });
 

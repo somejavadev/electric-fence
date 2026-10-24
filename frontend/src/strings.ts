@@ -74,9 +74,11 @@ export const strings = {
   audit: {
     heading: "Audit",
     empty: "No settings changes match these filters",
+    changed: "changed",
+    dataKeys: "data keys",
+    optionKeys: "option keys",
     field: "field",
     keys: "keys",
-    details: "details",
   },
   loadMore: "Load more",
   users: {
