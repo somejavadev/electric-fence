@@ -1,0 +1,22 @@
+{
+  "domain": "electric_fence",
+  "name": "Electric Fence",
+  "after_dependencies": ["config", "cloud"],
+  "codeowners": ["@somejavadev"],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend",
+    "panel_custom",
+    "persistent_notification",
+    "websocket_api",
+    "auth"
+  ],
+  "documentation": "https://github.com/somejavadev/electric-fence",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/somejavadev/electric-fence/issues",
+  "requirements": ["maxminddb==3.2.0"],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

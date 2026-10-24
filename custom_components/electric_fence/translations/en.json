@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Electric Fence",
+        "description": "Electric Fence records failed and successful logins and who changed settings. It never affects logins. Select submit to set it up with the default settings."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Electric Fence is already set up. Only one instance is allowed."
+    }
+  }
+}

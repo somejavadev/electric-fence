@@ -1,0 +1,7 @@
+{
+  "name": "Electric Fence",
+  "homeassistant": "2026.11.0",
+  "zip_release": true,
+  "filename": "electric_fence.zip",
+  "render_readme": true
+}
