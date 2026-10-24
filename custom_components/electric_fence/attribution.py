@@ -140,8 +140,10 @@ def open_scope(
     try:
         yield scope
     finally:
-        scope.close()
-        SCOPE.reset(token)
+        try:
+            scope.close()
+        finally:
+            SCOPE.reset(token)
 
 
 def _coro_qualname(task: asyncio.Task[Any] | None) -> str | None:
@@ -646,7 +648,7 @@ class AttributionCollector(BaseCollector):
                 # Not async, finished eagerly, or not found: done now.
                 scope.close()
             else:
-                task.add_done_callback(lambda _task: scope.close())
+                task.add_done_callback(lambda _task: self.guard.call(scope.close))
 
     # Scope openers (inside the guard).
 

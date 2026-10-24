@@ -29,6 +29,11 @@ class BaseCollector(ABC):
         self._handles: list[HookHandle] = []
         self._unsubs: list[CALLBACK_TYPE] = []
 
+    @property
+    def is_installed(self) -> bool:
+        """Return True while the hooks and subscriptions are in place."""
+        return self._installed
+
     @abstractmethod
     def _install(self) -> None:
         """Install hooks and subscriptions."""

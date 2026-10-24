@@ -1104,6 +1104,25 @@ async def test_current_actor_requires_active_scope_in_owner_task(
     await other
 
 
+async def test_scope_reset_even_if_close_raises(
+    hass_admin_user: MockUser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing close still resets the context variable (no leaked scope)."""
+
+    def _boom(self: ActionScope) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ActionScope, "close", _boom)
+    cm = open_scope(
+        user=hass_admin_user, ip=None, action=ACTION_WS, details={}, owner=None
+    )
+    cm.__enter__()
+    assert SCOPE.get() is not None
+    with pytest.raises(RuntimeError):
+        cm.__exit__(None, None, None)
+    assert SCOPE.get() is None
+
+
 async def test_direct_request_actor_needs_request_user_and_view_task(
     hass_admin_user: MockUser,
 ) -> None:

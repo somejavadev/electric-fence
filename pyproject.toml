@@ -12,7 +12,11 @@ plugins = []
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-p no:respx"
+# The benchmark runs on its own: `pytest -m benchmark`.
+addopts = "-p no:respx -m 'not benchmark'"
+markers = [
+  "benchmark: timing test, excluded from the default run (pytest -m benchmark)",
+]
 
 [tool.coverage.run]
 source = ["custom_components/electric_fence"]
@@ -188,6 +192,7 @@ split-on-trailing-comma = false
 [tool.ruff.lint.per-file-ignores]
 "custom_components/**" = ["TID252"]
 "tests/**" = ["TID251"]
+"scripts/**" = ["INP001"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
