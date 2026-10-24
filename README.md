@@ -22,12 +22,14 @@ Screenshots are coming.
 
 ## Install
 
-Install Electric Fence from the Home Assistant Community Store (HACS), or copy
+Install Electric Fence from the Marketplace built into Home Assistant 2026.11
+and newer, or from the Home Assistant Community Store (HACS). Until Electric
+Fence is in the default catalog, it's a custom repository. You can also copy
 `custom_components/electric_fence` into the `custom_components` folder of your
 configuration directory.
 
-1. In HACS, add this repository as a custom repository of type **Integration**,
-   then download **Electric Fence**.
+1. Add this repository as a custom repository of type **Integration** in the
+   Marketplace or in HACS, then download **Electric Fence**.
 2. Restart Home Assistant.
 3. Add the integration:
 
@@ -40,13 +42,13 @@ The minimum supported version is Home Assistant 2026.11.0.
 Select **Configure** on the integration to change these. All of them apply
 immediately, without a restart.
 
-| Setting                                     | What it does                                                                                                                      |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| **Notify on failed login**                  | Creates a persistent notification when a login fails.                                                                             |
-| **Home Assistant's own login notification** | **Replace** dismisses Home Assistant's own login notification while notifications are on. **Keep** leaves it in place.            |
-| **History retention**                       | Days of history to keep, from 1 to 3650. The default is 90.                                                                       |
-| **GeoIP provider**                          | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. |
-| **Reverse DNS lookups**                     | Looks up host names for IP addresses.                                                                                             |
+| Setting                                     | What it does                                                                                                                                                                                                                 |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Notify on failed login**                  | Creates a persistent notification when a login fails.                                                                                                                                                                        |
+| **Home Assistant's own login notification** | **Replace** dismisses Home Assistant's own login notification while notifications are on. **Keep** leaves it in place.                                                                                                       |
+| **History retention**                       | Days of history to keep, from 1 to 3650. The default is 90.                                                                                                                                                                  |
+| **GeoIP provider**                          | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. Choosing MaxMind opens a second step for the credentials, which are checked before saving. |
+| **Reverse DNS lookups**                     | Looks up host names for IP addresses. On by default.                                                                                                                                                                         |
 
 ## Events
 
@@ -62,15 +64,28 @@ A failed login event has these fields: `username`, `username_masked`,
 `user_exists`, `user_id`, `reason`, `ip`, `country`, `hostname`, `source`,
 `client`, and `count`.
 
+A successful login event has these fields: `user_id`, `username` (the user's
+name, never the typed text), `ip`, `country`, `source`, `client`, and
+`mfa_used`.
+
 A settings change event has these fields: `kind`, `action`, `target`,
 `target_name`, `changed_by_user_id`, `changed_by_name`, and `ip`. A change
 without a person behind it has no user and shows as **System** in the panel.
 
+- `kind` is one of `config_entry`, `user`, or `core_config`.
+- `action` is one of `added`, `removed`, `updated`, `reconfigured`,
+  `options_changed`, `enabled`, `disabled`, or `password_changed`.
+
 ## Sensor
 
-The **Failed logins** sensor counts failed login attempts in the last 24 hours.
-Its attributes describe the most recent failed attempt: `last_username`,
-`last_ip`, `last_country`, and `last_reason`.
+The **Failed logins** sensor (`sensor.electric_fence_failed_logins`) counts
+failed and blocked login attempts in the last 24 hours. Its attributes describe
+the most recent one: `last_username`, `last_ip`, `last_country`, and
+`last_reason`. The reason is one of `no_such_user`, `wrong_password`,
+`invalid_credentials`, `wrong_2fa_code`, `invalid_token`,
+`blocked_inactive_user`, or `blocked_local_only`.
+
+The admin panel is in the sidebar and at `/electric-fence`.
 
 > [!WARNING]
 > Sensor attributes and event fields contain text typed by whoever tried to
@@ -81,8 +96,9 @@ Its attributes describe the most recent failed attempt: `last_username`,
 ## Privacy
 
 Electric Fence stores data on your Home Assistant system only. It sends
-nothing anywhere, apart from downloading the GeoIP database and, if you turn
-it on, doing reverse DNS lookups.
+nothing anywhere, apart from downloading the GeoIP database and doing reverse
+DNS lookups. Reverse DNS is on by default. It sends each IP address to the DNS
+resolver your system is configured to use. You can turn it off in the settings.
 
 - **Usernames.** The username someone typed is stored, and shown in full only
   in the admin panel. Everywhere else (the notification, the events, the

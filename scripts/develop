@@ -5,8 +5,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # The panel's static path is registered once, with the folder as it exists at
 # startup, so the build has to be there before Home Assistant starts.
-if [[ ! -d custom_components/electric_fence/frontend_dist ]]; then
-  echo "frontend_dist is missing; building the panel first."
+if [[ ! -L .devcontainer/config/custom_components/electric_fence ]]; then
+  echo "The custom_components symlink is missing. Run scripts/setup first." >&2
+  exit 1
+fi
+
+if [[ ! -f custom_components/electric_fence/frontend_dist/electric-fence-panel.js ]]; then
+  echo "The built panel is missing; building it first."
   (cd frontend && npm ci && npm run build)
 fi
 
