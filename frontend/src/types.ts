@@ -88,12 +88,49 @@ export interface ChangeItem {
 
 export type PostureLevel = "ok" | "warning" | "error";
 
-export interface PostureItem {
-  id: string;
-  level: PostureLevel;
-  /** Shape depends on `id`; see `shapes.py`. `threshold: null` means off. */
-  params: Record<string, unknown>;
+/** A check that itself failed: `level` is "error". */
+export interface CheckFailed {
+  check_failed: string;
 }
+
+interface PostureBase<Id extends string, Params> {
+  id: Id;
+  level: PostureLevel;
+  params: Params | CheckFailed;
+}
+
+export type PostureItem =
+  | PostureBase<
+      "admins_without_mfa",
+      { users: { id: string; name: string | null }[] }
+    >
+  /** `threshold: null` means ban handling is off entirely. */
+  | PostureBase<"auto_ban_off", { threshold: number | null }>
+  | PostureBase<
+      "proxy_suspected",
+      {
+        ip: string | null;
+        users: number;
+        use_x_forwarded_for: boolean | null;
+      }
+    >
+  | PostureBase<
+      "geoip_missing",
+      { provider: string; last_error: string | null }
+    >
+  /** `{}` when ok; one error item per disabled collector otherwise. */
+  | PostureBase<
+      "collector_disabled",
+      Record<string, never> | { collector: string; reasons: string[] }
+    >
+  | PostureBase<
+      "storage_error",
+      {
+        storage_errors: number;
+        last_error: string | null;
+        last_error_at: string | null;
+      }
+    >;
 
 export interface SessionItem {
   id: string;
@@ -119,8 +156,10 @@ export interface UserItem {
   sessions: SessionItem[];
 }
 
+export type GeoProvider = "dbip_lite" | "maxmind" | "none";
+
 export interface GeoStatus {
-  provider: "dbip_lite" | "maxmind" | "none";
+  provider: GeoProvider;
   db_date: string | null;
   last_error: string | null;
   attribution: string | null;
@@ -164,9 +203,9 @@ export interface Status {
   version: string | null;
   settings: {
     notify_failed_login: boolean;
-    ha_login_notification: string;
+    ha_login_notification: "replace" | "keep";
     retention_days: number;
-    geoip_provider: string;
+    geoip_provider: GeoProvider;
     maxmind_account_id: string | null;
     reverse_dns: boolean;
     maxmind_license_key_set: boolean;

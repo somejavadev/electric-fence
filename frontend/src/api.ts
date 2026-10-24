@@ -18,8 +18,9 @@ const call = <T>(
   params: object = {},
 ): Promise<T> =>
   hass.connection.sendMessagePromise<T>({
-    type: `electric_fence/${type}`,
     ...params,
+    // After the spread, so a filter key can never change the command.
+    type: `electric_fence/${type}`,
   });
 
 export const fetchOverview = (hass: HomeAssistant): Promise<Overview> =>

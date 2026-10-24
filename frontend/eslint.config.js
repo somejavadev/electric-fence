@@ -4,7 +4,19 @@ import lit from "eslint-plugin-lit";
 import wc from "eslint-plugin-wc";
 import tseslint from "typescript-eslint";
 
-const htmlSinks = ["innerHTML", "outerHTML", "insertAdjacentHTML"];
+// Property names that turn a string into markup or script. Static bans only:
+// a runtime-computed key cannot be linted, so untrusted strings must reach the
+// DOM through Lit templates, which escape them.
+const markupSinks = [
+  "innerHTML",
+  "outerHTML",
+  "insertAdjacentHTML",
+  "write",
+  "writeln",
+  "createContextualFragment",
+  "parseFromString",
+];
+const sinkPattern = `/^(${markupSinks.join("|")})$/`;
 
 export default tseslint.config(
   { ignores: ["node_modules/**"] },
@@ -20,43 +32,48 @@ export default tseslint.config(
       "no-restricted-imports": [
         "error",
         {
-          paths: [
-            "lit/directives/unsafe-html.js",
-            "lit/directives/unsafe-svg.js",
-          ].map((name) => ({
-            name,
-            message: "Never render untrusted strings as markup.",
-          })),
-        },
-      ],
-      "no-restricted-properties": [
-        "error",
-        ...htmlSinks.map((property) => ({
-          property,
-          message: "Use text content or a Lit template instead.",
-        })),
-        {
-          object: "document",
-          property: "write",
-          message: "Never write markup into the document.",
-        },
-        {
-          object: "document",
-          property: "writeln",
-          message: "Never write markup into the document.",
+          patterns: [
+            {
+              group: ["**/unsafe-html*", "**/unsafe-svg*"],
+              message: "Never render untrusted strings as markup.",
+            },
+            {
+              group: ["lit/static-html*", "lit-html/static*"],
+              message: "Static HTML templates take raw strings.",
+            },
+            {
+              group: ["lit-html", "lit-html/**"],
+              message: "Import from lit only.",
+            },
+          ],
         },
       ],
       "no-restricted-syntax": [
         "error",
-        ...htmlSinks.map((name) => ({
-          selector: `Literal[value='${name}']`,
-          message: `Do not reach for ${name} by name.`,
-        })),
+        {
+          selector: `MemberExpression[property.name=${sinkPattern}]`,
+          message: "Use a Lit template instead of writing markup.",
+        },
+        {
+          selector: `MemberExpression[computed=true][property.value=${sinkPattern}]`,
+          message: "Use a Lit template instead of writing markup.",
+        },
+        {
+          selector: `MemberExpression[computed=true] > TemplateLiteral.property > TemplateElement[value.raw=${sinkPattern}]`,
+          message: "Use a Lit template instead of writing markup.",
+        },
+        {
+          selector: `Literal[value=${sinkPattern}]`,
+          message: "Do not reach for markup sinks by name.",
+        },
       ],
+      "no-eval": "error",
+      "no-implied-eval": "error",
+      "no-new-func": "error",
     },
   },
   {
-    files: ["*.js", "*.ts"],
+    files: ["*.js", "vite.config.ts"],
     languageOptions: { globals: globals.node },
   },
 );

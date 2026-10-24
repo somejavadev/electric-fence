@@ -1,4 +1,4 @@
-import { LitElement, html, nothing } from "lit";
+import { LitElement, html } from "lit";
 import { panelStyles } from "./styles.ts";
 import type { HomeAssistant, Route } from "./types.ts";
 
@@ -42,14 +42,10 @@ export class ElectricFencePanel extends LitElement {
     const current = tabFromPath(this.route?.path);
     return html`
       <header>
-        ${
-          this.narrow
-            ? html`<ha-menu-button
-                .hass=${this.hass}
-                .narrow=${this.narrow}
-              ></ha-menu-button>`
-            : nothing
-        }
+        <ha-menu-button
+          .hass=${this.hass}
+          .narrow=${this.narrow}
+        ></ha-menu-button>
         <h1>Electric Fence</h1>
       </header>
       <nav role="tablist">

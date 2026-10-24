@@ -76,14 +76,12 @@ describe("electric-fence-panel", () => {
     ).toBe("Users");
   });
 
-  it("shows the menu button only on narrow screens", async () => {
-    expect(
-      (await mount("")).shadowRoot?.querySelector("ha-menu-button"),
-    ).toBeNull();
-    document.body.replaceChildren();
-    expect(
-      (await mount("", true)).shadowRoot?.querySelector("ha-menu-button"),
-    ).not.toBeNull();
+  it("always renders the menu button; Home Assistant hides it itself", async () => {
+    for (const narrow of [false, true]) {
+      document.body.replaceChildren();
+      const el = await mount("", narrow);
+      expect(el.shadowRoot?.querySelector("ha-menu-button")).not.toBeNull();
+    }
   });
 
   it("falls back to overview for unknown paths", () => {
