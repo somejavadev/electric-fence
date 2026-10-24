@@ -1,6 +1,7 @@
 {
   "domain": "electric_fence",
   "name": "Electric Fence",
+  "categories": ["computers_network.monitoring"],
   "after_dependencies": ["config", "cloud"],
   "codeowners": ["@somejavadev"],
   "config_flow": true,

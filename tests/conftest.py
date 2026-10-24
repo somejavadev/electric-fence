@@ -1,7 +1,5 @@
 """Shared fixtures for Electric Fence tests."""
 
-from collections.abc import Generator
-
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -18,7 +16,7 @@ def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
 @pytest.fixture
 async def setup_entry(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> Generator[MockConfigEntry]:
+) -> MockConfigEntry:
     """Add and set up an Electric Fence config entry."""
     # Independent of the installed Home Assistant version.
     monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
