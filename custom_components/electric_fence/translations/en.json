@@ -9,5 +9,15 @@
     "abort": {
       "single_instance_allowed": "Electric Fence is already set up. Only one instance is allowed."
     }
+  },
+  "issues": {
+    "collector_disabled": {
+      "title": "Electric Fence collector disabled",
+      "description": "Electric Fence turned off the {collector} collector because Home Assistant no longer behaves as expected: {reason}. Logins are not affected. Please report this at the Electric Fence issue tracker."
+    },
+    "storage_error": {
+      "title": "Electric Fence cannot write to its database",
+      "description": "Electric Fence could not write to its database: {error}. Logins are not affected, but new records are being dropped until this is fixed."
+    }
   }
 }
