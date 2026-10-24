@@ -49,6 +49,7 @@ async def snapshot_users(
     """Return a UserItem for every user, sorted by name."""
     users = await hass.auth.async_get_users()
     last = await hass.async_add_executor_job(store.last_success_per_user)
+    names = {user.id: user.name for user in users}
     items: list[dict[str, Any]] = []
     for user in sorted(users, key=lambda u: ((u.name or "").casefold(), u.id)):
         mfa = await hass.auth.async_get_enabled_mfa(user)
@@ -65,7 +66,7 @@ async def snapshot_users(
                 "local_only": user.local_only,
                 "system_generated": user.system_generated,
                 "mfa_modules": list(mfa),
-                "last_login": login_item(row) if row is not None else None,
+                "last_login": login_item(row, names) if row is not None else None,
                 "sessions": [_session(t) for t in tokens],
             }
         )

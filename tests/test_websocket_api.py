@@ -32,7 +32,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from tests.helpers import create_hass_user, flush_worker, login_flow
 
-LOGIN_KEYS = {f.name for f in fields(LoginRow)}
+# Stored fields plus `user_name`, resolved when the item is built.
+LOGIN_KEYS = {f.name for f in fields(LoginRow)} | {"user_name"}
 CHANGE_KEYS = {f.name for f in fields(ChangeRow)}
 COMMANDS = (
     "electric_fence/overview",
@@ -310,6 +311,8 @@ async def test_logins_filters_and_paging(
     assert [i["username_typed"] for i in page["items"]] == ["mallory"]
     assert page["next_before_id"] is None
 
+    assert await logins(result="failed_or_blocked") == ["<b>evil</b>", "bob", "mallory"]
+
     for bad in ({"limit": 201}, {"limit": 0}, {"result": "maybe"}, {"since": "x"}):
         msg = await call(ws, "electric_fence/logins", **bad)
         assert not msg["success"], bad
@@ -436,6 +439,7 @@ async def test_users_lists_sessions_without_tokens(
     assert item["local_only"] is False
     assert item["mfa_modules"] == []
     assert item["last_login"]["user_id"] == alice.id
+    assert item["last_login"]["user_name"] == "alice"
     assert set(item["last_login"]) == LOGIN_KEYS
     sessions = {s["id"]: s for s in item["sessions"]}
     assert set(sessions) == {token.id, lla.id}
@@ -558,12 +562,12 @@ async def test_subscribe_survives_bad_record(
     original = fence_ws.record_event
     calls = 0
 
-    def flaky(rec: Record) -> dict[str, Any]:
+    def flaky(rec: Record, *args: Any) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise ValueError("bad")
-        return original(rec)
+        return original(rec, *args)
 
     monkeypatch.setattr(fence_ws, "record_event", flaky)
     worker.submit(attempt(ip="203.0.113.1"))
@@ -630,3 +634,81 @@ async def test_status_geo_date_and_missing_status(
     runtime.geo_status = None
     res = await result(ws, "electric_fence/status")
     assert res["geo"] is None
+
+
+async def test_login_items_name_the_user(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+) -> None:
+    """A login item names its user from the auth store, not the typed text."""
+    alice = await create_hass_user(hass, "alice", "pw")
+    await hass.auth.async_update_user(alice, name="Alice Liddell")
+    trusted = attempt(
+        result=LoginResult.SUCCESS,
+        reason=LoginReason.OK,
+        username_typed=None,
+        user_exists=UserExists.YES,
+        user_id=alice.id,
+        provider="trusted_networks",
+    )
+    await store(hass, setup_entry, trusted, attempt(user_id="gone"))
+
+    overview = await result(ws, "electric_fence/overview")
+    page = await result(ws, "electric_fence/logins")
+
+    (success,) = overview["recent_success"]["items"]
+    assert (success["username_typed"], success["user_name"]) == (
+        None,
+        "Alice Liddell",
+    )
+    assert [i["user_name"] for i in page["items"]] == [None, "Alice Liddell"]
+
+    await flush_worker(hass)  # the rename's own change record
+    sub_id = await subscribe(ws)
+    setup_entry.runtime_data.worker.submit(replace(trusted, confirmed=True))
+    await flush_worker(hass)
+    msg = await ws.receive_json()
+    assert msg["id"] == sub_id
+    assert msg["event"]["item"]["user_name"] == "Alice Liddell"
+
+
+async def test_subscribe_ends_for_demoted_admin(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    hass_admin_user: MockUser,
+) -> None:
+    """A user who is no longer an active admin gets no more pushes."""
+    worker = setup_entry.runtime_data.worker
+    before = len(worker._listeners)
+    sub_id = await subscribe(ws)
+    assert len(worker._listeners) == before + 1
+
+    hass_admin_user.groups = []
+    worker.submit(attempt())
+    await flush_worker(hass)
+
+    assert len(worker._listeners) == before
+    assert not hass.data[fence_ws.DATA_SUBSCRIPTIONS][setup_entry.entry_id]
+    # The next message is the answer to this ping, not a pushed record.
+    await ws.send_json_auto_id({"type": "ping"})
+    assert (await ws.receive_json())["type"] == "pong"
+    msg = await call(ws, "unsubscribe_events", subscription=sub_id)
+    assert msg["error"]["code"] == "not_found"
+
+
+async def test_subscribe_ends_for_deactivated_admin(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    hass_admin_user: MockUser,
+) -> None:
+    """A deactivated admin gets no more pushes either."""
+    worker = setup_entry.runtime_data.worker
+    before = len(worker._listeners)
+    await subscribe(ws)
+    hass_admin_user.is_active = False
+    worker.submit(attempt())
+    await flush_worker(hass)
+    assert len(worker._listeners) == before

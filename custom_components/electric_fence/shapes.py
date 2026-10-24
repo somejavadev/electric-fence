@@ -16,7 +16,10 @@ LoginItem (a stored login attempt)::
              | "blocked_local_only",
      username_typed: str | null,  # RAW attacker-controlled text: render as text
      user_exists: "yes" | "no" | "unknown",
-     user_id: str | null, provider: str | null,
+     user_id: str | null,
+     user_name: str | null,       # the user's name from the auth store, looked
+                                  # up by user_id when the item is built
+     provider: str | null,
      ip: str | null, country_code: str | null, hostname: str | null,
      source: "local" | "remote" | "cloud" | null,
      client_id: str | null, client_name: str | null,
@@ -71,7 +74,9 @@ Commands::
           changes_7d: {count: int, items: ChangeItem[<=5]}, # System excluded
           recent_success: {items: LoginItem[<=5]},
           posture: PostureItem[]}
-    electric_fence/logins    {result?, user_id?, username? (substring),
+    electric_fence/logins    {result? ("success" | "failed" | "blocked"
+                                       | "failed_or_blocked"),
+                              user_id?, username? (substring),
                               ip?, country?, since?, until?, before_id?,
                               limit? (1..200, default 50)}
       -> {items: LoginItem[], next_before_id: int | null}
@@ -92,12 +97,15 @@ Commands::
       event {type: "change", item: ChangeItem} # item.id is null
       event {type: "unloaded"}                 # entry unloaded: subscription
                                                # ended, subscribe again later
+      A subscription ends without an event once its user is no longer an
+      active admin.
 
 Paging: pass the previous `next_before_id` as `before_id`; it is null when
 the page was not full. `since`/`until` are ISO 8601; without an offset they
 are read as UTC.
 """
 
+from collections.abc import Mapping
 from dataclasses import fields
 from datetime import UTC, date, datetime
 from enum import Enum
@@ -131,9 +139,18 @@ def _item(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
     return {name: _value(getattr(obj, name, None)) for name in names}
 
 
-def login_item(row: LoginRow | LoginAttempt) -> dict[str, Any]:
-    """Return a LoginItem. Only stored fields: never in-memory credentials."""
-    return _item(row, _LOGIN_FIELDS)
+type UserNames = Mapping[str, str | None]
+
+
+def login_item(row: LoginRow | LoginAttempt, names: UserNames) -> dict[str, Any]:
+    """Return a LoginItem. Only stored fields: never in-memory credentials.
+
+    `names` maps user IDs to names (from memory) for `user_name`.
+    """
+    item = _item(row, _LOGIN_FIELDS)
+    user_id = row.user_id
+    item["user_name"] = names.get(user_id) if user_id is not None else None
+    return item
 
 
 def change_item(row: Any) -> dict[str, Any]:
@@ -143,10 +160,10 @@ def change_item(row: Any) -> dict[str, Any]:
     return item
 
 
-def record_event(rec: Record) -> dict[str, Any]:
+def record_event(rec: Record, names: UserNames) -> dict[str, Any]:
     """Return the subscription event for a stored record."""
     if isinstance(rec, LoginAttempt):
-        return {"type": "login", "item": login_item(rec)}
+        return {"type": "login", "item": login_item(rec, names)}
     return {"type": "change", "item": change_item(rec)}
 
 

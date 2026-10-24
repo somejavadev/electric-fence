@@ -18,11 +18,19 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
 
 from . import posture, sessions
+from .attribution import auth_users
 from .const import DOMAIN
 from .models import ChangeKind, LoginResult, Record
 from .runtime import Runtime
-from .shapes import change_item, geo_status_item, login_item, record_event
-from .storage import ChangeFilter, ChangeRow, FenceStore, LoginFilter, LoginRow
+from .shapes import UserNames, change_item, geo_status_item, login_item, record_event
+from .storage import (
+    FAILED_OR_BLOCKED,
+    ChangeFilter,
+    ChangeRow,
+    FenceStore,
+    LoginFilter,
+    LoginRow,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,6 +85,12 @@ def async_end_subscriptions(hass: HomeAssistant, entry_id: str) -> None:
         close()
 
 
+def user_names(hass: HomeAssistant) -> dict[str, str | None]:
+    """Return every user's name by ID, from the auth store in memory."""
+    users = auth_users(hass)
+    return {} if users is None else {uid: u.name for uid, u in users.items()}
+
+
 def _loaded_entry(hass: HomeAssistant) -> ConfigEntry[Runtime] | None:
     entries = hass.config_entries.async_loaded_entries(DOMAIN)
     return entries[0] if entries else None
@@ -108,18 +122,12 @@ def _count_changes(store: FenceStore, flt: ChangeFilter) -> int:
         before = page[-1].id
 
 
-def _overview(store: FenceStore, now: datetime) -> dict[str, Any]:
+def _overview(store: FenceStore, now: datetime, names: UserNames) -> dict[str, Any]:
     """Collect the three record cards. Runs in the executor."""
     day = now - FAILED_WINDOW
-    failed = [
-        *store.query_logins(
-            LoginFilter(result=LoginResult.FAILED, since=day), limit=OVERVIEW_ITEMS
-        ),
-        *store.query_logins(
-            LoginFilter(result=LoginResult.BLOCKED, since=day), limit=OVERVIEW_ITEMS
-        ),
-    ]
-    failed.sort(key=lambda r: (r.ts, r.id), reverse=True)
+    failed = store.query_logins(
+        LoginFilter(result=FAILED_OR_BLOCKED, since=day), limit=OVERVIEW_ITEMS
+    )
     changes = ChangeFilter(since=now - CHANGES_WINDOW)
     success = store.query_logins(
         LoginFilter(result=LoginResult.SUCCESS), limit=OVERVIEW_ITEMS
@@ -127,7 +135,7 @@ def _overview(store: FenceStore, now: datetime) -> dict[str, Any]:
     return {
         "failed_24h": {
             "count": store.count_failed_since(day, include_blocked=True),
-            "items": [login_item(r) for r in failed[:OVERVIEW_ITEMS]],
+            "items": [login_item(r, names) for r in failed],
         },
         "changes_7d": {
             "count": _count_changes(store, changes),
@@ -136,7 +144,7 @@ def _overview(store: FenceStore, now: datetime) -> dict[str, Any]:
                 for r in store.query_changes(changes, limit=OVERVIEW_ITEMS)
             ],
         },
-        "recent_success": {"items": [login_item(r) for r in success]},
+        "recent_success": {"items": [login_item(r, names) for r in success]},
     }
 
 
@@ -150,7 +158,9 @@ async def ws_overview(
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     store = runtime.store
-    result = await hass.async_add_executor_job(_overview, store, dt_util.utcnow())
+    result = await hass.async_add_executor_job(
+        _overview, store, dt_util.utcnow(), user_names(hass)
+    )
     result["posture"] = await posture.async_check(hass, runtime, store)
     connection.send_result(msg["id"], result)
 
@@ -158,7 +168,9 @@ async def ws_overview(
 @websocket_api.websocket_command(
     {
         probatio.Required("type"): "electric_fence/logins",
-        probatio.Optional("result"): probatio.In([r.value for r in LoginResult]),
+        probatio.Optional("result"): probatio.In(
+            [*(r.value for r in LoginResult), FAILED_OR_BLOCKED]
+        ),
         probatio.Optional("user_id"): str,
         probatio.Optional("username"): str,
         probatio.Optional("ip"): str,
@@ -176,7 +188,13 @@ async def ws_logins(
         return
     result = msg.get("result")
     flt = LoginFilter(
-        result=LoginResult(result) if result is not None else None,
+        result=(
+            FAILED_OR_BLOCKED
+            if result == FAILED_OR_BLOCKED
+            else LoginResult(result)
+            if result is not None
+            else None
+        ),
         user_id=msg.get("user_id"),
         username_contains=msg.get("username"),
         ip=msg.get("ip"),
@@ -191,7 +209,7 @@ async def ws_logins(
     connection.send_result(
         msg["id"],
         {
-            "items": [login_item(r) for r in rows],
+            "items": [login_item(r, user_names(hass)) for r in rows],
             "next_before_id": _next_before_id(rows, limit),
         },
     )
@@ -312,8 +330,15 @@ def ws_subscribe(
 
     @callback
     def _on_record(rec: Record) -> None:
+        user = connection.user
+        if not user.is_admin or not user.is_active:
+            # Demoted or deactivated since subscribing: end it, send nothing.
+            _unsubscribe()
+            if connection.subscriptions.get(msg_id) is _unsubscribe:
+                del connection.subscriptions[msg_id]
+            return
         try:
-            event = record_event(rec)
+            event = record_event(rec, user_names(hass))
         except Exception as err:  # noqa: BLE001
             # Skip this record only; the subscription stays.
             _LOGGER.debug(

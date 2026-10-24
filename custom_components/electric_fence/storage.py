@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any
+from typing import Any, Final, Literal
 
 from .models import (
     ChangeAction,
@@ -29,6 +29,9 @@ from .models import (
 _LOGGER = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+
+# A `LoginFilter.result` for failed and blocked attempts together.
+FAILED_OR_BLOCKED: Final = "failed_or_blocked"
 _MAX_LIMIT = 500
 
 _VACUUM_FRACTION = 0.2
@@ -109,7 +112,7 @@ def _like_escape(value: str) -> str:
 class LoginFilter:
     """Filter for login queries."""
 
-    result: LoginResult | None = None
+    result: LoginResult | Literal["failed_or_blocked"] | None = None
     user_id: str | None = None
     username_contains: str | None = None
     ip: str | None = None
@@ -349,7 +352,10 @@ class FenceStore:
         """Return login attempts, newest first (ts, id), with keyset paging."""
         where: list[str] = []
         params: list[Any] = []
-        if f.result is not None:
+        if f.result == FAILED_OR_BLOCKED:
+            where.append("result IN (?, ?)")
+            params.extend((str(LoginResult.FAILED), str(LoginResult.BLOCKED)))
+        elif f.result is not None:
             where.append("result = ?")
             params.append(str(f.result))
         if f.user_id is not None:
