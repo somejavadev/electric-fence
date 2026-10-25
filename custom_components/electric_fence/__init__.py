@@ -140,9 +140,9 @@ async def async_setup_entry(
     entry.async_on_unload(hass.async_add_shutdown_job(HassJob(_async_shutdown)))
 
     async def _async_flush_on_stop(_event: Event) -> None:
-        # Core does not unload entries on stop, and the restart commands stop
-        # Core right after a change: write what is queued while the loop and
-        # the executor still run.
+        # A second safety net. The shutdown job above is the primary flush
+        # (Core runs it in stage 1, before this event); this covers a STOP
+        # without the shutdown jobs. A no-op once the worker has stopped.
         try:
             await worker.async_flush()
         except Exception as err:  # noqa: BLE001

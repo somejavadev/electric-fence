@@ -100,6 +100,12 @@ def country_text(code: str | None) -> str | None:
     return COUNTRY_NAMES.get(clean.upper(), clean)
 
 
+def _changed(details: dict[str, Any]) -> list[str]:
+    """Return the changed setting names (a list of text), else empty."""
+    names = details.get("changed")
+    return [str(n) for n in names] if isinstance(names, list) else []
+
+
 def _str(value: Any) -> str | None:
     return None if value is None else str(value)
 
@@ -188,7 +194,7 @@ class Notifier:
                     "changed_by_name": record.actor_name,
                     "ip": record.actor_ip,
                     # Names only: never `values`.
-                    "changed": list(record.details.get("changed") or []),
+                    "changed": _changed(record.details),
                 },
             )
         elif record.result is LoginResult.SUCCESS:

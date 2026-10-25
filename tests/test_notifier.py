@@ -563,3 +563,25 @@ async def test_event_has_changed_names_never_values(
     for word in ("OldHome", "NewHome", "before", "after"):
         assert word not in text
     assert events[1].data["changed"] == []
+
+
+async def test_event_changed_ignores_non_list(
+    hass: HomeAssistant, notifier: Notifier
+) -> None:
+    """A string `changed` is not split into characters."""
+    events = async_capture_events(hass, "electric_fence_settings_changed")
+    notifier.on_record(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.HTTP,
+            action=ChangeAction.UPDATED,
+            target_id=None,
+            target_name=None,
+            details={"changed": "abc"},
+            actor_user_id=None,
+            actor_name=None,
+            actor_ip=None,
+        )
+    )
+    await hass.async_block_till_done()
+    assert events[0].data["changed"] == []

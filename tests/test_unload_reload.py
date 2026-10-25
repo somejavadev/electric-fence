@@ -304,11 +304,11 @@ async def test_unload_flushes_records_to_listeners(
 async def test_flush_on_stop(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A change queued just before Home Assistant stops is in SQLite.
+    """A change queued before a STOP that skips the shutdown jobs is in SQLite.
 
-    Core's stop handler (`ConfigEntries._async_shutdown`) only cancels retry
-    timers and initializing flows; it does not unload entries. The listener is
-    what writes the queue (restart commands stop Core right after the change).
+    This fires STOP alone, so it exercises the safety-net listener. Core's stop
+    handler (`ConfigEntries._async_shutdown`) does not unload entries. The
+    shutdown job is the primary flush; see `test_full_stop_writes_queue`.
     """
     entry = await _setup(hass, monkeypatch)
     assert (
@@ -342,3 +342,55 @@ async def test_flush_on_stop(
         ]
     finally:
         con.close()
+
+
+def _change() -> SettingsChange:
+    return SettingsChange(
+        ts=dt_util.utcnow(),
+        kind=ChangeKind.HTTP,
+        action=ChangeAction.CONFIRMED,
+        target_id="http",
+        target_name="HTTP",
+        details={"changed": ["login_attempts_threshold"]},
+        actor_user_id="u1",
+        actor_name="Admin",
+        actor_ip=None,
+    )
+
+
+def _db_rows(path: Any) -> list[tuple[str, str]]:
+    con = sqlite3.connect(path)
+    try:
+        return con.execute("SELECT kind, action FROM settings_changes").fetchall()
+    finally:
+        con.close()
+
+
+async def test_full_stop_writes_queue(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's real stop order (shutdown jobs, then STOP) keeps the record."""
+    entry = await _setup(hass, monkeypatch)
+    runtime = entry.runtime_data
+    path = runtime.store._path  # noqa: SLF001
+    runtime.worker.submit(_change())
+    await hass.async_stop()
+    assert _db_rows(path) == [("http", "confirmed")]
+
+
+async def test_stop_listener_is_noop_after_worker_stopped(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """STOP after the worker stopped and the store closed does nothing."""
+    entry = await _setup(hass, monkeypatch)
+    runtime = entry.runtime_data
+    path = runtime.store._path  # noqa: SLF001
+    runtime.worker.submit(_change())
+    await runtime.worker.async_stop()
+    await hass.async_add_executor_job(runtime.store.close)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    assert "flush on stop failed" not in caplog.text
+    assert _db_rows(path) == [("http", "confirmed")]
