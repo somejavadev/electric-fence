@@ -489,11 +489,18 @@ describe("hostile values in the other tabs", () => {
         "th",
         "td",
         "button",
+        // Expand chevrons: the icon name is a constant, never data.
+        "ha-icon",
         "bdi",
         "span",
       ],
       ["name", "uname", "lastip", "sclient", "sip"],
     );
+    for (const icon of el.shadowRoot?.querySelectorAll("ha-icon") ?? []) {
+      expect(["mdi:chevron-right", "mdi:chevron-down"]).toContain(
+        icon.getAttribute("icon"),
+      );
+    }
   });
 
   it("settings", async () => {

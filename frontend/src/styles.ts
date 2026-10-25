@@ -152,17 +152,39 @@ export const viewStyles = css`
   .notice.error {
     border-color: var(--error-color);
   }
+  /* Styled like Home Assistant's outlined button (ha-button). */
   button {
-    padding: 6px 12px;
-    border: 1px solid var(--primary-color);
-    border-radius: 8px;
+    min-height: 40px;
+    padding: 0 16px;
+    border: 1px solid var(--outline-color, var(--divider-color));
+    border-radius: var(--ha-border-radius-pill, 9999px);
     background: none;
     color: var(--primary-color);
     font: inherit;
+    font-weight: var(--ha-font-weight-medium, 500);
     cursor: pointer;
   }
+  button:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+  /* The tab already names the view; the heading stays for screen readers. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
   button.toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 0;
     border: 0;
+    border-radius: var(--ha-border-radius-sm, 4px);
+    font-weight: inherit;
     padding: 2px 4px;
     color: var(--primary-text-color);
     text-align: start;

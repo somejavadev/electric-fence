@@ -306,7 +306,7 @@ export class EfActivity extends LiveView {
   protected override render() {
     const items = [...this._live, ...this._items];
     return html`
-      <h2>${strings.activity.heading}</h2>
+      <h2 class="visually-hidden">${strings.activity.heading}</h2>
       ${this._banners()}
       <ef-filter-bar
         .fields=${this._fields()}
@@ -317,22 +317,26 @@ export class EfActivity extends LiveView {
         this._phase === "loading"
           ? html`<p class="loading">${strings.loading}</p>`
           : items.length === 0 && this._phase === "ready"
-            ? html`<p class="empty">${strings.activity.empty}</p>`
-            : html`<ul>
-                ${items.map(
-                  (item) =>
-                    html`<li>
-                      <ef-login-row
-                        .hass=${this.hass}
-                        .item=${item}
-                        variant=${
-                          item.result === "success" ? "success" : "failed"
-                        }
-                        detailed
-                      ></ef-login-row>
-                    </li>`,
-                )}
-              </ul>`
+            ? html`<div class="card">
+                <p class="empty">${strings.activity.empty}</p>
+              </div>`
+            : html`<div class="card">
+                <ul>
+                  ${items.map(
+                    (item) =>
+                      html`<li>
+                        <ef-login-row
+                          .hass=${this.hass}
+                          .item=${item}
+                          variant=${
+                            item.result === "success" ? "success" : "failed"
+                          }
+                          detailed
+                        ></ef-login-row>
+                      </li>`,
+                  )}
+                </ul>
+              </div>`
       }
       ${
         this._next !== null

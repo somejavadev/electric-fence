@@ -86,7 +86,9 @@ export class EfSettings extends LiveView {
         ${status.collectors.map(
           (c) =>
             html`<tr>
-              <th scope="row">${text(c.name)}</th>
+              <th scope="row">
+                ${Object.hasOwn(s.collectorNames, c.name) ? s.collectorNames[c.name] : text(c.name)}
+              </th>
               <td>
                 <span class="tag ${c.enabled ? "good" : "warn"}"
                   >${c.enabled ? s.on : s.off}</span
@@ -105,7 +107,7 @@ export class EfSettings extends LiveView {
     const s = strings.settings;
     const status = this._status;
     return html`
-      <h2>${s.heading}</h2>
+      <h2 class="visually-hidden">${s.heading}</h2>
       ${this._banners()}
       ${
         status === undefined

@@ -115,7 +115,10 @@ export class EfUsers extends LiveView {
             title=${open ? strings.users.collapse : strings.users.expand}
             @click=${() => this._toggle(user.id)}
           >
-            <span aria-hidden="true">${open ? "▾" : "▸"}</span>
+            <ha-icon
+              aria-hidden="true"
+              icon=${open ? "mdi:chevron-down" : "mdi:chevron-right"}
+            ></ha-icon>
             ${text(user.name ?? user.username ?? strings.unknownUser)}
           </button>
         </th>
@@ -142,7 +145,7 @@ export class EfUsers extends LiveView {
     const u = strings.users;
     const users = this._users;
     return html`
-      <h2>${u.heading}</h2>
+      <h2 class="visually-hidden">${u.heading}</h2>
       ${this._banners()}
       ${
         users === undefined

@@ -56,15 +56,34 @@ export class EfFilterBar extends LitElement {
       font-size: var(--ha-font-size-m, 14px);
       color: var(--primary-text-color);
     }
+    /* Styled like Home Assistant's outlined text fields and selects. */
     select,
     input[type="text"] {
-      min-width: 140px;
-      padding: 6px 8px;
+      box-sizing: border-box;
+      min-width: 160px;
+      min-height: 56px;
+      padding: 0 16px;
       font: inherit;
+      font-size: var(--ha-font-size-l, 16px);
       color: var(--primary-text-color);
       background: var(--card-background-color);
-      border: 1px solid var(--divider-color);
-      border-radius: 6px;
+      border: 1px solid var(--outline-color, var(--divider-color));
+      border-radius: var(--ha-border-radius-sm, 4px);
+    }
+    select:hover,
+    input[type="text"]:hover {
+      border-color: var(--primary-text-color);
+    }
+    select:focus-visible,
+    input[type="text"]:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: -2px;
+    }
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      accent-color: var(--primary-color);
     }
   `;
 

@@ -278,7 +278,7 @@ export class EfAudit extends LiveView {
       system: this._filters.system ? "1" : "",
     };
     return html`
-      <h2>${strings.audit.heading}</h2>
+      <h2 class="visually-hidden">${strings.audit.heading}</h2>
       ${this._banners()}
       <ef-filter-bar
         .fields=${this._fields()}
@@ -289,19 +289,23 @@ export class EfAudit extends LiveView {
         this._phase === "loading"
           ? html`<p class="loading">${strings.loading}</p>`
           : items.length === 0 && this._phase === "ready"
-            ? html`<p class="empty">${strings.audit.empty}</p>`
-            : html`<ul>
-                ${items.map(
-                  (item) =>
-                    html`<li>
-                      <ef-change-row
-                        .hass=${this.hass}
-                        .item=${item}
-                      ></ef-change-row>
-                      ${this._details(item)}
-                    </li>`,
-                )}
-              </ul>`
+            ? html`<div class="card">
+                <p class="empty">${strings.audit.empty}</p>
+              </div>`
+            : html`<div class="card">
+                <ul>
+                  ${items.map(
+                    (item) =>
+                      html`<li>
+                        <ef-change-row
+                          .hass=${this.hass}
+                          .item=${item}
+                        ></ef-change-row>
+                        ${this._details(item)}
+                      </li>`,
+                  )}
+                </ul>
+              </div>`
       }
       ${
         this._next !== null
