@@ -6,9 +6,13 @@ export default defineConfig({
     outDir: "../custom_components/electric_fence/frontend_dist",
     emptyOutDir: true,
     lib: {
-      entry: "src/electric-fence-panel.ts",
+      entry: {
+        "electric-fence-panel": "src/electric-fence-panel.ts",
+        // Loaded on every page for the sidebar icon, so it stays separate.
+        "electric-fence-icons": "src/electric-fence-icons.ts",
+      },
       formats: ["es"],
-      fileName: () => "electric-fence-panel.js",
+      fileName: (_format, name) => `${name}.js`,
     },
   },
   test: {
