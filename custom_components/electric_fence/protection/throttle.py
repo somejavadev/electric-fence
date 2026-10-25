@@ -25,6 +25,7 @@ from ..models import (
     SettingsChange,
 )
 from ..notifier import EVENT_USERNAME_ATTACK
+from ..privacy import sanitise_text
 from .network import is_exempt, normalise_ip
 
 if TYPE_CHECKING:
@@ -43,6 +44,11 @@ _MAX_ENTRIES = 1000
 # Beyond this the delay is capped anyway; keeps 2**n small.
 _MAX_EXPONENT = 16
 UPDATE_INTERVAL = timedelta(seconds=10)
+# The longest a healthy queue takes to reach an attempt, plus a margin. A
+# holder that never releases (Core stalled, a slot leaked) must not lock the
+# username out, so a waiter gives up after this and goes on to Core.
+ACQUIRE_TIMEOUT = (MAX_WAITING + 1) * MAX_DELAY + 30.0
+EVENT_MAX_IPS = 20
 
 # Patched in tests.
 _sleep = asyncio.sleep
@@ -154,7 +160,7 @@ class UsernameGuard:
         """Return the key a username is counted under, None for none."""
         if username is None:
             return None
-        return username.strip().casefold() or None
+        return (sanitise_text(username) or "").strip().casefold() or None
 
     @callback
     def on_attempt(
@@ -200,6 +206,15 @@ class UsernameGuard:
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Ending a slow-down failed: %s", type(err).__name__)
             return False
+
+    async def async_start(self) -> None:
+        """End attacks an earlier run left open; they can't be resumed."""
+        try:
+            await self._hass.async_add_executor_job(
+                self._runtime.store.end_open_attacks, dt_util.utcnow()
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Could not close old attacks: %s", type(err).__name__)
 
     @callback
     def async_stop(self) -> None:
@@ -251,8 +266,10 @@ class UsernameGuard:
         settings = self._runtime.settings
         entries = self._failures.get(key)
         if entries is None:
+            if len(self._attacks) >= MAX_TRACKED:
+                return
             entries = self._failures[key] = deque(maxlen=_MAX_ENTRIES)
-            while len(self._failures) > MAX_TRACKED:
+            while len(self._failures) + len(self._attacks) > MAX_TRACKED:
                 self._failures.popitem(last=False)
         else:
             self._failures.move_to_end(key)
@@ -266,7 +283,8 @@ class UsernameGuard:
         if len(ips) < settings.attack_min_ips:
             return
         del self._failures[key]
-        self._start(_Attack(key, username, now, len(entries), ips))
+        name = sanitise_text(username) or key
+        self._start(_Attack(key, name, now, len(entries), ips))
 
     def _start(self, attack: _Attack) -> None:
         self._attacks[attack.key] = attack
@@ -436,7 +454,7 @@ class UsernameGuard:
             return await attack.lock.acquire()
         task = asyncio.ensure_future(attack.lock.acquire())
         try:
-            await self._async_until_over(attack, task)
+            await self._async_until_over(attack, task, ACQUIRE_TIMEOUT)
         except BaseException:
             if task.done() and not task.cancelled() and task.exception() is None:
                 attack.lock.release()
@@ -447,20 +465,25 @@ class UsernameGuard:
         self,
         attack: _Attack,
         work: Coroutine[Any, Any, Any] | asyncio.Future[Any],
+        timeout: float | None = None,
     ) -> None:
-        """Await `work`, cancelling it if the attack ends first."""
+        """Await `work`, cancelling it if the attack ends or `timeout` passes."""
         task = asyncio.ensure_future(work)
-        waker = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        waker = loop.create_future()
 
-        def done(_task: asyncio.Future[Any]) -> None:
+        def done(_task: asyncio.Future[Any] | None = None) -> None:
             if not waker.done():
                 waker.set_result(None)
 
         task.add_done_callback(done)
         attack.wakers.add(waker)
+        timer = loop.call_later(timeout, done) if timeout is not None else None
         try:
             await waker
         finally:
+            if timer is not None:
+                timer.cancel()
             attack.wakers.discard(waker)
             task.remove_done_callback(done)
             if not task.done():
@@ -551,7 +574,8 @@ class UsernameGuard:
             EVENT_USERNAME_ATTACK,
             {
                 "username": attack.username,
-                "ips": sorted(attack.ips),
+                "ips": sorted(attack.ips)[:EVENT_MAX_IPS],
+                "ip_count": len(attack.ips),
                 "countries": sorted(attack.countries),
                 "started_at": attack.started_at.isoformat(),
                 "state": state,

@@ -876,6 +876,15 @@ class FenceStore:
             (_to_text(ended_at), end_reason, by_user_id, by_name, attack_id),
         )
 
+    def end_open_attacks(self, ended_at: datetime) -> int:
+        """End every attack still open as quiet; return how many."""
+        cursor = self._write(
+            "UPDATE attacks SET ended_at = ?, end_reason = 'quiet' "
+            "WHERE ended_at IS NULL",
+            (_to_text(ended_at),),
+        )
+        return cursor.rowcount
+
     def query_attacks(self, *, active: bool, limit: int = 50) -> list[AttackRow]:
         """Return active or ended attacks, newest first."""
         condition = "ended_at IS NULL" if active else "ended_at IS NOT NULL"

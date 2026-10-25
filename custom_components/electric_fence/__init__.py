@@ -200,6 +200,7 @@ async def async_setup_entry(
 
     username_guard = UsernameGuard(hass, runtime)
     runtime.username_guard = username_guard
+    await username_guard.async_start()
     entry.async_on_unload(worker.add_listener(username_guard.on_record))
 
     for collector_type in COLLECTOR_TYPES:
@@ -316,8 +317,9 @@ async def async_unload_entry(
 
 async def _async_stop_recording(runtime: Runtime) -> None:
     """Uninstall collectors in reverse, then stop (flush) the worker."""
-    # First, so attempts waiting in the slow-down go on to Core through the
-    # login hook while it is still installed.
+    # First, so no new attempt is delayed. Attempts waiting in the slow-down
+    # are released and continue with Core's step on the next loop iteration;
+    # uninstalling the hook below doesn't affect calls already inside it.
     if runtime.username_guard is not None:
         runtime.username_guard.async_stop()
     for collector in reversed(runtime.collectors):

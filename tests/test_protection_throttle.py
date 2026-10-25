@@ -27,7 +27,9 @@ from custom_components.electric_fence.models import (
 from custom_components.electric_fence.notifier import EVENT_USERNAME_ATTACK
 from custom_components.electric_fence.protection import throttle as throttle_module
 from custom_components.electric_fence.protection.throttle import (
+    ACQUIRE_TIMEOUT,
     BASE_DELAY,
+    EVENT_MAX_IPS,
     MAX_DELAY,
     MAX_WAITING,
     Refused,
@@ -142,6 +144,7 @@ async def test_attack_starts(
     assert _changes(runtime, ChangeAction.ATTACK_STARTED) == []
 
     _fail(guard, 1)
+    assert len(guard.active_attacks()) == 1
     _fail(guard, 3)
     await hass.async_block_till_done()
     [view] = guard.active_attacks()
@@ -159,6 +162,7 @@ async def test_attack_starts(
     assert event.data == {
         "username": "admin",
         "ips": sorted(IPS),
+        "ip_count": 3,
         "countries": [],
         "started_at": view.started_at.isoformat(),
         "state": "started",
@@ -180,6 +184,7 @@ async def test_key_normalised(hass: HomeAssistant, guard: UsernameGuard) -> None
     assert UsernameGuard.key(" Admin ") == "admin"
     assert UsernameGuard.key("  ") is None
     assert UsernameGuard.key(None) is None
+    assert UsernameGuard.key("ad\x01min") == "admin"
     _fail(guard, 5, "Admin ")
     _fail(guard, 5, "admin")
     await hass.async_block_till_done()
@@ -647,3 +652,97 @@ async def test_wired_into_setup(
     with patch.object(collectors[0], "uninstall", uninstall):
         assert await hass.config_entries.async_unload(setup_entry.entry_id)
     assert seen == [True]
+
+
+async def test_key_sanitised(hass: HomeAssistant, guard: UsernameGuard) -> None:
+    """Raw and sanitised usernames count together; the raw form is never kept."""
+    _fail(guard, 5, "ad\x01min")
+    _fail(guard, 5, "admin")
+    await hass.async_block_till_done()
+    [view] = guard.active_attacks()
+    assert view.username == "admin"
+
+
+async def test_stalled_holder_times_out(
+    hass: HomeAssistant,
+    guard: UsernameGuard,
+    sleeps: list[float],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A slot never released doesn't lock the username out: waiters give up."""
+    await _attacked(hass, guard)
+    holder = await guard.async_enter("admin", IP)
+    assert holder is not None
+    waiter = hass.async_create_task(guard.async_enter("admin", IP))
+    await asyncio.sleep(0)
+    freezer.tick(timedelta(seconds=ACQUIRE_TIMEOUT - 1))
+    async_fire_time_changed(hass)
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    freezer.tick(timedelta(seconds=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert waiter.result() is None
+    assert len(sleeps) == 1
+    # The next attempt queues again rather than being refused.
+    waiters = [
+        hass.async_create_task(guard.async_enter("admin", IP))
+        for _ in range(MAX_WAITING)
+    ]
+    await asyncio.sleep(0)
+    assert not any(w.done() for w in waiters)
+    holder.release()
+    for w in waiters:
+        slot = await w
+        assert slot is not None
+        slot.release()
+
+
+async def test_start_closes_stale_rows(
+    hass: HomeAssistant, runtime: Runtime, guard: UsernameGuard, store: FenceStore
+) -> None:
+    """Attacks left open by an earlier run end as quiet at start, silently."""
+    events: list[Event] = async_capture_events(hass, EVENT_USERNAME_ATTACK)
+    store.add_attack("admin", dt_util.utcnow() - timedelta(hours=1))
+    await guard.async_start()
+    assert store.query_attacks(active=True) == []
+    [row] = store.query_attacks(active=False)
+    assert row.end_reason == "quiet"
+    assert row.ended_at is not None
+    runtime.worker.submit.assert_not_called()  # type: ignore[attr-defined]
+    assert events == []
+
+    with patch.object(store, "end_open_attacks", side_effect=OSError):
+        await guard.async_start()
+
+
+async def test_attacks_count_toward_tracking_cap(
+    hass: HomeAssistant, guard: UsernameGuard
+) -> None:
+    """Active attacks count toward the tracked-username cap."""
+    with patch.object(throttle_module, "MAX_TRACKED", 2):
+        _fail(guard, 10, "a")
+        _fail(guard, 9, "b")
+        _fail(guard, 1, "c")
+        _fail(guard, 1, "b")
+        assert [v.username for v in guard.active_attacks()] == ["a"]
+        _fail(guard, 10, "c")
+        _fail(guard, 10, "d")
+        assert [v.username for v in guard.active_attacks()] == ["a", "c"]
+        _fail(guard, 10, "e")
+    await hass.async_block_till_done()
+    assert [v.username for v in guard.active_attacks()] == ["a", "c"]
+
+
+async def test_event_ips_capped(hass: HomeAssistant, guard: UsernameGuard) -> None:
+    """Events list a bounded number of addresses; the count stays exact."""
+    events: list[Event] = async_capture_events(hass, EVENT_USERNAME_ATTACK)
+    await _attacked(hass, guard)
+    for i in range(30):
+        guard.on_attempt("admin", f"198.51.100.{i + 10}", *FAIL)
+    assert await guard.async_end("admin", None, None)
+    await hass.async_block_till_done()
+    ended = events[-1].data
+    assert ended["state"] == "ended"
+    assert len(ended["ips"]) == EVENT_MAX_IPS
+    assert ended["ip_count"] == 33

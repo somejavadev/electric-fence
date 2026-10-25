@@ -300,6 +300,22 @@ def test_attacks_roundtrip(store: FenceStore) -> None:
     assert row.ended_at == NOW + timedelta(minutes=30)
 
 
+def test_end_open_attacks(store: FenceStore) -> None:
+    """Every open attack ends as quiet; ended ones are untouched."""
+    first = store.add_attack("alice", NOW)
+    store.add_attack("bob", NOW)
+    done = store.add_attack("carol", NOW)
+    store.end_attack(done, NOW, "ended_by_user", "u1", "Ann")
+    assert store.end_open_attacks(NOW + timedelta(hours=1)) == 2
+    assert store.end_open_attacks(NOW + timedelta(hours=2)) == 0
+    assert store.query_attacks(active=True) == []
+    rows = {r.id: r for r in store.query_attacks(active=False)}
+    assert rows[first].end_reason == "quiet"
+    assert rows[first].ended_at == NOW + timedelta(hours=1)
+    assert rows[done].end_reason == "ended_by_user"
+    assert rows[done].ended_at == NOW
+
+
 def test_last_success_ips_since(store: FenceStore) -> None:
     """The latest success time per IP is returned; failures are ignored."""
     store.insert(
