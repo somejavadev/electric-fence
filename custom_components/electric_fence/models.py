@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from homeassistant.auth.models import Credentials
@@ -28,6 +28,18 @@ class LoginReason(StrEnum):
     INVALID_TOKEN = "invalid_token"
     BLOCKED_INACTIVE = "blocked_inactive_user"
     BLOCKED_LOCAL_ONLY = "blocked_local_only"
+    THROTTLED = "throttled"
+
+
+COUNTED_FAILURES: Final = frozenset(
+    {
+        LoginReason.NO_SUCH_USER,
+        LoginReason.WRONG_PASSWORD,
+        LoginReason.INVALID_CREDENTIALS,
+        LoginReason.WRONG_2FA_CODE,
+        LoginReason.THROTTLED,
+    }
+)
 
 
 class UserExists(StrEnum):
@@ -58,6 +70,8 @@ class ChangeKind(StrEnum):
     ANALYTICS = "analytics"
     LOGGER = "logger"
     RECORDER = "recorder"
+    IP_BAN = "ip_ban"
+    LOGIN_PROTECTION = "login_protection"
 
 
 class ChangeAction(StrEnum):
@@ -75,6 +89,13 @@ class ChangeAction(StrEnum):
     CONFIRMED = "confirmed"
     PURGED = "purged"
     WITHDRAWN = "withdrawn"
+    BANNED = "banned"
+    UNBANNED = "unbanned"
+    EXPIRED = "expired"
+    ATTACK_STARTED = "attack_started"
+    ATTACK_ENDED = "attack_ended"
+    SLOWDOWN_ENDED = "slowdown_ended"
+    COUNTRIES_CLEARED = "countries_cleared"
 
 
 @dataclass(slots=True)
@@ -100,6 +121,7 @@ class LoginAttempt:
     confirmed: bool = True
     count: int = 1
     flow_id: str | None = None
+    new_country: bool = False
     # In memory only, never stored.
     credentials: Credentials | None = field(default=None, repr=False)
 
