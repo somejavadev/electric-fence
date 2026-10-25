@@ -62,6 +62,11 @@ export const panelStyles = css`
 
 /** Shared by the Overview rows. */
 export const rowStyles = css`
+  .details {
+    font-size: var(--ha-font-size-s, 12px);
+    color: var(--secondary-text-color);
+    padding-bottom: 6px;
+  }
   :host {
     display: block;
   }

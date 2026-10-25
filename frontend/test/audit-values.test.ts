@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EfAudit, valueLines } from "../src/views/ef-audit.ts";
+import { EfChangeRow } from "../src/components/ef-change-row.ts";
 import type { ChangeItem } from "../src/types.ts";
 import { change, fakeApi } from "./helpers.ts";
 
@@ -35,11 +36,11 @@ describe("valueLines", () => {
   it("shows a plain value", () => {
     expect(
       valueLines({
-        changed: ["location_name"],
-        values: { location_name: { before: "Home", after: "Cabin" } },
+        changed: ["time_zone"],
+        values: { time_zone: { before: "Home", after: "Cabin" } },
       }),
     ).toEqual([
-      { name: "Location name", before: "Home", after: "Cabin", hidden: false },
+      { name: "Time zone", before: "Home", after: "Cabin", hidden: false },
     ]);
   });
 
@@ -97,6 +98,12 @@ describe("valueLines", () => {
     ]);
   });
 
+  it("labels the home name", () => {
+    expect(valueLines({ changed: ["location_name"] })[0]?.name).toBe(
+      "Home name",
+    );
+  });
+
   it("names options and humanises", () => {
     expect(valueLines({ changed: ["options.scan_interval"] })[0]?.name).toBe(
       "Option: Scan interval",
@@ -106,6 +113,42 @@ describe("valueLines", () => {
   it("returns nothing for legacy details", () => {
     expect(valueLines({ keys: ["latitude"] })).toEqual([]);
     expect(valueLines({})).toEqual([]);
+  });
+});
+
+describe("overview change lines", () => {
+  it("shows at most three lines, then and N more", async () => {
+    const el = document.createElement("ef-change-row") as EfChangeRow;
+    el.hass = {
+      locale: { language: "en" },
+      config: { time_zone: "UTC" },
+    } as never;
+    el.details = true;
+    el.item = change({
+      kind: "http",
+      details: {
+        changed: ["a", "b", "c", "d", "e"],
+        values: { a: { before: 1, after: 2 } },
+      },
+    });
+    document.body.append(el);
+    await el.updateComplete;
+    const lines = [...(el.shadowRoot?.querySelectorAll(".line") ?? [])].map(
+      (l) => squash(l.textContent),
+    );
+    expect(lines).toEqual(["A: 1 → 2", "B", "C", "and 2 more"]);
+  });
+
+  it("is off by default", async () => {
+    const el = document.createElement("ef-change-row") as EfChangeRow;
+    el.item = change({ details: { changed: ["a"] } });
+    el.hass = {
+      locale: { language: "en" },
+      config: { time_zone: "UTC" },
+    } as never;
+    document.body.append(el);
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector(".details")).toBeNull();
   });
 });
 
@@ -122,7 +165,7 @@ describe("audit rows with values", () => {
       ...(el.shadowRoot?.querySelectorAll(".details .line") ?? []),
     ].map((l) => squash(l.textContent));
     expect(lines).toEqual([
-      "Location name: Home → Cabin",
+      "Home name: Home → Cabin",
       "Token: changed (hidden)",
     ]);
   });
@@ -133,9 +176,11 @@ describe("audit rows with values", () => {
       changed: ["a"],
       values: { a: { before: "1", after: long } },
     });
-    const bdi = el.shadowRoot?.querySelector(".details .line bdi");
-    expect(bdi?.getAttribute("title")).toContain(long);
-    expect(bdi?.textContent.length).toBeLessThan(120);
+    const bdis = [
+      ...(el.shadowRoot?.querySelectorAll(".details .line bdi") ?? []),
+    ];
+    const value = bdis.find((b) => b.getAttribute("title") === long);
+    expect(value?.textContent.length).toBe(65);
   });
 
   it("renders changed-only rows as a Changed line", async () => {
@@ -144,7 +189,7 @@ describe("audit rows with values", () => {
       { kind: "http" },
     );
     expect(squash(el.shadowRoot?.querySelector(".details")?.textContent)).toBe(
-      "Changed: Location name",
+      "Changed: Home name",
     );
   });
 

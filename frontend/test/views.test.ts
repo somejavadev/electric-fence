@@ -441,12 +441,12 @@ describe("audit details use the real backend shapes", () => {
       }),
     );
     expect(text).toBe(
-      "changed: options, title · data keys: token · option keys: scan_interval",
+      "Changed: Options, Title Data keys: token Option keys: scan_interval",
     );
   });
 
   it("user update, username change and core config", async () => {
-    expect(squash(await render({ changed: ["name"] }))).toBe("changed: name");
+    expect(squash(await render({ changed: ["name"] }))).toBe("Changed: Name");
     expect(squash(await render({ field: "username" }))).toBe("field: username");
     expect(squash(await render({ keys: ["latitude"] }))).toBe("keys: latitude");
   });

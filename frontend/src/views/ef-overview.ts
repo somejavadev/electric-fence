@@ -346,6 +346,7 @@ export class EfOverview extends LitElement {
               html`<ef-change-row
                 .hass=${this.hass}
                 .item=${item}
+                details
               ></ef-change-row>`,
           )}
         </ef-answer-card>

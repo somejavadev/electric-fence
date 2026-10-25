@@ -1,4 +1,5 @@
 import { LitElement, html, nothing } from "lit";
+import { changeDetails } from "../change-lines.ts";
 import { formatTime, truncate } from "../format.ts";
 import { changeSentence, strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
@@ -10,10 +11,13 @@ export class EfChangeRow extends LitElement {
   static override properties = {
     hass: { attribute: false },
     item: { attribute: false },
+    details: { type: Boolean },
   };
 
   declare hass: HomeAssistant;
   declare item: ChangeItem | undefined;
+  /** Also show the changed settings under the row, at most three lines. */
+  declare details: boolean;
 
   static override styles = rowStyles;
 
@@ -31,6 +35,7 @@ export class EfChangeRow extends LitElement {
         <bdi class="what" title=${sentence.full}>${sentence.short}</bdi>
         <bdi class="ip">${item.actor_ip ?? strings.unknownIp}</bdi>
       </div>
+      ${this.details ? changeDetails(item.details, 3) : nothing}
     `;
   }
 }

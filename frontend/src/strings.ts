@@ -112,8 +112,12 @@ export const strings = {
     field: "field",
     keys: "keys",
     changedLabel: "Changed",
-    dataKeysLabel: "Data keys",
     optionPrefix: "Option",
+    dataKeysLabel: "Data keys",
+    optionKeysLabel: "Option keys",
+    andMore: (n: number): string => `and ${n} more`,
+    /** Core setting names that read better than their key. */
+    settingNames: { location_name: "Home name" } as Record<string, string>,
     hiddenValue: "changed (hidden)",
     noValue: "—",
   },

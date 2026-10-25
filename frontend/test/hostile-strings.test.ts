@@ -408,9 +408,12 @@ describe("hostile values in the other tabs", () => {
               changed: [H("changed")],
               data_keys_changed: [H("datakey")],
               options_keys_changed: [H("optkey")],
-              field: H("field"),
-              keys: [H("key")],
             },
+          }),
+          change({
+            id: 3,
+            kind: "user",
+            details: { field: H("field"), keys: [H("key")] },
           }),
           change({
             id: 2,
@@ -452,13 +455,10 @@ describe("hostile values in the other tabs", () => {
         "key",
         "vname",
         "plain",
+        "vbefore",
+        "vafter",
       ],
     );
-    // Before and after share the one isolated line of their setting.
-    const line = [...(el.shadowRoot?.querySelectorAll(".line bdi") ?? [])].find(
-      (b) => b.textContent.includes(H("vname")),
-    );
-    expect(line?.textContent).toContain(`${H("vbefore")} → ${H("vafter")}`);
   });
 
   it("users with the details dialog open", async () => {
