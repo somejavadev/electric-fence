@@ -6,6 +6,7 @@ from dataclasses import replace
 from http import HTTPStatus
 import threading
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
@@ -1408,3 +1409,32 @@ async def test_entry_option_changed_by_hash_only_is_namespaced(
 
     (row,) = await _entry_rows(hass, after=mark)
     assert row.details["changed"] == ["options.n"]
+
+
+async def test_user_removed_forgets_countries(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """Removing a user forgets their known countries."""
+    store = fence.runtime_data.store
+    user = await hass.auth.async_create_user("Bot")
+    other = await hass.auth.async_create_user("Other")
+    await hass.async_add_executor_job(store.note_country, user.id, "DE")
+    await hass.async_add_executor_job(store.note_country, other.id, "DE")
+    await hass.auth.async_remove_user(user)
+    await hass.async_block_till_done()
+    assert store.known_countries(user.id) == []
+    assert store.known_countries(other.id) == ["DE"]
+
+
+async def test_forget_countries_fails_open(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store error while forgetting countries is contained."""
+    store = fence.runtime_data.store
+    monkeypatch.setattr(store, "forget_user_countries", Mock(side_effect=OSError))
+    user = await hass.auth.async_create_user("Bot")
+    await hass.auth.async_remove_user(user)
+    await hass.async_block_till_done()
+    assert _collector(hass, UserCollector).guard.errors == 1

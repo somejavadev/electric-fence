@@ -124,6 +124,7 @@ class LoginAttempt:
     new_country: bool = False
     # In memory only, never stored.
     credentials: Credentials | None = field(default=None, repr=False)
+    known_countries_before: int | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)

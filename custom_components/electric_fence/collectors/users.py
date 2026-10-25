@@ -78,6 +78,11 @@ def _credential_username(credential: Any) -> Any:
     return data.get("username") if isinstance(data, Mapping) else None
 
 
+def _reraise(err: Exception) -> None:
+    """Re-raise `err` inside the guard so it is counted and logged."""
+    raise err
+
+
 class UserCollector(BaseCollector):
     """Record user, password and username changes with strict attribution."""
 
@@ -164,7 +169,18 @@ class UserCollector(BaseCollector):
         if not isinstance(user_id, str):
             return
         old = self._users.pop(user_id, None)
+        self.hass.async_create_task(
+            self._forget_countries(user_id), "electric_fence forget countries"
+        )
         self._record(ChangeAction.REMOVED, user_id, old.name if old else None, {})
+
+    async def _forget_countries(self, user_id: str) -> None:
+        try:
+            await self.hass.async_add_executor_job(
+                self.runtime.store.forget_user_countries, user_id
+            )
+        except Exception as err:  # noqa: BLE001
+            self.guard.call(_reraise, err)
 
     # Provider wrappers.
 

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -585,3 +585,51 @@ async def test_event_changed_ignores_non_list(
     )
     await hass.async_block_till_done()
     assert events[0].data["changed"] == []
+
+
+async def test_new_country_event(hass: HomeAssistant, notifier: Notifier) -> None:
+    """A confirmed new-country login fires its event with the count."""
+    user = await create_hass_user(hass, "alice", "pw-123456")
+    events = async_capture_events(hass, "electric_fence_new_country_login")
+    ok = attempt(
+        result=LoginResult.SUCCESS,
+        reason=LoginReason.OK,
+        user_exists=UserExists.YES,
+        user_id=user.id,
+        new_country=True,
+        known_countries_before=2,
+    )
+    notifier.on_record(ok)
+    notifier.on_record(replace(ok, confirmed=False))
+    notifier.on_record(replace(ok, new_country=False))
+    await hass.async_block_till_done()
+    assert [e.data for e in events] == [
+        {
+            "user_id": user.id,
+            "username": "alice",
+            "ip": "203.0.113.7",
+            "country": "RU",
+            "hostname": "host.example.net",
+            "previous_countries_count": 2,
+        }
+    ]
+
+
+async def test_new_country_calls_alerts(
+    hass: HomeAssistant, notifier: Notifier
+) -> None:
+    """The alerts sender is called when present; its errors are contained."""
+    alerts = Mock()
+    alerts.new_country.side_effect = RuntimeError("boom")
+    runtime = make_runtime(hass, store)
+    runtime.alerts = alerts
+    notifier = Notifier(hass, runtime)
+    ok = attempt(
+        result=LoginResult.SUCCESS,
+        reason=LoginReason.OK,
+        user_id="u1",
+        new_country=True,
+    )
+    notifier.on_record(ok)
+    await hass.async_block_till_done()
+    alerts.new_country.assert_called_once_with(ok)

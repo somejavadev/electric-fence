@@ -31,6 +31,7 @@ EVENT_LOGIN_SUCCEEDED = f"{DOMAIN}_login_succeeded"
 EVENT_SETTINGS_CHANGED = f"{DOMAIN}_settings_changed"
 EVENT_IP_BANNED = f"{DOMAIN}_ip_banned"
 EVENT_USERNAME_ATTACK = f"{DOMAIN}_username_attack"
+EVENT_NEW_COUNTRY_LOGIN = f"{DOMAIN}_new_country_login"
 NOTIFICATION_ID = f"{DOMAIN}_login_failed"
 NOTIFICATION_TITLE = "Electric Fence: failed login"
 PANEL_LINK = "[Open Electric Fence](/electric-fence)"
@@ -213,13 +214,12 @@ class Notifier:
         # can't await; Task 9's in-memory lookup is the same data.
         users = auth_users(self._hass)
         user = users.get(record.user_id) if users and record.user_id else None
+        username = inline_text(user.name) if user is not None and user.name else None
         self._hass.bus.async_fire(
             EVENT_LOGIN_SUCCEEDED,
             {
                 "user_id": record.user_id,
-                "username": inline_text(user.name)
-                if user is not None and user.name
-                else None,
+                "username": username,
                 "ip": record.ip,
                 "country": record.country_code,
                 "source": _str(record.source),
@@ -227,6 +227,21 @@ class Notifier:
                 "mfa_used": record.mfa_module is not None,
             },
         )
+        if not record.new_country:
+            return
+        self._hass.bus.async_fire(
+            EVENT_NEW_COUNTRY_LOGIN,
+            {
+                "user_id": record.user_id,
+                "username": username,
+                "ip": record.ip,
+                "country": record.country_code,
+                "hostname": record.hostname,
+                "previous_countries_count": record.known_countries_before,
+            },
+        )
+        if (alerts := self._runtime.alerts) is not None:
+            alerts.new_country(record)
 
     def _fire_failed(self, record: LoginAttempt) -> None:
         username, masked = display_username(record)

@@ -125,6 +125,7 @@ class FenceWorker:
         self._listeners: list[tuple[RecordListener, FailOpen]] = []
         self._enrich_guard = FailOpen("enricher")
         self._resolve_guard = FailOpen("user resolution")
+        self._country_guard = FailOpen("new-country detection")
         self._loop_guard = FailOpen("worker")
         self._storage_ok = True
         # Records never stored: queue full, or lost in a failed write (whose
@@ -303,6 +304,7 @@ class FenceWorker:
                 # Never kept past this point, whatever the result.
                 item.credentials = None
                 await self._resolve_success(item, credentials)
+            await self._detect_new_country(item)
             if item.result is LoginResult.FAILED:
                 self._resolve_guard.call(self._resolve_failure, item)
                 self._merge_or_add(item)
@@ -339,6 +341,30 @@ class FenceWorker:
             rec.result, rec.reason = LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE
         elif user.local_only and rec.source is not Source.LOCAL:
             rec.result, rec.reason = LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY
+
+    async def _detect_new_country(self, rec: LoginAttempt) -> None:
+        """Flag a success from a country the user never logged in from."""
+        if (
+            rec.result is not LoginResult.SUCCESS
+            or rec.user_id is None
+            or rec.country_code is None
+            or rec.source is Source.LOCAL
+        ):
+            return
+        try:
+            is_new, known = await self._hass.async_add_executor_job(
+                self._note_country, rec.user_id, rec.country_code
+            )
+        except Exception as err:  # noqa: BLE001
+            self._country_guard.call(_reraise, err)
+            return
+        rec.new_country = is_new
+        rec.known_countries_before = known - 1
+
+    def _note_country(self, user_id: str, country_code: str) -> tuple[bool, int]:
+        """Record the country; return (is new, countries known afterwards)."""
+        is_new = self._store.note_country(user_id, country_code)
+        return is_new, len(self._store.known_countries(user_id))
 
     def _resolve_failure(self, rec: LoginAttempt) -> None:
         """Set the user of a failure for an existing `homeassistant` username.
