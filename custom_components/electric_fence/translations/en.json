@@ -35,22 +35,76 @@
     "step": {
       "init": {
         "title": "Electric Fence settings",
-        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away.",
+        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away. Local network addresses are never banned or slowed down.",
         "data": {
-          "notify_failed_login": "Notify on failed login",
-          "ha_login_notification": "Home Assistant's own login notification",
           "retention_days": "History retention",
           "geoip_provider": "GeoIP provider",
           "reverse_dns": "Reverse DNS lookups",
           "record_values": "Record before and after values"
         },
         "data_description": {
-          "notify_failed_login": "Create a persistent notification when a login fails.",
-          "ha_login_notification": "Replace dismisses Home Assistant's own login notification, but only while notifications above are on.",
           "retention_days": "Days of history to keep, from 1 to 3650.",
           "geoip_provider": "Where country lookups come from. DB-IP Lite needs no account. MaxMind GeoLite2 needs an account ID and license key.",
           "reverse_dns": "Look up host names for IP addresses.",
           "record_values": "Store what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored."
+        },
+        "sections": {
+          "bans": {
+            "name": "Bans",
+            "description": "Block an IP address after repeated failed logins.",
+            "data": {
+              "auto_ban": "Ban automatically",
+              "ban_threshold": "Failed attempts",
+              "ban_window_minutes": "Within",
+              "ban_hours": "Ban length",
+              "ban_repeat_offenders": "Lengthen bans for repeat offenders"
+            },
+            "data_description": {
+              "auto_ban": "Ban an IP address that fails too many logins.",
+              "ban_threshold": "Failed logins from one address before it is banned, from 1 to 100.",
+              "ban_window_minutes": "The period in which the failed logins are counted, from 1 to 1440 minutes.",
+              "ban_hours": "How long a ban lasts, up to 8760 hours. 0 means the ban never expires.",
+              "ban_repeat_offenders": "Double the ban for each further ban of the same address within 30 days. The fourth is permanent."
+            }
+          },
+          "username_protection": {
+            "name": "Username protection",
+            "description": "Detect one username being guessed from many addresses and slow those logins down.",
+            "data": {
+              "username_protection": "Protect usernames",
+              "attack_threshold": "Failed attempts",
+              "attack_min_ips": "From at least",
+              "attack_window_minutes": "Within"
+            },
+            "data_description": {
+              "username_protection": "Treat many failures against one username from several addresses as an attack.",
+              "attack_threshold": "Failed logins against one username, from 2 to 1000.",
+              "attack_min_ips": "Different addresses the failures must come from, from 1 to 100.",
+              "attack_window_minutes": "The period in which the failures are counted, from 1 to 1440 minutes."
+            }
+          },
+          "notifications": {
+            "name": "Notifications",
+            "description": "Choose which events send a message. Turning one off stops only the message; events, the panel and the audit log are unaffected.",
+            "data": {
+              "notify_failed_login": "Failed login",
+              "ha_login_notification": "Home Assistant's own login notification",
+              "notify_ip_banned": "IP address banned",
+              "notify_username_attack": "Username under attack",
+              "notify_new_country": "Login from a new country",
+              "notify_ban_ended": "Ban ended",
+              "notify_targets": "Phone notifications"
+            },
+            "data_description": {
+              "notify_failed_login": "Create a persistent notification when a login fails.",
+              "ha_login_notification": "Replace dismisses Home Assistant's own login notification, but only while failed login notifications are on.",
+              "notify_ip_banned": "Send a message when an address is banned.",
+              "notify_username_attack": "Send a message when a username is being guessed from many addresses.",
+              "notify_new_country": "Send a message when someone logs in from a country not seen before.",
+              "notify_ban_ended": "Send a message when a ban expires or is lifted.",
+              "notify_targets": "Notify entities, such as phones, that also receive these messages."
+            }
+          }
         }
       },
       "maxmind": {

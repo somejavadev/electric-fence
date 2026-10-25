@@ -22,20 +22,67 @@ from custom_components.electric_fence.models import (
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import ChangeFilter
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, section
 from homeassistant.util import dt as dt_util
 from tests.test_collector_auth_failures import _bad_bearer, _notifications, _setup
 from tests.test_geo import _attempt
 from tests.test_worker import failed, logins
 
-GENERAL = {
-    "notify_failed_login": True,
-    "ha_login_notification": "replace",
-    "retention_days": 90,
-    "geoip_provider": "dbip_lite",
-    "reverse_dns": True,
-    "record_values": False,
+SECTIONS = {
+    "bans": (
+        "auto_ban",
+        "ban_threshold",
+        "ban_window_minutes",
+        "ban_hours",
+        "ban_repeat_offenders",
+    ),
+    "username_protection": (
+        "username_protection",
+        "attack_threshold",
+        "attack_min_ips",
+        "attack_window_minutes",
+    ),
+    "notifications": (
+        "notify_failed_login",
+        "ha_login_notification",
+        "notify_ip_banned",
+        "notify_username_attack",
+        "notify_new_country",
+        "notify_ban_ended",
+        "notify_targets",
+    ),
 }
+TOP_LEVEL = (
+    "retention_days",
+    "geoip_provider",
+    "reverse_dns",
+    "record_values",
+)
+
+
+def _nest(flat: dict[str, Any]) -> dict[str, Any]:
+    """Group flat settings the way the options form submits them."""
+    out = {k: flat[k] for k in TOP_LEVEL if k in flat}
+    for name, keys in SECTIONS.items():
+        out[name] = {k: flat[k] for k in keys if k in flat}
+    return out
+
+
+_DEFAULTS = Settings().to_options()
+GENERAL = _nest({k: v for k, v in _DEFAULTS.items() if k != "notify_targets"})
+GENERAL["notifications"]["notify_targets"] = []
+
+
+def _submit(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    """Return `base` (a nested form) with flat `changes` applied."""
+    out = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
+    for key, value in changes.items():
+        section = next((n for n, keys in SECTIONS.items() if key in keys), None)
+        if section is None:
+            out[key] = value
+        else:
+            out[section][key] = value
+    return out
 
 
 async def _init(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
@@ -50,8 +97,86 @@ async def test_options_defaults_shown(
     """The init form is prefilled with the current (default) settings."""
     result = await _init(hass, setup_entry)
     assert result["step_id"] == "init"
-    defaults = {str(k): k.default() for k in result["data_schema"].schema if k.default}
-    assert defaults == GENERAL
+    schema = result["data_schema"].schema
+    defaults: dict[str, Any] = {}
+    for key, val in schema.items():
+        if isinstance(val, section):
+            defaults.update(
+                {str(k): k.default() for k in val.schema.schema if k.default}
+            )
+        else:
+            defaults[str(key)] = key.default()
+    expected = Settings().to_options()
+    for k in ("maxmind_account_id", "maxmind_license_key"):
+        del expected[k]
+    expected["notify_targets"] = []
+    assert defaults == expected
+    assert {
+        str(k): v.options["collapsed"]
+        for k, v in schema.items()
+        if isinstance(v, section)
+    } == {
+        "bans": True,
+        "username_protection": True,
+        "notifications": False,
+    }
+
+
+async def test_sections_saved_flat(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Section values are stored as flat option keys."""
+    result = await _init(hass, setup_entry)
+    form = _submit(
+        GENERAL,
+        ban_threshold=7,
+        ban_hours=0,
+        auto_ban=False,
+        attack_min_ips=4,
+        notify_ban_ended=True,
+        notify_targets=["notify.mobile_app_phone"],
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    options = setup_entry.options
+    assert not any(isinstance(v, dict) for v in options.values())
+    assert options["username_protection"] is True
+    assert options["ban_threshold"] == 7
+    assert options["ban_hours"] == 0
+    assert options["auto_ban"] is False
+    assert options["attack_min_ips"] == 4
+    assert options["notify_targets"] == ["notify.mobile_app_phone"]
+    settings = setup_entry.runtime_data.settings
+    assert settings.notify_targets == ("notify.mobile_app_phone",)
+    assert settings.notify_ban_ended is True
+    assert settings.ban_threshold == 7
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("ban_threshold", 0), ("ban_threshold", 101), ("attack_threshold", 1)],
+)
+async def test_section_number_out_of_range_rejected(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, key: str, value: int
+) -> None:
+    """Section numbers keep the Settings ranges."""
+    result = await _init(hass, setup_entry)
+    with pytest.raises(probatio.Invalid):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], _submit(GENERAL, **{key: value})
+        )
+
+
+async def test_non_notify_target_rejected(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The picker only takes notify entities."""
+    result = await _init(hass, setup_entry)
+    with pytest.raises(probatio.Invalid):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], _submit(GENERAL, notify_targets=["light.kitchen"])
+        )
 
 
 async def test_options_update_applies_without_reload(
@@ -65,7 +190,7 @@ async def test_options_update_applies_without_reload(
     result = await _init(hass, setup_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {**GENERAL, "notify_failed_login": False, "geoip_provider": "none"},
+        _submit(GENERAL, notify_failed_login=False, geoip_provider="none"),
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -87,7 +212,7 @@ async def test_maxmind_step_validates_credentials(
     aioclient_mock.head(DOWNLOAD_URL, status=401)
     result = await _init(hass, setup_entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**GENERAL, "geoip_provider": "maxmind"}
+        result["flow_id"], _submit(GENERAL, geoip_provider="maxmind")
     )
     assert result["step_id"] == "maxmind"
     result = await hass.config_entries.options.async_configure(
@@ -108,7 +233,7 @@ async def test_maxmind_network_error_cannot_connect(
     aioclient_mock.head(DOWNLOAD_URL, status=500)
     result = await _init(hass, setup_entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**GENERAL, "geoip_provider": "maxmind"}
+        result["flow_id"], _submit(GENERAL, geoip_provider="maxmind")
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -126,7 +251,7 @@ async def test_maxmind_valid_credentials_saved(
     aioclient_mock.head(DOWNLOAD_URL, status=302)
     result = await _init(hass, setup_entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**GENERAL, "geoip_provider": "maxmind"}
+        result["flow_id"], _submit(GENERAL, geoip_provider="maxmind")
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -158,7 +283,7 @@ async def test_switch_away_from_maxmind_clears_credentials(
     assert await hass.config_entries.async_setup(entry.entry_id)
     result = await _init(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**GENERAL, "geoip_provider": "dbip_lite"}
+        result["flow_id"], _submit(GENERAL, geoip_provider="dbip_lite")
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -175,7 +300,7 @@ async def test_retention_out_of_range_rejected(
     result = await _init(hass, setup_entry)
     with pytest.raises(probatio.Invalid):
         await hass.config_entries.options.async_configure(
-            result["flow_id"], {**GENERAL, "retention_days": days}
+            result["flow_id"], _submit(GENERAL, retention_days=days)
         )
 
 
@@ -190,7 +315,7 @@ async def test_shorter_retention_purges_now(
     await hass.async_add_executor_job(store.insert, [old, new])
     result = await _init(hass, setup_entry)
     await hass.config_entries.options.async_configure(
-        result["flow_id"], {**GENERAL, "retention_days": 30}
+        result["flow_id"], _submit(GENERAL, retention_days=30)
     )
     await hass.async_block_till_done()
     rows = await hass.async_add_executor_job(logins, store)
@@ -207,7 +332,7 @@ async def test_longer_retention_does_not_purge(
     await hass.async_add_executor_job(store.insert, [old])
     result = await _init(hass, setup_entry)
     await hass.config_entries.options.async_configure(
-        result["flow_id"], {**GENERAL, "retention_days": 365}
+        result["flow_id"], _submit(GENERAL, retention_days=365)
     )
     await hass.async_block_till_done()
     assert len(await hass.async_add_executor_job(logins, store)) == 1
@@ -248,10 +373,10 @@ def test_from_options_wrong_types_fall_back() -> None:
 async def _change(hass: HomeAssistant, entry: MockConfigEntry, **changes: Any) -> None:
     """Submit the init step with `changes` over the current general settings."""
     current = Settings.from_options(entry.options).to_options()
-    base = {k: current[k] for k in GENERAL}
+    base = _nest({**current, "notify_targets": list(current["notify_targets"])})
     result = await _init(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**base, **changes}
+        result["flow_id"], _submit(base, **changes)
     )
     if result["type"] is FlowResultType.FORM:
         result = await hass.config_entries.options.async_configure(
@@ -592,4 +717,5 @@ async def test_options_description_link_is_a_placeholder(
     )
     description = strings["options"]["step"]["init"]["description"]
     assert "{dbip_url}" in description
+    assert "Local network addresses are never banned" in description
     assert "https://" not in json.dumps(strings)
