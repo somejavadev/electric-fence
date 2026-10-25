@@ -35,7 +35,7 @@
     "step": {
       "init": {
         "title": "Electric Fence settings",
-        "description": "IP geolocation by DB-IP (https://db-ip.com) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away.",
+        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away.",
         "data": {
           "notify_failed_login": "Notify on failed login",
           "ha_login_notification": "Home Assistant's own login notification",

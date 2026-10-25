@@ -1,6 +1,8 @@
 """Tests for the Electric Fence options flow and live settings."""
 
 from datetime import timedelta
+import json
+from pathlib import Path
 import threading
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -574,3 +576,20 @@ async def test_setup_strip_failure_does_not_block_setup(
 
     assert setup_entry.state.name == "LOADED"
     assert "could not remove stored values: OSError" in caplog.text
+
+
+async def test_options_description_link_is_a_placeholder(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The DB-IP link comes from a placeholder: hassfest bans URLs in strings."""
+    result = await hass.config_entries.options.async_init(setup_entry.entry_id)
+    assert result["description_placeholders"] == {"dbip_url": "https://db-ip.com"}
+    strings = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "custom_components/electric_fence/translations/en.json"
+        ).read_text()
+    )
+    description = strings["options"]["step"]["init"]["description"]
+    assert "{dbip_url}" in description
+    assert "https://" not in json.dumps(strings)

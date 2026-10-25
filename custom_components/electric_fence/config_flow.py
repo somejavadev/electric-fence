@@ -30,6 +30,8 @@ from .geo.base import GeoDownloadError
 from .geo.maxmind import MaxMindProvider
 from .settings import Settings
 
+DBIP_URL = "https://db-ip.com"
+
 
 class ElectricFenceConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the Electric Fence config flow."""
@@ -117,7 +119,12 @@ class OptionsFlowHandler(OptionsFlow):
                 probatio.Required("record_values", default=current.record_values): bool,
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            # hassfest bans URLs in strings; the link comes in as a placeholder.
+            description_placeholders={"dbip_url": DBIP_URL},
+        )
 
     async def async_step_maxmind(
         self, user_input: dict[str, Any] | None = None
