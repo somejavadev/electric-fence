@@ -40,7 +40,7 @@ export class EfFilterBar extends LitElement {
       display: flex;
       flex-wrap: wrap;
       align-items: end;
-      gap: 12px 16px;
+      gap: 8px 12px;
       margin-bottom: 16px;
     }
     label {
@@ -56,15 +56,15 @@ export class EfFilterBar extends LitElement {
       font-size: var(--ha-font-size-m, 14px);
       color: var(--primary-text-color);
     }
-    /* Styled like Home Assistant's outlined text fields and selects. */
+    /* Home Assistant's outlined field look, at a dense height. */
     select,
     input[type="text"] {
       box-sizing: border-box;
-      min-width: 160px;
-      min-height: 56px;
-      padding: 0 16px;
+      width: 150px;
+      height: 40px;
+      padding: 0 12px;
       font: inherit;
-      font-size: var(--ha-font-size-l, 16px);
+      font-size: var(--ha-font-size-m, 14px);
       color: var(--primary-text-color);
       background: var(--card-background-color);
       border: 1px solid var(--outline-color, var(--divider-color));

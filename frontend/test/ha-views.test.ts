@@ -67,9 +67,11 @@ afterEach(() => {
 });
 
 describe("filter fields look like Home Assistant's", () => {
-  it("are outlined fields of Home Assistant's height", () => {
+  it("are compact outlined fields", () => {
     const field = rule(filterCss, /(^|,)\s*select\b/);
-    expect(field).toMatch(/min-height\s*:\s*56px/);
+    // Home Assistant's outline, at a dense height so the bar fits one row.
+    expect(field).toMatch(/(^|;)\s*height\s*:\s*40px/);
+    expect(field).toMatch(/font-size\s*:\s*var\(--ha-font-size-m/);
     expect(field).toMatch(/border-radius\s*:\s*var\(--ha-border-radius-sm/);
     expect(field).toMatch(/border\s*:[^;]*var\(--outline-color/);
   });
