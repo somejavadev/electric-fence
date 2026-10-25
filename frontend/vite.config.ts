@@ -18,5 +18,12 @@ export default defineConfig({
   test: {
     environment: "happy-dom",
     include: ["test/**/*.test.ts"],
+    // lcov for SonarCloud (frontend/coverage/lcov.info); see sonar-project.properties.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      // Paths relative to the repository root, as SonarCloud resolves them.
+      reporter: ["text-summary", ["lcov", { projectRoot: ".." }]],
+    },
   },
 });
