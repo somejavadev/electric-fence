@@ -172,14 +172,19 @@ export function changeDetails(
   ].filter((g) => g.list.length > 0);
   const shown = limit === undefined ? lines : lines.slice(0, limit);
   const more = lines.length - shown.length;
+  if (lines.length === 0 && extra.length === 0) {
+    return nothing;
+  }
   return html`<div class="details">
     ${
       hasValues
         ? shown.map(lineTemplate)
-        : groupTemplate(
-            a.changedLabel,
-            lines.map((line) => line.name),
-          )
+        : shown.length > 0
+          ? groupTemplate(
+              a.changedLabel,
+              shown.map((line) => line.name),
+            )
+          : nothing
     }
     ${more > 0 ? html`<div class="line">${a.andMore(more)}</div>` : nothing}
     ${extra.map((g) => groupTemplate(g.label, g.list))}

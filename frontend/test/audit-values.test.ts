@@ -139,6 +139,38 @@ describe("overview change lines", () => {
     expect(lines).toEqual(["A: 1 → 2", "B", "C", "and 2 more"]);
   });
 
+  it("caps a changed-only row truthfully", async () => {
+    const el = document.createElement("ef-change-row") as EfChangeRow;
+    el.hass = {
+      locale: { language: "en" },
+      config: { time_zone: "UTC" },
+    } as never;
+    el.details = true;
+    el.item = change({
+      kind: "http",
+      details: { changed: ["a", "b", "c", "d", "e"] },
+    });
+    document.body.append(el);
+    await el.updateComplete;
+    const lines = [...(el.shadowRoot?.querySelectorAll(".line") ?? [])].map(
+      (l) => squash(l.textContent),
+    );
+    expect(lines).toEqual(["Changed: A, B, C", "and 2 more"]);
+  });
+
+  it("shows no empty Changed line for empty values", async () => {
+    const el = document.createElement("ef-change-row") as EfChangeRow;
+    el.hass = {
+      locale: { language: "en" },
+      config: { time_zone: "UTC" },
+    } as never;
+    el.details = true;
+    el.item = change({ kind: "http", details: { values: {} } });
+    document.body.append(el);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).not.toContain("Changed:");
+  });
+
   it("is off by default", async () => {
     const el = document.createElement("ef-change-row") as EfChangeRow;
     el.item = change({ details: { changed: ["a"] } });
