@@ -93,3 +93,41 @@ async def test_auto_ban_available(
     assert bans is not None
     expected = "on" if bans.available else "off"
     assert hass.states.get(f"{BINARY}auto_ban_available").state == expected
+
+
+async def test_security_warnings_ignores_failed_check(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """An error item (a failed check) does not turn the sensor on."""
+
+    async def check(*_args: object) -> list[dict[str, object]]:
+        return [{"id": "x", "level": "error", "params": {}}]
+
+    monkeypatch.setattr(
+        "custom_components.electric_fence.binary_sensor.async_check", check
+    )
+    freezer.tick(timedelta(minutes=16))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(f"{BINARY}security_warnings").state == "off"
+
+
+async def test_options_change_refreshes_without_time(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Turning auto-ban off live changes both sensors at once."""
+    hass.config_entries.async_update_entry(
+        setup_entry, options={**setup_entry.options, "geoip_provider": "none"}
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(f"{BINARY}security_warnings").state == "off"
+    assert hass.states.get(f"{BINARY}auto_ban_available").state == "on"
+
+    hass.config_entries.async_update_entry(
+        setup_entry, options={**setup_entry.options, "auto_ban": False}
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(f"{BINARY}security_warnings").state == "on"

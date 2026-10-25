@@ -15,7 +15,7 @@ from .posture import async_check
 
 PARALLEL_UPDATES = 0
 
-_WARNING_LEVELS = frozenset({"warning", "error"})
+_WARNING_LEVELS = frozenset({"warning"})
 
 
 async def async_setup_entry(
@@ -60,7 +60,7 @@ class LoginAttackBinarySensor(FenceEntity, BinarySensorEntity):
 
 
 class SecurityWarningsBinarySensor(AsyncFenceEntity, BinarySensorEntity):
-    """On while the security checklist has a warning or an error."""
+    """On while any security check warns."""
 
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
@@ -90,6 +90,7 @@ class SecurityWarningsBinarySensor(AsyncFenceEntity, BinarySensorEntity):
         self.async_on_remove(runtime.worker.add_listener(self._on_record))
         if runtime.bans is not None:
             self.async_on_remove(runtime.bans.add_listener(self._refresh))
+        self._listen_settings(self._refresh)
         await super().async_added_to_hass()
 
 
@@ -117,4 +118,5 @@ class AutoBanAvailableBinarySensor(FenceEntity, BinarySensorEntity):
         """Follow the ban manager and re-check its health regularly."""
         if (bans := self._entry.runtime_data.bans) is not None:
             self.async_on_remove(bans.add_listener(self._write))
+        self._listen_settings(self._write)
         self._track_interval(self.async_write_ha_state, REFRESH_INTERVAL)

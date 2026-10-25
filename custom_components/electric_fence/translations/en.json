@@ -19,7 +19,7 @@
         "name": "Active bans"
       },
       "bans_24h": {
-        "name": "Bans 24h"
+        "name": "Bans in the last 24 hours"
       },
       "attacked_usernames": {
         "name": "Attacked usernames"

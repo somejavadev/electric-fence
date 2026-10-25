@@ -16,6 +16,7 @@ from homeassistant.const import (
 from homeassistant.core import Event, HassJob, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
@@ -31,7 +32,7 @@ from .collectors.core_config import CoreConfigCollector
 from .collectors.login import LoginCollector
 from .collectors.system_settings import SystemSettingsCollector
 from .collectors.users import UserCollector
-from .const import DOMAIN, MIN_HA_VERSION
+from .const import DOMAIN, MIN_HA_VERSION, SIGNAL_SETTINGS_UPDATED
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
@@ -301,6 +302,7 @@ async def async_apply_settings(
             await async_purge(hass, runtime)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Electric Fence purge failed: %s", type(err).__name__)
+    async_dispatcher_send(hass, SIGNAL_SETTINGS_UPDATED)
 
 
 async def async_unload_entry(

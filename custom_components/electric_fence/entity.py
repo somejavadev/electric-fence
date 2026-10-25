@@ -6,11 +6,12 @@ import logging
 
 from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.event import async_track_time_interval
 
 from . import ElectricFenceConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_SETTINGS_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +38,13 @@ class FenceEntity(Entity):
     @callback
     def _write(self, *_args: object) -> None:
         self.async_write_ha_state()
+
+    @callback
+    def _listen_settings(self, action: CALLBACK_TYPE) -> None:
+        """Call `action` after the options are applied live."""
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, SIGNAL_SETTINGS_UPDATED, action)
+        )
 
     @callback
     def _track_interval(self, action: CALLBACK_TYPE, interval: timedelta) -> None:

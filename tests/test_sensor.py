@@ -31,6 +31,10 @@ from custom_components.electric_fence.sensor import (
 )
 from custom_components.electric_fence.sensor_protection import (
     ActiveBansSensor,
+    AttackedUsernamesSensor,
+    Bans24hSensor,
+    GeoipUpdatedSensor,
+    LastBanSensor,
     LastNewCountryLoginSensor,
 )
 from custom_components.electric_fence.settings import Settings
@@ -38,6 +42,7 @@ from custom_components.electric_fence.storage import FenceStore
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import Entity
 from homeassistant.util import dt as dt_util
 from tests.helpers import create_hass_user, flush_worker
 
@@ -406,7 +411,7 @@ async def test_entities_created(
     for entity_id in (
         "sensor.electric_fence_failed_logins",
         f"{SENSOR}active_bans",
-        f"{SENSOR}bans_24h",
+        f"{SENSOR}bans_in_the_last_24_hours",
         f"{SENSOR}attacked_usernames",
         f"{SENSOR}last_failed_login",
         f"{SENSOR}last_ban",
@@ -437,7 +442,7 @@ async def test_active_bans_updates_on_ban(
     assert state.state == "1"
     assert state.attributes["last_ip"] == BAN_IP
     assert state.attributes["last_country"] == "RU"
-    assert hass.states.get(f"{SENSOR}bans_24h").state == "1"
+    assert hass.states.get(f"{SENSOR}bans_in_the_last_24_hours").state == "1"
     assert hass.states.get(f"{SENSOR}last_ban").state == bans.last_ban_at.isoformat(
         timespec="seconds"
     )
@@ -445,7 +450,7 @@ async def test_active_bans_updates_on_ban(
     assert await bans.async_unban(BAN_IP, None, None)
     await settle(hass)
     assert hass.states.get(f"{SENSOR}active_bans").state == "0"
-    assert hass.states.get(f"{SENSOR}bans_24h").state == "1"
+    assert hass.states.get(f"{SENSOR}bans_in_the_last_24_hours").state == "1"
 
 
 async def test_bans_24h_reevaluated_each_minute(
@@ -456,12 +461,12 @@ async def test_bans_24h_reevaluated_each_minute(
     assert bans is not None
     assert await bans.async_ban(BAN_IP, 5, "RU", None)
     await settle(hass)
-    assert hass.states.get(f"{SENSOR}bans_24h").state == "1"
+    assert hass.states.get(f"{SENSOR}bans_in_the_last_24_hours").state == "1"
 
     freezer.tick(timedelta(hours=24, minutes=1))
     async_fire_time_changed(hass)
     await settle(hass)
-    assert hass.states.get(f"{SENSOR}bans_24h").state == "0"
+    assert hass.states.get(f"{SENSOR}bans_in_the_last_24_hours").state == "0"
 
 
 async def test_state_never_contains_ip(
@@ -538,6 +543,12 @@ async def test_last_new_country_login(
     assert state.attributes["country"] == "DE"
     assert hass.states.get(f"{SENSOR}last_failed_login").state == "unknown"
 
+    assert await hass.config_entries.async_reload(setup_entry.entry_id)
+    await settle(hass)
+    state = hass.states.get(f"{SENSOR}last_new_country_login")
+    assert state.state == ts.isoformat(timespec="seconds")
+    assert state.attributes["user"] == "alice"
+
 
 async def test_admins_without_mfa(
     hass: HomeAssistant, setup_entry: MockConfigEntry
@@ -590,3 +601,24 @@ async def test_unavailable_without_manager(
     runtime = setup_entry.runtime_data
     runtime.bans = None
     assert ActiveBansSensor(setup_entry).available is False
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        ActiveBansSensor,
+        Bans24hSensor,
+        AttackedUsernamesSensor,
+        LastBanSensor,
+        GeoipUpdatedSensor,
+    ],
+)
+async def test_unavailable_without_manager_parametrised(
+    setup_entry: MockConfigEntry, factory: type[Entity]
+) -> None:
+    """Manager-dependent sensors report unavailable instead of raising."""
+    runtime = setup_entry.runtime_data
+    runtime.bans = None
+    runtime.username_guard = None
+    runtime.geo_status = None
+    assert factory(setup_entry).available is False

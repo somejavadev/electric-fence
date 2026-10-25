@@ -1,6 +1,7 @@
 """The protection sensors: bans, attacks, last events and diagnostics."""
 
 from datetime import datetime, time, timedelta
+import logging
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -19,6 +20,8 @@ from .models import ChangeKind, LoginAttempt, LoginResult, Record, SettingsChang
 from .posture import async_admins_without_mfa
 from .privacy import inline_text
 from .storage import FAILED_OR_BLOCKED, FenceStore, LoginFilter
+
+_LOGGER = logging.getLogger(__name__)
 
 BANS_RECHECK = timedelta(minutes=1)
 _NAME_LIMIT = 64
@@ -204,7 +207,10 @@ class _LastLoginSensor(_TimestampSensor):
             found = await self.hass.async_add_executor_job(
                 _newest_row, runtime.store, self._filter
             )
-        except Exception:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Seeding %s failed: %s", self._attr_translation_key, type(err).__name__
+            )
             return
         if found is not None and (self._ts is None or found[0] > self._ts):
             self._ts, self._user_id, self._country = found
