@@ -52,18 +52,6 @@ export function formatDate(day: string, hass: HomeAssistant): string {
   }).format(value);
 }
 
-/** Regional-indicator flag emoji for an ISO alpha-2 code, else "". */
-export function countryFlag(code: string | null): string {
-  if (code === null || !/^[A-Za-z]{2}$/.test(code)) {
-    return "";
-  }
-  return String.fromCodePoint(
-    ...[...code.toUpperCase()].map(
-      (c) => 0x1f1e6 + (c.codePointAt(0) ?? 65) - 65,
-    ),
-  );
-}
-
 /** Cut text to `max` characters plus an ellipsis; keep the full text. */
 export function truncate(
   text: string,

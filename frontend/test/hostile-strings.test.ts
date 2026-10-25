@@ -43,6 +43,20 @@ async function row(
   return el;
 }
 
+it("renders no image or injected nodes for a hostile country code", async () => {
+  const el = document.createElement("ef-login-row");
+  el.hass = hass;
+  el.item = login({ country_code: '"><img onerror=alert(1)>' });
+  document.body.append(el);
+  await el.updateComplete;
+  const flag = el.shadowRoot?.querySelector("ef-flag");
+  await (flag as unknown as { updateComplete: Promise<unknown> })
+    .updateComplete;
+  expect(flag?.shadowRoot?.querySelector("img")).toBeNull();
+  expect(el.shadowRoot?.querySelector("img")).toBeNull();
+  expect(el.shadowRoot?.querySelector("[onerror]")).toBeNull();
+});
+
 afterEach(() => {
   document.body.replaceChildren();
 });
@@ -208,6 +222,8 @@ describe("hostile values across the whole overview", () => {
       new Set([
         "ef-answer-card",
         "ef-login-row",
+        "ef-flag",
+        "img",
         "ef-change-row",
         "ef-posture-list",
         // Posture icons: the icon name is a constant, never data.
@@ -289,7 +305,10 @@ describe("hostile values in the other tabs", () => {
       new Set([...tags, ...(names.has("style") ? ["style"] : [])]),
     );
     expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
-    expect(elements.some((e) => e.localName === "img")).toBe(false);
+    const images = elements.filter((e) => e.localName === "img");
+    for (const img of images) {
+      expect(img.getAttribute("src")).toMatch(/\/flags\/[a-z]{2}\.svg$/);
+    }
     const shown = elements.map((e) => e.textContent).join("\n");
     for (const label of labels) {
       expect(shown, label).toContain(H(label));
@@ -356,6 +375,8 @@ describe("hostile values in the other tabs", () => {
         "ul",
         "li",
         "ef-login-row",
+        "ef-flag",
+        "img",
         "div",
         "span",
         "bdi",

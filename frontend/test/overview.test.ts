@@ -269,7 +269,7 @@ describe("rows", () => {
       (r) => r.shadowRoot?.querySelector(".where")?.textContent,
     );
     expect(where.slice(0, 4)).toEqual([
-      "🇷🇺 RU",
+      "RU",
       "local",
       "unknown country",
       "unknown country",

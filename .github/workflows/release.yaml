@@ -34,6 +34,7 @@ jobs:
         run: |
           npm ci
           npm run build
+          npm run check:flags
       # frontend_dist/ is git-ignored, so this zip is the only way it ships.
       - name: Zip the integration
         run: |

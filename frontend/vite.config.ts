@@ -1,9 +1,25 @@
+import { cpSync } from "node:fs";
+import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
+const outDir = "../custom_components/electric_fence/frontend_dist";
+
 export default defineConfig({
+  plugins: [
+    {
+      name: "copy-flags",
+      writeBundle() {
+        cpSync(
+          resolve("node_modules/flag-icons/flags/4x3"),
+          resolve(outDir, "flags"),
+          { recursive: true },
+        );
+      },
+    },
+  ],
   build: {
     target: "es2022",
-    outDir: "../custom_components/electric_fence/frontend_dist",
+    outDir,
     emptyOutDir: true,
     lib: {
       entry: {

@@ -28,6 +28,7 @@ const bannedModulePattern = "/unsafe-html|unsafe-svg|lit-html|static-html/";
 
 export default tseslint.config(
   { ignores: ["node_modules/**", "coverage/**"] },
+  { files: ["scripts/**/*.mjs"], languageOptions: { globals: globals.node } },
   js.configs.recommended,
   tseslint.configs.strict,
   lit.configs["flat/recommended"],
