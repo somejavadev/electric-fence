@@ -20,7 +20,8 @@ Screenshots are coming.
 - Records successful logins.
 - Records who changed settings, when, and from which IP address: integrations,
   users, core settings, backups (settings changes, a deleted backup, and a
-  requested restore, which is recorded as "requested" before it runs), HTTP and
+  requested restore, which is recorded as "requested" before it runs; see
+  [Known limits](#known-limits) for why it rarely survives), HTTP and
   IP ban settings (submitted, withdrawn, and confirmed after the restart),
   network adapters, analytics preferences, log levels, and the recorder
   (disable, enable, purge, and purge entities). A change without a person
@@ -131,11 +132,14 @@ resolver your system is configured to use. You can turn it off in the settings.
   user agents are stored.
 - **Setting values.** With **Record before and after values** on, values are
   redacted before they are stored, and a redacted value shows as "changed
-  (hidden)". Hidden by name: passwords, secrets, tokens, keys, credentials,
-  cookies, and coordinates (latitude, longitude, elevation, radius). Hidden by
-  shape: credentials and query values in URLs, opaque path segments such as
-  webhook IDs, long random-looking strings of letters and digits, and keys and
-  certificates. An integration's connection `data` is never stored. A secret
+  (hidden)". Hidden by name: passwords, passcodes, secrets, tokens, keys,
+  credentials, cookies, authorization headers, PINs, codes (such as alarm
+  codes, so `country_code` is hidden too), one-time passwords (`otp`), and
+  coordinates (latitude, longitude, elevation, radius). Hidden by shape:
+  credentials and query values in URLs, `user:password@host` credentials
+  without a scheme, authorization values (`Bearer`, `Basic`, `Token`, or
+  `Digest` followed by a value), opaque path segments such as webhook IDs, long
+  random-looking strings of letters and digits, and keys and certificates. An integration's connection `data` is never stored. A secret
   that looks like plain text under an unrecognisable name can still show.
 - **Retention.** Records older than the retention period are deleted. The
   default is 90 days.
@@ -168,6 +172,11 @@ is licensed under
   integration makes to itself, show as **System**.
 - Adding or removing a login (credentials) for an existing user isn't
   recorded.
+- A full restore of Home Assistant from a backup replaces the whole
+  configuration directory, including `.storage/electric_fence.db`, with the
+  backup's copy. The "restore requested" record, and everything recorded since
+  that backup was made, is then gone. The record survives only a restore that
+  fails, or one that restores just the database or add-ons.
 - The minimum supported version is Home Assistant 2026.11.0. The integration
   refuses to load on betas and development builds below it, including
   `2026.11.0.dev0`.
