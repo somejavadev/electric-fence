@@ -13,8 +13,10 @@ records the change itself. For each command in `WS_SPECS`:
   returned before the call instead of a difference, on success.
   `record_before` records them before Core's handler runs, whatever the
   outcome (for commands that restart Home Assistant before answering).
-- A reader returning None means the area is not available: nothing is
-  recorded.
+- A reader returning None means the area is not available (or, for some
+  readers, that Core will change nothing): nothing is recorded.
+- The before snapshot is a deep copy, so a setting Core changes in place
+  still shows its old value.
 
 Safety (spec §4): Core's handler is called exactly once and its return value
 or exception passes through unchanged. Reading, diffing and submitting run
@@ -23,7 +25,9 @@ inside `self.guard`; when any of that fails, the call goes through untouched
 """
 
 from collections.abc import Callable, Mapping
+import copy
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from homeassistant.components.websocket_api import ActiveConnection
@@ -51,6 +55,7 @@ if TYPE_CHECKING:
     from ..runtime import Runtime
 
 type Reader = Callable[[HomeAssistant, dict[str, Any]], Mapping[str, Any] | None]
+type ActionFor = Callable[[dict[str, Any]], ChangeAction]
 
 _CONTRACT = "system_settings_ws"
 # Message keys that are not command parameters.
@@ -63,24 +68,256 @@ class WsSpec:
 
     `read(hass, msg)` returns a fresh snapshot of the area's settings (or,
     for action-style specs, the parameters to record), or None when the
-    area is not available.
+    area is not available. `read_after`, when set, reads the after snapshot
+    instead (for commands whose before and after are different things).
+    `action` is fixed, or chosen from the message.
     """
 
     command: str
     component: str
     kind: ChangeKind
-    action: ChangeAction
+    action: ChangeAction | ActionFor
     target_name: str
     read: Reader
     # Record the parameters before Core's handler runs, whatever the outcome.
     record_before: bool = False
     # Record the parameters on success, instead of a before/after difference.
     always_record: bool = False
+    read_after: Reader | None = None
+
+    def action_for(self, msg: dict[str, Any]) -> ChangeAction:
+        """Return the action recorded for this message."""
+        if isinstance(self.action, ChangeAction):
+            return self.action
+        return self.action(msg)
 
 
 def request_params(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str, Any]:
     """Return the command's parameters (the message without `id` and `type`)."""
     return {k: v for k, v in msg.items() if k not in _ENVELOPE}
+
+
+# The area readers (spec "What gets recorded"). Each reads state Core has
+# already changed when its handler sends the result; Core's modules are
+# imported late, as the components load after this one may.
+
+
+def _backup_config(
+    hass: HomeAssistant, msg: dict[str, Any]
+) -> Mapping[str, Any] | None:
+    """Return the automatic backup settings."""
+    from homeassistant.components.backup.const import DATA_MANAGER  # noqa: PLC0415
+
+    if (manager := hass.data.get(DATA_MANAGER)) is None:
+        return None
+    return manager.config.data.to_dict()
+
+
+def _backup_delete(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
+    """Return the backup to delete."""
+    return {"backup_id": msg["backup_id"]}
+
+
+_RESTORE_PARAMS = (
+    "backup_id",
+    "agent_id",
+    "restore_database",
+    "restore_folders",
+    "restore_homeassistant",
+    "restore_addons",
+)
+
+
+def _backup_restore(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
+    """Return what to restore (never the password)."""
+    return {key: msg.get(key) for key in _RESTORE_PARAMS}
+
+
+def _http_store(hass: HomeAssistant) -> Any:
+    from homeassistant.components.http.config import DATA_STORE  # noqa: PLC0415
+
+    return hass.data.get(DATA_STORE)
+
+
+def _http_settings(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return an HTTP config without its created_at and error metadata."""
+    from homeassistant.components.http import config as http  # noqa: PLC0415
+
+    meta = (
+        http.HTTP_CONFIG_CREATED_AT,
+        http.HTTP_CONFIG_ERROR,
+        http.HTTP_CONFIG_ERROR_MESSAGE,
+    )
+    return {k: v for k, v in config.items() if k not in meta}
+
+
+def _http_configure_before(
+    hass: HomeAssistant, msg: dict[str, Any]
+) -> Mapping[str, Any] | None:
+    """Return what the submitted config is compared with, or None if no change.
+
+    A new config is compared with the stable one, which is in force. Core
+    drops the pending config when the submission is None or equals stable:
+    that is compared from the pending config. Core keeps an identical,
+    untried pending config as is: nothing changes.
+    """
+    from homeassistant.components.http.config import HTTP_CONFIG_ERROR  # noqa: PLC0415
+
+    if (store := _http_store(hass)) is None:
+        return None
+    stable = _http_settings(store.stable)
+    pending = store.pending
+    config = msg["config"]
+    if config is None or _http_settings(config) == stable:
+        return None if pending is None else _http_settings(pending)
+    if (
+        pending is not None
+        and pending.get(HTTP_CONFIG_ERROR) is None
+        and _http_settings(config) == _http_settings(pending)
+    ):
+        return None
+    return stable
+
+
+def _http_configure_after(
+    hass: HomeAssistant, msg: dict[str, Any]
+) -> Mapping[str, Any] | None:
+    """Return the submitted config, or stable when the pending one was dropped."""
+    if (store := _http_store(hass)) is None:
+        return None
+    config = msg["config"]
+    return _http_settings(store.stable if config is None else config)
+
+
+def _http_configure_action(msg: dict[str, Any]) -> ChangeAction:
+    return ChangeAction.WITHDRAWN if msg["config"] is None else ChangeAction.UPDATED
+
+
+def _http_stable(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any] | None:
+    """Return the stable (confirmed) HTTP config."""
+    if (store := _http_store(hass)) is None:
+        return None
+    return _http_settings(store.stable)
+
+
+def _network(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any] | None:
+    """Return the adapter selection (once the network singleton is loaded)."""
+    from homeassistant.components.network.network import DATA_NETWORK, Network  # noqa: PLC0415
+
+    network = hass.data.get(DATA_NETWORK)
+    if not isinstance(network, Network):
+        return None
+    return {"configured_adapters": network.configured_adapters}
+
+
+def _analytics(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any] | None:
+    """Return the analytics preferences."""
+    from homeassistant.components.analytics import DATA_COMPONENT  # noqa: PLC0415
+
+    if (analytics := hass.data.get(DATA_COMPONENT)) is None:
+        return None
+    return dict(analytics.preferences)
+
+
+def _level(name: str) -> str:
+    """Return a logger's effective level name, without creating the logger."""
+    loggers = logging.Logger.manager.loggerDict
+    while name:
+        if isinstance(found := loggers.get(name), logging.Logger):
+            return logging.getLevelName(found.getEffectiveLevel())
+        name = name.rpartition(".")[0]
+    return logging.getLevelName(logging.getLogger().getEffectiveLevel())
+
+
+def _logger_module(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
+    """Return the module logger's level name."""
+    return {msg["module"]: _level(msg["module"])}
+
+
+def _logger_integration(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
+    """Return the integration logger's level name, keyed by its domain."""
+    domain = msg["integration"]
+    return {domain: _level(f"homeassistant.components.{domain}")}
+
+
+AREA_SPECS: tuple[WsSpec, ...] = (
+    WsSpec(
+        "backup/config/update",
+        "backup",
+        ChangeKind.BACKUP,
+        ChangeAction.UPDATED,
+        "Backups",
+        _backup_config,
+    ),
+    WsSpec(
+        "backup/delete",
+        "backup",
+        ChangeKind.BACKUP,
+        ChangeAction.REMOVED,
+        "Backup",
+        _backup_delete,
+        always_record=True,
+    ),
+    WsSpec(
+        "backup/restore",
+        "backup",
+        ChangeKind.BACKUP,
+        ChangeAction.RESTORE_REQUESTED,
+        "Backup",
+        _backup_restore,
+        # A successful restore restarts Home Assistant before any result.
+        record_before=True,
+    ),
+    WsSpec(
+        "http/config/configure",
+        "http",
+        ChangeKind.HTTP,
+        _http_configure_action,
+        "HTTP",
+        _http_configure_before,
+        read_after=_http_configure_after,
+    ),
+    WsSpec(
+        "http/config/promote",
+        "http",
+        ChangeKind.HTTP,
+        ChangeAction.CONFIRMED,
+        "HTTP",
+        _http_stable,
+    ),
+    WsSpec(
+        "network/configure",
+        "network",
+        ChangeKind.NETWORK,
+        ChangeAction.UPDATED,
+        "Network",
+        _network,
+    ),
+    WsSpec(
+        "analytics/preferences",
+        "analytics",
+        ChangeKind.ANALYTICS,
+        ChangeAction.UPDATED,
+        "Analytics",
+        _analytics,
+    ),
+    WsSpec(
+        "logger/log_level",
+        "logger",
+        ChangeKind.LOGGER,
+        ChangeAction.UPDATED,
+        "Logging",
+        _logger_module,
+    ),
+    WsSpec(
+        "logger/integration_log_level",
+        "logger",
+        ChangeKind.LOGGER,
+        ChangeAction.UPDATED,
+        "Logging",
+        _logger_integration,
+    ),
+)
 
 
 class _ResultWatch:
@@ -211,8 +448,7 @@ class SystemSettingsCollector(BaseCollector):
 
     name = "system_settings"
 
-    # Filled by the area specs.
-    WS_SPECS: ClassVar[tuple[WsSpec, ...]] = ()
+    WS_SPECS: ClassVar[tuple[WsSpec, ...]] = AREA_SPECS
 
     def __init__(self, hass: HomeAssistant, runtime: Runtime) -> None:
         """Initialise the collector."""
@@ -310,10 +546,11 @@ class SystemSettingsCollector(BaseCollector):
         found = spec.read(self.hass, msg)
         if found is None:
             return None
-        before = dict(found)
+        # Deep: Core may change nested settings in place.
+        before = copy.deepcopy(dict(found))
         actor = _actor(connection)
         if spec.record_before:
-            self._submit(spec, actor, self._params_details(before))
+            self._submit(spec, actor, msg, self._params_details(before))
             return None
 
         def on_success() -> None:
@@ -332,7 +569,7 @@ class SystemSettingsCollector(BaseCollector):
         if spec.always_record:
             details = self._params_details(before)
         else:
-            after = spec.read(self.hass, msg)
+            after = (spec.read_after or spec.read)(self.hass, msg)
             if after is None:
                 return
             details = diff_details(
@@ -340,7 +577,7 @@ class SystemSettingsCollector(BaseCollector):
             )
             if not details["changed"]:
                 return
-        self._submit(spec, actor, details)
+        self._submit(spec, actor, msg, details)
 
     def _params_details(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """Details of an action: the parameters given (not None), redacted."""
@@ -349,12 +586,18 @@ class SystemSettingsCollector(BaseCollector):
             {}, given, include_values=self.runtime.settings.record_values
         )
 
-    def _submit(self, spec: WsSpec, actor: _Actor, details: dict[str, Any]) -> None:
+    def _submit(
+        self,
+        spec: WsSpec,
+        actor: _Actor,
+        msg: dict[str, Any],
+        details: dict[str, Any],
+    ) -> None:
         self.runtime.worker.submit(
             SettingsChange(
                 ts=dt_util.utcnow(),
                 kind=spec.kind,
-                action=spec.action,
+                action=spec.action_for(msg),
                 target_id=None,
                 target_name=spec.target_name,
                 details=details,

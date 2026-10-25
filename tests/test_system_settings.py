@@ -21,6 +21,7 @@ from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 from custom_components.electric_fence import COLLECTOR_TYPES, attribution
 from custom_components.electric_fence.attribution import AttributionCollector
 from custom_components.electric_fence.collectors.system_settings import (
+    AREA_SPECS,
     SystemSettingsCollector,
     WsSpec,
     _ResultWatch,
@@ -347,9 +348,10 @@ def test_collector_registered_after_attribution() -> None:
     assert COLLECTOR_TYPES[index - 1] is AttributionCollector
 
 
-def test_production_specs_empty_until_areas() -> None:
-    """Task 3 ships the core only: no production command specs yet."""
-    assert PRODUCTION_SPECS == ()
+def test_production_specs_are_the_areas() -> None:
+    """The production specs are the area specs (tested in their own module)."""
+    assert PRODUCTION_SPECS is AREA_SPECS
+    assert PRODUCTION_SPECS
 
 
 def test_ws_ip_is_public() -> None:

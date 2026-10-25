@@ -327,7 +327,68 @@ def _check_system_settings_ws(hass: HomeAssistant) -> str | None:
     ]
     if missing:
         return f"WebSocket commands not registered: {', '.join(missing)}"
+    for component, check in _AREA_CHECKS.items():
+        if component in hass.config.components and (reason := check(hass)):
+            return f"{component}: {reason}"
     return None
+
+
+def _check_backup_area(hass: HomeAssistant) -> str | None:
+    from homeassistant.components.backup.const import DATA_MANAGER  # noqa: PLC0415
+
+    if (manager := hass.data.get(DATA_MANAGER)) is None:
+        return "the backup manager is missing"
+    data = getattr(getattr(manager, "config", None), "data", None)
+    if not callable(getattr(data, "to_dict", None)):
+        return "BackupManager.config.data.to_dict is missing"
+    return None
+
+
+def _check_http_area(hass: HomeAssistant) -> str | None:
+    from homeassistant.components.http import config as http  # noqa: PLC0415
+
+    for name in (
+        "HTTP_CONFIG_CREATED_AT",
+        "HTTP_CONFIG_ERROR",
+        "HTTP_CONFIG_ERROR_MESSAGE",
+    ):
+        if not hasattr(http, name):
+            return f"config.{name} is missing"
+    if (store := hass.data.get(http.DATA_STORE)) is None:
+        return "the HTTP config store is missing"
+    for attr in ("stable", "pending"):
+        if not hasattr(store, attr):
+            return f"HTTPConfigStore.{attr} is missing"
+    return None
+
+
+def _check_network_area(hass: HomeAssistant) -> str | None:
+    from homeassistant.components.network.network import DATA_NETWORK  # noqa: PLC0415
+
+    if (network := hass.data.get(DATA_NETWORK)) is None:
+        return "the network object is missing"
+    if not hasattr(network, "configured_adapters"):
+        return "Network.configured_adapters is missing"
+    return None
+
+
+def _check_analytics_area(hass: HomeAssistant) -> str | None:
+    from homeassistant.components.analytics import DATA_COMPONENT  # noqa: PLC0415
+
+    if (analytics := hass.data.get(DATA_COMPONENT)) is None:
+        return "the analytics object is missing"
+    if not hasattr(analytics, "preferences"):
+        return "Analytics.preferences is missing"
+    return None
+
+
+# The component state each area reader uses, checked once the component loads.
+_AREA_CHECKS: dict[str, Callable[[HomeAssistant], str | None]] = {
+    "backup": _check_backup_area,
+    "http": _check_http_area,
+    "network": _check_network_area,
+    "analytics": _check_analytics_area,
+}
 
 
 register_contract(
