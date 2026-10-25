@@ -16,6 +16,7 @@ from homeassistant.util import dt as dt_util
 
 from .geo.base import classify_ip
 from .models import LoginResult, Source
+from .protection.network import http_config
 from .runtime import Runtime
 from .shapes import iso
 from .storage import FenceStore, LoginFilter, LoginRow
@@ -31,10 +32,6 @@ STORAGE_ERROR_WINDOW = timedelta(hours=1)
 _PROXY_SCAN_ROWS = 5000
 _PAGE = 500
 
-# Core keeps the running HTTP config in its HTTP config store
-# (`homeassistant.components.http.config.DATA_STORE`, key "http"). It is read
-# by duck typing, so a missing or changed store only makes the value unknown.
-_HTTP_STORE_KEY = "http"
 _CONF_USE_X_FORWARDED_FOR = "use_x_forwarded_for"
 
 
@@ -109,18 +106,8 @@ def use_x_forwarded_for(hass: HomeAssistant) -> bool | None:
 
     None when it can't be told (no HTTP config store, or an unknown layout).
     """
-    store = hass.data.get(_HTTP_STORE_KEY)
-    active = getattr(store, "active_config_type", None)
-    if active is None:
-        return None
-    active = str(active)
-    if active in ("default", "default_legacy_port"):
-        # The built-in default config has no proxy settings.
-        return False
-    if active not in ("stable", "pending"):
-        return None
-    conf = getattr(store, active, None)
-    if not isinstance(conf, Mapping):
+    conf = http_config(hass)
+    if conf is None:
         return None
     value = conf.get(_CONF_USE_X_FORWARDED_FOR, False)
     return value if isinstance(value, bool) else None
