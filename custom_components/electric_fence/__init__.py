@@ -181,8 +181,9 @@ async def async_setup_entry(
     entry.async_on_unload(entry.add_update_listener(async_apply_settings))
 
     integration = await async_get_integration(hass, DOMAIN)
-    await async_register_panel(hass, str(integration.version))
-    entry.async_on_unload(lambda: async_unregister_panel(hass))
+    version = str(integration.version)
+    await async_register_panel(hass, version)
+    entry.async_on_unload(lambda: async_unregister_panel(hass, version))
 
     # Last, so nothing that can fail runs after the platform is forwarded.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
