@@ -7,9 +7,13 @@ user. Password and username changes fire no event, so the `homeassistant`
 provider's `async_change_password` and `async_change_username` are wrapped:
 the original runs first, its exception passes through unchanged, and a
 change is recorded only after it returned.
+
+Details name the changed fields (`changed`); with `record_values` on they
+also carry redacted before and after values. A password change names
+`password` only, never a value.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +26,7 @@ from .. import attribution
 from ..hooks import wrap_async_method
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..privacy import sanitise_text
+from ..redact import diff_details
 from .base import BaseCollector
 
 if TYPE_CHECKING:
@@ -52,17 +57,25 @@ class UserSnapshot:
         )
 
 
-def _changed_fields(old: UserSnapshot, new: UserSnapshot) -> list[str]:
-    return [
-        name
-        for name in ("name", "is_active", "group_ids", "local_only")
-        if getattr(old, name) != getattr(new, name)
-    ]
+def _fields(snapshot: UserSnapshot) -> dict[str, Any]:
+    """Return the snapshot's fields in a JSON-able form (groups sorted)."""
+    return {
+        "name": snapshot.name,
+        "is_active": snapshot.is_active,
+        "group_ids": sorted(snapshot.group_ids),
+        "local_only": snapshot.local_only,
+    }
 
 
 def _arg(args: tuple[Any, ...], kwargs: dict[str, Any], i: int, name: str) -> Any:
     """Return a call argument by position or keyword, else None."""
     return args[i] if len(args) > i else kwargs.get(name)
+
+
+def _credential_username(credential: Any) -> Any:
+    """Return the username a credential holds, else None."""
+    data = getattr(credential, "data", None)
+    return data.get("username") if isinstance(data, Mapping) else None
 
 
 class UserCollector(BaseCollector):
@@ -139,9 +152,13 @@ class UserCollector(BaseCollector):
         if old is None:
             # Not seen before: nothing to compare with.
             return
-        changed = _changed_fields(old, new)
-        if changed:
-            self._record(ChangeAction.UPDATED, user.id, new.name, {"changed": changed})
+        details = diff_details(
+            _fields(old),
+            _fields(new),
+            include_values=self.runtime.settings.record_values,
+        )
+        if details["changed"]:
+            self._record(ChangeAction.UPDATED, user.id, new.name, details)
 
     def _handle_removed(self, user_id: Any) -> None:
         if not isinstance(user_id, str):
@@ -158,7 +175,7 @@ class UserCollector(BaseCollector):
                 self._record_credential_change,
                 ChangeAction.PASSWORD_CHANGED,
                 _arg(args, kwargs, 0, "username"),
-                {},
+                {"changed": ["password"]},
             )
             return result
 
@@ -166,16 +183,29 @@ class UserCollector(BaseCollector):
 
     def _wrap_username(self, original: _AsyncFn) -> _AsyncFn:
         async def async_change_username(*args: Any, **kwargs: Any) -> Any:
+            # The old name is only on the credential, which Core updates.
+            old = self.guard.call(
+                _credential_username, _arg(args, kwargs, 0, "credential")
+            )
             result = await original(*args, **kwargs)
             self.guard.call(
-                self._record_credential_change,
-                ChangeAction.UPDATED,
+                self._record_username_change,
+                old,
                 _arg(args, kwargs, 1, "new_username"),
-                {"field": "username"},
             )
             return result
 
         return async_change_username
+
+    def _record_username_change(self, old: Any, new: Any) -> None:
+        details = diff_details(
+            {"username": old},
+            {"username": new},
+            include_values=self.runtime.settings.record_values,
+        )
+        # Named even if the same name was saved again.
+        details["changed"] = ["username"]
+        self._record_credential_change(ChangeAction.UPDATED, new, details)
 
     def _record_credential_change(
         self, action: ChangeAction, username: Any, details: dict[str, Any]

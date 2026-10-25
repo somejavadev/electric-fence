@@ -2,7 +2,9 @@
 
 # ruff: noqa: SLF001
 
+from dataclasses import replace
 from http import HTTPStatus
+import threading
 from typing import Any
 
 import pytest
@@ -18,7 +20,10 @@ from custom_components.electric_fence.collectors.config_entries import (
     EntrySnapshot,
 )
 from custom_components.electric_fence.collectors.core_config import CoreConfigCollector
-from custom_components.electric_fence.collectors.users import UserCollector
+from custom_components.electric_fence.collectors.users import (
+    UserCollector,
+    _credential_username,
+)
 from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.models import ChangeAction, ChangeKind
 from custom_components.electric_fence.storage import ChangeRow
@@ -31,6 +36,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from homeassistant.util.unit_system import METRIC_SYSTEM
 from tests.helpers import (
     CLIENT_ID,
     DUMMY,
@@ -41,6 +47,7 @@ from tests.helpers import (
     flush_worker,
     mock_dummy,
 )
+from tests.test_options_flow import GENERAL
 
 IP = "127.0.0.1"
 
@@ -128,7 +135,6 @@ async def test_integration_added_by_admin_attributed(
         "domain": DUMMY,
         "changed": [],
         "data_keys_changed": [],
-        "options_keys_changed": [],
     }
     entry = hass.config_entries.async_entries(DUMMY)[0]
     assert added.target_id == entry.entry_id
@@ -199,7 +205,7 @@ async def test_options_change_recorded_as_options_changed(
     hass_client: ClientSessionGenerator,
     hass_admin_user: MockUser,
 ) -> None:
-    """An options flow is credited, listing the option keys, never values."""
+    """An options flow is credited, listing the option keys (values off)."""
     entry = await dummy_entry(hass)
     mark = await _mark(hass)
     client = await hass_client()
@@ -218,9 +224,8 @@ async def test_options_change_recorded_as_options_changed(
     assert _by_admin(row, hass_admin_user)
     assert row.details == {
         "domain": DUMMY,
-        "changed": ["options"],
+        "changed": ["opt"],
         "data_keys_changed": [],
-        "options_keys_changed": ["opt"],
     }
 
 
@@ -256,7 +261,7 @@ async def test_options_change_with_reloading_listener_credited(
     reload_update, options = await _entry_rows(hass, after=mark)
     assert options.action is ChangeAction.OPTIONS_CHANGED
     assert _by_admin(options, hass_admin_user)
-    assert options.details["changed"] == ["options"]
+    assert options.details["changed"] == ["opt"]
     assert reload_update.action is ChangeAction.UPDATED
     assert _is_system(reload_update)
     assert reload_update.details["changed"] == ["data"]
@@ -297,7 +302,7 @@ async def test_ws_update_with_reloading_listener_credited(
     assert _is_system(reload_update)
     assert reload_update.details["changed"] == ["data"]
     assert update.action is ChangeAction.UPDATED
-    assert update.details["changed"] == ["options", "title"]
+    assert update.details["changed"] == ["opt", "title"]
     assert _by_admin(update, hass_admin_user)
 
 
@@ -377,7 +382,7 @@ async def test_hold_back_with_suspending_unload(
     assert entry.data["setups"] == 2
     options, reload_update = await _entry_rows(hass, after=mark)
     assert options.action is ChangeAction.OPTIONS_CHANGED
-    assert options.details["changed"] == ["options"]
+    assert options.details["changed"] == ["opt"]
     assert _by_admin(options, hass_admin_user)
     assert reload_update.details["changed"] == ["data"]
     assert _is_system(reload_update)
@@ -605,9 +610,8 @@ async def test_change_without_scope_is_system(
     assert update.action is ChangeAction.UPDATED
     assert update.details == {
         "domain": DUMMY,
-        "changed": ["data", "options", "title"],
+        "changed": ["a", "data", "title"],
         "data_keys_changed": ["b"],
-        "options_keys_changed": ["a"],
     }
     assert disabled.action is ChangeAction.DISABLED
     assert _is_system(update)
@@ -769,7 +773,7 @@ async def test_user_created_updated_removed_attributed(
     assert added.target_name == "Carol"
     assert updated.action is ChangeAction.UPDATED
     assert updated.details == {
-        "changed": ["name", "is_active", "group_ids", "local_only"]
+        "changed": ["group_ids", "is_active", "local_only", "name"]
     }
     assert removed.action is ChangeAction.REMOVED
     assert removed.target_name == "Caroline"
@@ -842,7 +846,7 @@ async def test_password_change_attributed(
     assert row.action is ChangeAction.PASSWORD_CHANGED
     assert row.target_id == user.id
     assert row.target_name == "erin"
-    assert row.details == {}
+    assert row.details == {"changed": ["password"]}
     assert _by_admin(row, hass_admin_user)
     db = dump_db(hass)
     assert "new-secret" not in db
@@ -928,7 +932,7 @@ async def test_username_change_attributed(
     assert msg["success"], msg
     *_, row = await _rows(hass, ChangeKind.USER)
     assert row.action is ChangeAction.UPDATED
-    assert row.details == {"field": "username"}
+    assert row.details == {"changed": ["username"]}
     assert row.target_id == user.id
     assert _by_admin(row, hass_admin_user)
 
@@ -1029,7 +1033,7 @@ async def test_core_config_update_attributed(
     assert msg["success"], msg
     (row,) = await _rows(hass, ChangeKind.CORE_CONFIG)
     assert row.action is ChangeAction.UPDATED
-    assert "location_name" in row.details["keys"]
+    assert row.details == {"changed": ["location_name"], "keys": ["location_name"]}
     assert row.target_id is None
     assert row.target_name == "Core settings"
     assert _by_admin(row, hass_admin_user)
@@ -1053,7 +1057,10 @@ async def test_core_config_update_by_code_is_system(
     await hass.config.async_update(location_name="Shed", elevation=7)
 
     (row,) = await _rows(hass, ChangeKind.CORE_CONFIG)
-    assert row.details == {"keys": ["elevation", "location_name"]}
+    assert row.details == {
+        "changed": ["elevation", "location_name"],
+        "keys": ["elevation", "location_name"],
+    }
     assert _is_system(row)
 
 
@@ -1067,3 +1074,274 @@ def test_hash_of_mixed_type_keys() -> None:
     nested = {"x": [{1: "a", "b": 2}]}
     assert _data(nested) == _data({"x": [{"b": 2, 1: "a"}]})
     assert _data(nested) != _data({"x": [{1: "a", "b": 3}]})
+
+
+# Before and after values (record_values).
+
+WEBHOOK = "https://ha.example/api/webhook/0123456789abcdef0123456789abcdef"
+
+
+def _set_record_values(hass: HomeAssistant, value: bool) -> None:
+    runtime = hass.config_entries.async_loaded_entries(DOMAIN)[0].runtime_data
+    runtime.settings = replace(runtime.settings, record_values=value)
+
+
+@pytest.mark.parametrize("record_values", [False, True])
+async def test_core_rename_values(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+    record_values: bool,
+) -> None:
+    """A core rename shows before and after only when values are on."""
+    await hass.config.async_update(location_name="Home")
+    mark = await _mark(hass)
+    _set_record_values(hass, record_values)
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json_auto_id(
+        {"type": "config/core/update", "location_name": "Home test"}
+    )
+    assert (await ws.receive_json())["success"]
+
+    (row,) = await _rows(hass, ChangeKind.CORE_CONFIG, after=mark)
+    assert _by_admin(row, hass_admin_user)
+    expected: dict[str, Any] = {
+        "changed": ["location_name"],
+        "keys": ["location_name"],
+    }
+    if record_values:
+        expected["values"] = {"location_name": {"before": "Home", "after": "Home test"}}
+    assert row.details == expected
+
+
+async def test_core_coordinates_hidden(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """Coordinates are hidden; the unit system compares its JSON form."""
+    _set_record_values(hass, True)
+    latitude = hass.config.latitude + 1.234567
+    units = "us_customary" if hass.config.units is METRIC_SYSTEM else "metric"
+
+    await hass.config.async_update(latitude=latitude, unit_system=units)
+
+    (row,) = await _rows(hass, ChangeKind.CORE_CONFIG)
+    assert row.details["changed"] == ["latitude", "unit_system"]
+    assert row.details["values"]["latitude"] == {"hidden": True}
+    unit_values = row.details["values"]["unit_system"]
+    assert unit_values["before"] != unit_values["after"]
+    assert unit_values["after"] == hass.config.units.as_dict()
+    assert str(latitude) not in dump_db(hass)
+
+
+async def test_core_unchanged_save_and_unknown_key(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """A save without a change has no names; a key not in as_dict is compared."""
+    _set_record_values(hass, True)
+    await hass.config.async_update(location_name=hass.config.location_name)
+    hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE, {"future": "a"})
+    hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE, {"future": "b"})
+
+    same, first, second = await _rows(hass, ChangeKind.CORE_CONFIG)
+    assert same.details == {"changed": [], "keys": []}
+    assert first.details["values"] == {"future": {"before": None, "after": "a"}}
+    assert second.details["values"] == {"future": {"before": "a", "after": "b"}}
+
+
+@pytest.mark.parametrize("record_values", [False, True])
+async def test_entry_options_values(
+    hass: HomeAssistant, fence: MockConfigEntry, record_values: bool
+) -> None:
+    """Option values are shown, redacted; secrets in URLs are masked."""
+    entry = await dummy_entry(hass, {"quiet": True})
+    hass.config_entries.async_update_entry(entry, options={"scan_interval": 30})
+    mark = await _mark(hass)
+    _set_record_values(hass, record_values)
+
+    hass.config_entries.async_update_entry(
+        entry, options={"scan_interval": 60, "webhook_url": WEBHOOK}
+    )
+
+    (row,) = await _entry_rows(hass, after=mark)
+    expected: dict[str, Any] = {
+        "domain": DUMMY,
+        "changed": ["scan_interval", "webhook_url"],
+        "data_keys_changed": [],
+    }
+    if record_values:
+        expected["values"] = {
+            "scan_interval": {"before": 30, "after": 60},
+            "webhook_url": {
+                "before": None,
+                "after": "https://ha.example/api/webhook/•••",
+            },
+        }
+    assert row.details == expected
+    assert "0123456789abcdef0123456789abcdef" not in dump_db(hass)
+
+
+async def test_entry_fields_values(hass: HomeAssistant, fence: MockConfigEntry) -> None:
+    """Title, disabled-by and preferences carry values; subentries names."""
+    entry = await dummy_entry(hass, {"quiet": True})
+    mark = await _mark(hass)
+    _set_record_values(hass, True)
+
+    hass.config_entries.async_update_entry(
+        entry, title="Renamed", pref_disable_polling=True
+    )
+    await hass.config_entries.async_set_disabled_by(
+        entry.entry_id, ConfigEntryDisabler.USER
+    )
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "thing"), context={"source": "user"}
+    )
+    assert result["type"] == "create_entry"
+
+    update, disabled, subentry = await _entry_rows(hass, after=mark)
+    assert update.details["values"] == {
+        "pref_disable_polling": {"before": False, "after": True},
+        "title": {"before": "Mock Title", "after": "Renamed"},
+    }
+    assert disabled.details["values"] == {
+        "disabled_by": {"before": None, "after": "user"}
+    }
+    assert subentry.details == {
+        "domain": DUMMY,
+        "changed": ["subentries"],
+        "data_keys_changed": [],
+    }
+
+
+async def test_entry_data_values_never_stored(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """A data change names its keys only, even with values on."""
+    entry = await dummy_entry(hass, {"quiet": True, "host": "old-host-XYZZY"})
+    mark = await _mark(hass)
+    _set_record_values(hass, True)
+
+    hass.config_entries.async_update_entry(
+        entry, data={"quiet": True, "host": "new-host-XYZZY"}
+    )
+
+    (row,) = await _entry_rows(hass, after=mark)
+    assert row.details == {
+        "domain": DUMMY,
+        "changed": ["data"],
+        "data_keys_changed": ["host"],
+    }
+    assert "XYZZY" not in dump_db(hass)
+
+
+async def test_entry_option_values_not_shared(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """The snapshot keeps its own copy, or a shallow one it can't deep-copy."""
+    lock = threading.Lock()
+    entry = MockConfigEntry(domain=DUMMY, options={"a": {"b": 1}, "lock": lock})
+    snapshot = EntrySnapshot.of(entry)
+    assert snapshot.option_values["lock"] is lock
+    plain = EntrySnapshot.of(MockConfigEntry(domain=DUMMY, options={"a": {"b": 1}}))
+    entry_options = {"a": {"b": 1}}
+    copied = EntrySnapshot.of(MockConfigEntry(domain=DUMMY, options=entry_options))
+    entry_options["a"]["b"] = 2
+    assert copied.option_values == plain.option_values == {"a": {"b": 1}}
+
+
+@pytest.mark.parametrize("record_values", [False, True])
+async def test_user_rename_values(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+    record_values: bool,
+) -> None:
+    """A user rename shows the names; groups compare as sorted lists."""
+    user = await hass.auth.async_create_user("Carol")
+    mark = await _mark(hass)
+    _set_record_values(hass, record_values)
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json_auto_id(
+        {
+            "type": "config/auth/update",
+            "user_id": user.id,
+            "name": "Caroline",
+            "group_ids": ["system-admin"],
+        }
+    )
+    assert (await ws.receive_json())["success"]
+
+    (row,) = await _rows(hass, ChangeKind.USER, after=mark)
+    assert _by_admin(row, hass_admin_user)
+    expected: dict[str, Any] = {"changed": ["group_ids", "name"]}
+    if record_values:
+        expected["values"] = {
+            "group_ids": {"before": [], "after": ["system-admin"]},
+            "name": {"before": "Carol", "after": "Caroline"},
+        }
+    assert row.details == expected
+
+
+async def test_username_and_password_values(
+    hass: HomeAssistant, fence: MockConfigEntry, local_auth: HassAuthProvider
+) -> None:
+    """A username shows its values; a password never does."""
+    user = await create_hass_user(hass, "olga", "old-secret")
+    _set_record_values(hass, True)
+
+    await local_auth.async_change_username(
+        credential=user.credentials[0], new_username="olgaa"
+    )
+    await local_auth.async_change_password("olgaa", "new-secret")
+
+    *_, username, password = await _rows(hass, ChangeKind.USER)
+    assert username.details == {
+        "changed": ["username"],
+        "values": {"username": {"before": "olga", "after": "olgaa"}},
+    }
+    assert password.details == {"changed": ["password"]}
+    db = dump_db(hass)
+    assert "old-secret" not in db
+    assert "new-secret" not in db
+
+
+async def test_toggling_record_values_is_recorded(
+    hass: HomeAssistant,
+    fence: MockConfigEntry,
+    hass_client: ClientSessionGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """Turning values on is an admin's options change of Electric Fence."""
+    mark = await _mark(hass)
+    client = await hass_client()
+
+    resp = await client.post(
+        "/api/config/config_entries/options/flow", json={"handler": fence.entry_id}
+    )
+    form = await resp.json()
+    resp = await client.post(
+        f"/api/config/config_entries/options/flow/{form['flow_id']}",
+        json={**GENERAL, "record_values": True},
+    )
+
+    assert (await resp.json())["type"] == "create_entry"
+    rows = [
+        r
+        for r in await _rows(hass, ChangeKind.CONFIG_ENTRY, after=mark)
+        if r.target_id == fence.entry_id
+    ]
+    (row,) = rows
+    assert row.action is ChangeAction.OPTIONS_CHANGED
+    assert _by_admin(row, hass_admin_user)
+    assert row.details["domain"] == DOMAIN
+    assert "record_values" in row.details["changed"]
+    assert fence.runtime_data.settings.record_values is True
+
+
+def test_credential_username_without_data() -> None:
+    """Something that is no credential gives no old username."""
+    assert _credential_username(None) is None
+    assert _credential_username(MockUser()) is None

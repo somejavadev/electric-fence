@@ -215,7 +215,10 @@ async def test_reload_without_restart_records_again(
     rows = store_rows(hass)
     assert [(r.username_typed, r.count) for r in rows] == [("after", 1), ("before", 1)]
     assert [(c.kind, c.details) for c in change_rows(hass)] == [
-        ("core_config", {"keys": ["location_name"]})
+        (
+            "core_config",
+            {"changed": ["location_name"], "keys": ["location_name"]},
+        )
     ]
     assert hass.states.get(SENSOR_ID).state == "2"
 

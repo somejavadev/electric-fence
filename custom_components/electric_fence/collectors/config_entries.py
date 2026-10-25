@@ -22,11 +22,15 @@ lasts until the loop runs its next callback at most; one no dispatch
 claimed is then recorded as System (R28).
 
 Data and options are kept as a hash of each value's JSON dump, so the diff
-names the changed keys; values never leave the entry.
+names the changed keys. Data values never leave the entry. Option values
+are also kept, as a copy in memory, so a change can show its before and
+after (redacted, and only when `record_values` is on), like the title,
+disabled-by and preference fields; subentries and data are named only.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, field
 import hashlib
 import json
 from typing import TYPE_CHECKING, Any
@@ -47,6 +51,7 @@ from homeassistant.util import dt as dt_util
 from .. import attribution
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..privacy import sanitise_text
+from ..redact import diff_details
 from .base import BaseCollector
 
 if TYPE_CHECKING:
@@ -62,6 +67,16 @@ FIELDS = (
     "pref_disable_polling",
     "subentries",
 )
+
+# Saved fields shown with their values, beside the option keys.
+_VALUE_FIELDS = (
+    "title",
+    "disabled_by",
+    "pref_disable_new_entities",
+    "pref_disable_polling",
+)
+# Saved fields named only: data by its keys, subentries as a whole.
+_NAMED_FIELDS = ("data", "subentries")
 
 # Actions that name the admin's own change; only for a credited change.
 _SCOPED = (ChangeAction.RECONFIGURED, ChangeAction.OPTIONS_CHANGED)
@@ -86,6 +101,15 @@ def _sorted_by_text(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_sorted_by_text(v) for v in value]
     return value
+
+
+def _copy_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of the options that later changes in place can't reach."""
+    try:
+        return copy.deepcopy(dict(options))
+    except Exception:  # noqa: BLE001
+        # Not deep-copyable (no JSON value is): the top level at least.
+        return dict(options)
 
 
 def _hashes(values: Mapping[str, Any]) -> dict[str, str]:
@@ -114,6 +138,11 @@ class EntrySnapshot:
     # Hash of the saved fields that aren't reported (unique ID, versions,
     # discovery keys): their change is a real dispatch too.
     untracked: str
+    # A copy of the option values, for a change's before and after. Not
+    # compared: `options` already names what changed.
+    option_values: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     @classmethod
     def of(cls, entry: ConfigEntry) -> EntrySnapshot:
@@ -138,6 +167,7 @@ class EntrySnapshot:
                     dict(entry.discovery_keys),
                 ]
             ),
+            option_values=_copy_options(entry.options),
         )
 
 
@@ -267,18 +297,38 @@ class ConfigEntryCollector(BaseCollector):
         if not changed:
             # Only unreported fields (unique ID, versions) changed.
             return
-        details = {
-            "changed": changed,
-            "data_keys_changed": _changed_keys(old.data, new.data),
-            "options_keys_changed": _changed_keys(old.options, new.options),
-        }
+        details = self._value_diff(old, new)
+        details["changed"] = sorted(
+            {
+                *details["changed"],
+                # By hash too: values `==` can miss (1 and 1.0) still count.
+                *_changed_keys(old.options, new.options),
+                *(name for name in _NAMED_FIELDS if name in changed),
+            }
+        )
+        details["data_keys_changed"] = _changed_keys(old.data, new.data)
         self._record(entry, _updated_action(old, new), details, credit=credit)
+
+    def _value_diff(self, old: EntrySnapshot, new: EntrySnapshot) -> dict[str, Any]:
+        """Return the changed option and field names, and values when on."""
+
+        def fields(snapshot: EntrySnapshot) -> dict[str, Any]:
+            return {
+                **{name: getattr(snapshot, name) for name in _VALUE_FIELDS},
+                **snapshot.option_values,
+            }
+
+        return diff_details(
+            fields(old),
+            fields(new),
+            include_values=self.runtime.settings.record_values,
+        )
 
     def _record(
         self,
         entry: ConfigEntry,
         action: ChangeAction,
-        diff: dict[str, list[str]] | None,
+        diff: dict[str, Any] | None,
         *,
         credit: bool = True,
     ) -> None:
@@ -296,7 +346,6 @@ class ConfigEntryCollector(BaseCollector):
             "domain": entry.domain,
             "changed": [],
             "data_keys_changed": [],
-            "options_keys_changed": [],
             **(diff or {}),
         }
         self.runtime.worker.submit(
