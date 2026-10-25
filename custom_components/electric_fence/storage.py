@@ -34,6 +34,7 @@ SCHEMA_VERSION = 2
 # A `LoginFilter.result` for failed and blocked attempts together.
 FAILED_OR_BLOCKED: Final = "failed_or_blocked"
 _MAX_LIMIT = 500
+_AND = " AND "
 
 _VACUUM_FRACTION = 0.2
 
@@ -582,7 +583,7 @@ class FenceStore:
             params.append(before_id)
         sql = f"SELECT {_LOGIN_COLUMNS} FROM login_attempts"  # noqa: S608
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " WHERE " + _AND.join(where)
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         params.append(max(1, min(limit, _MAX_LIMIT)))
         with self._lock:
@@ -611,7 +612,7 @@ class FenceStore:
             params.append(before_id)
         sql = f"SELECT {_CHANGE_COLUMNS} FROM settings_changes"  # noqa: S608
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " WHERE " + _AND.join(where)
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         params.append(max(1, min(limit, _MAX_LIMIT)))
         with self._lock:
@@ -842,7 +843,7 @@ class FenceStore:
         params.append(max(1, min(limit, _MAX_LIMIT)))
         rows = self._read(
             f"SELECT {_BAN_COLUMNS} FROM bans WHERE "  # noqa: S608
-            + " AND ".join(where)
+            + _AND.join(where)
             + " ORDER BY id DESC LIMIT ?",
             params,
         )

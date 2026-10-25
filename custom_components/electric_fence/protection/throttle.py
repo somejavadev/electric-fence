@@ -473,7 +473,10 @@ class UsernameGuard:
             return await attack.lock.acquire()
         task = asyncio.ensure_future(attack.lock.acquire())
         try:
-            await self._async_until_over(attack, task, ACQUIRE_TIMEOUT)
+            async with asyncio.timeout(ACQUIRE_TIMEOUT):
+                await self._async_until_over(attack, task)
+        except TimeoutError:
+            pass  # the work was cancelled; the result below says False
         except BaseException:
             if task.done() and not task.cancelled() and task.exception() is None:
                 attack.lock.release()
@@ -484,9 +487,8 @@ class UsernameGuard:
         self,
         attack: _Attack,
         work: Coroutine[Any, Any, Any] | asyncio.Future[Any],
-        timeout: float | None = None,
     ) -> None:
-        """Await `work`, cancelling it if the attack ends or `timeout` passes."""
+        """Await `work`, cancelling it if the attack ends."""
         task = asyncio.ensure_future(work)
         loop = asyncio.get_running_loop()
         waker = loop.create_future()
@@ -497,12 +499,9 @@ class UsernameGuard:
 
         task.add_done_callback(done)
         attack.wakers.add(waker)
-        timer = loop.call_later(timeout, done) if timeout is not None else None
         try:
             await waker
         finally:
-            if timer is not None:
-                timer.cancel()
             attack.wakers.discard(waker)
             task.remove_done_callback(done)
             if not task.done():

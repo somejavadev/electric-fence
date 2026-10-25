@@ -5,10 +5,13 @@ import { strings } from "./strings.ts";
 import type { ChangeItem, HomeAssistant } from "./types.ts";
 
 /** Kinds Electric Fence records itself; their details are not settings. */
-const PROTECTION_KINDS: readonly string[] = ["ip_ban", "login_protection"];
+const PROTECTION_KINDS: ReadonlySet<string> = new Set([
+  "ip_ban",
+  "login_protection",
+]);
 
 export const isProtectionChange = (item: ChangeItem): boolean =>
-  PROTECTION_KINDS.includes(item.kind);
+  PROTECTION_KINDS.has(item.kind);
 
 export interface DetailGroup {
   label: string;

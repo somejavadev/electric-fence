@@ -7,11 +7,10 @@ import type { HomeAssistant, LoginItem } from "../types.ts";
 
 /** Country code; "local" only when the login really came from the local network. */
 export function locationLabel(item: LoginItem): string {
-  return item.country_code !== null
-    ? item.country_code
-    : item.source === "local"
-      ? strings.local
-      : strings.unknownCountry;
+  return (
+    item.country_code ??
+    (item.source === "local" ? strings.local : strings.unknownCountry)
+  );
 }
 
 /**
