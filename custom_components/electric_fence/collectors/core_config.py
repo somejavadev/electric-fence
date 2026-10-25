@@ -5,7 +5,8 @@ inside `async_update`. A snapshot of `hass.config.as_dict()`, taken at
 install and refreshed after each event, gives the values before; both
 sides come from `as_dict()`, so a unit system compares as its JSON form
 (the event carries its name). The saved keys that changed are recorded,
-with redacted values only when `record_values` is on.
+with redacted values only when `record_values` is on; a save that changed
+nothing records nothing.
 """
 
 from typing import Any
@@ -60,6 +61,9 @@ class CoreConfigCollector(BaseCollector):
             {key: current.get(key) for key in keys},
             include_values=self.runtime.settings.record_values,
         )
+        if not details["changed"]:
+            # Saved without a change: nothing to record.
+            return
         # `keys` is the old field, kept for older panel builds.
         details["keys"] = list(details["changed"])
         actor = attribution.credited_actor(

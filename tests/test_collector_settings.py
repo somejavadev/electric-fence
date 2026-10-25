@@ -224,7 +224,7 @@ async def test_options_change_recorded_as_options_changed(
     assert _by_admin(row, hass_admin_user)
     assert row.details == {
         "domain": DUMMY,
-        "changed": ["opt"],
+        "changed": ["options.opt"],
         "data_keys_changed": [],
     }
 
@@ -261,7 +261,7 @@ async def test_options_change_with_reloading_listener_credited(
     reload_update, options = await _entry_rows(hass, after=mark)
     assert options.action is ChangeAction.OPTIONS_CHANGED
     assert _by_admin(options, hass_admin_user)
-    assert options.details["changed"] == ["opt"]
+    assert options.details["changed"] == ["options.opt"]
     assert reload_update.action is ChangeAction.UPDATED
     assert _is_system(reload_update)
     assert reload_update.details["changed"] == ["data"]
@@ -302,7 +302,7 @@ async def test_ws_update_with_reloading_listener_credited(
     assert _is_system(reload_update)
     assert reload_update.details["changed"] == ["data"]
     assert update.action is ChangeAction.UPDATED
-    assert update.details["changed"] == ["opt", "title"]
+    assert update.details["changed"] == ["options.opt", "title"]
     assert _by_admin(update, hass_admin_user)
 
 
@@ -382,7 +382,7 @@ async def test_hold_back_with_suspending_unload(
     assert entry.data["setups"] == 2
     options, reload_update = await _entry_rows(hass, after=mark)
     assert options.action is ChangeAction.OPTIONS_CHANGED
-    assert options.details["changed"] == ["opt"]
+    assert options.details["changed"] == ["options.opt"]
     assert _by_admin(options, hass_admin_user)
     assert reload_update.details["changed"] == ["data"]
     assert _is_system(reload_update)
@@ -610,7 +610,7 @@ async def test_change_without_scope_is_system(
     assert update.action is ChangeAction.UPDATED
     assert update.details == {
         "domain": DUMMY,
-        "changed": ["a", "data", "title"],
+        "changed": ["data", "options.a", "title"],
         "data_keys_changed": ["b"],
     }
     assert disabled.action is ChangeAction.DISABLED
@@ -1138,14 +1138,15 @@ async def test_core_coordinates_hidden(
 async def test_core_unchanged_save_and_unknown_key(
     hass: HomeAssistant, fence: MockConfigEntry
 ) -> None:
-    """A save without a change has no names; a key not in as_dict is compared."""
+    """A save without a change is no row; a key not in as_dict is compared."""
     _set_record_values(hass, True)
     await hass.config.async_update(location_name=hass.config.location_name)
     hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE, {"future": "a"})
+    # The same value again: no row, but the snapshot still moves on.
+    hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE, {"future": "a"})
     hass.bus.async_fire_internal(EVENT_CORE_CONFIG_UPDATE, {"future": "b"})
 
-    same, first, second = await _rows(hass, ChangeKind.CORE_CONFIG)
-    assert same.details == {"changed": [], "keys": []}
+    first, second = await _rows(hass, ChangeKind.CORE_CONFIG)
     assert first.details["values"] == {"future": {"before": None, "after": "a"}}
     assert second.details["values"] == {"future": {"before": "a", "after": "b"}}
 
@@ -1167,13 +1168,13 @@ async def test_entry_options_values(
     (row,) = await _entry_rows(hass, after=mark)
     expected: dict[str, Any] = {
         "domain": DUMMY,
-        "changed": ["scan_interval", "webhook_url"],
+        "changed": ["options.scan_interval", "options.webhook_url"],
         "data_keys_changed": [],
     }
     if record_values:
         expected["values"] = {
-            "scan_interval": {"before": 30, "after": 60},
-            "webhook_url": {
+            "options.scan_interval": {"before": 30, "after": 60},
+            "options.webhook_url": {
                 "before": None,
                 "after": "https://ha.example/api/webhook/•••",
             },
@@ -1337,7 +1338,7 @@ async def test_toggling_record_values_is_recorded(
     assert row.action is ChangeAction.OPTIONS_CHANGED
     assert _by_admin(row, hass_admin_user)
     assert row.details["domain"] == DOMAIN
-    assert "record_values" in row.details["changed"]
+    assert "options.record_values" in row.details["changed"]
     assert fence.runtime_data.settings.record_values is True
 
 
@@ -1345,3 +1346,65 @@ def test_credential_username_without_data() -> None:
     """Something that is no credential gives no old username."""
     assert _credential_username(None) is None
     assert _credential_username(MockUser()) is None
+
+
+async def test_entry_option_named_like_a_field(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """Options are namespaced: an option `title` never hides the entry title."""
+    entry = await dummy_entry(hass, {"quiet": True})
+    hass.config_entries.async_update_entry(
+        entry, options={"title": "Opt", "disabled_by": None, "data": 1}
+    )
+    mark = await _mark(hass)
+    _set_record_values(hass, True)
+
+    # (a) The entry renamed, the `title` option unchanged.
+    hass.config_entries.async_update_entry(entry, title="Renamed")
+    # (b) The `title` option changed, the entry title unchanged.
+    hass.config_entries.async_update_entry(
+        entry, options={"title": "Opt 2", "disabled_by": None, "data": 1}
+    )
+
+    renamed, option = await _entry_rows(hass, after=mark)
+    assert renamed.details["changed"] == ["title"]
+    assert renamed.details["values"] == {
+        "title": {"before": "Mock Title", "after": "Renamed"}
+    }
+    assert option.details["changed"] == ["options.title"]
+    assert option.details["values"] == {
+        "options.title": {"before": "Opt", "after": "Opt 2"}
+    }
+
+
+async def test_entry_sensitive_option_hidden_under_namespace(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """The name rule still sees `api_key` behind the `options.` prefix."""
+    entry = await dummy_entry(hass, {"quiet": True})
+    mark = await _mark(hass)
+    _set_record_values(hass, True)
+
+    hass.config_entries.async_update_entry(entry, options={"api_key": "plain words"})
+
+    (row,) = await _entry_rows(hass, after=mark)
+    assert row.details["changed"] == ["options.api_key"]
+    assert row.details["values"] == {"options.api_key": {"hidden": True}}
+    assert "plain words" not in dump_db(hass)
+
+
+async def test_entry_option_changed_by_hash_only_is_namespaced(
+    hass: HomeAssistant, fence: MockConfigEntry
+) -> None:
+    """A change `==` misses (1 to 1.0) is still named, with its namespace."""
+    entry = await dummy_entry(hass, {"quiet": True})
+    collector = _collector(hass, ConfigEntryCollector)
+    old = EntrySnapshot.of(MockConfigEntry(domain=DUMMY, options={"n": 1}))
+    new = EntrySnapshot.of(MockConfigEntry(domain=DUMMY, options={"n": 1.0}))
+    mark = await _mark(hass)
+
+    # Core itself sees no change here, so the snapshots are given directly.
+    collector._record_update(entry, old, new, credit=False)
+
+    (row,) = await _entry_rows(hass, after=mark)
+    assert row.details["changed"] == ["options.n"]

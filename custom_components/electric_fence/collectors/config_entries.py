@@ -26,6 +26,7 @@ names the changed keys. Data values never leave the entry. Option values
 are also kept, as a copy in memory, so a change can show its before and
 after (redacted, and only when `record_values` is on), like the title,
 disabled-by and preference fields; subentries and data are named only.
+Options are named `options.<key>`, so none can pass for a field.
 """
 
 from collections.abc import Mapping
@@ -77,6 +78,8 @@ _VALUE_FIELDS = (
 )
 # Saved fields named only: data by its keys, subentries as a whole.
 _NAMED_FIELDS = ("data", "subentries")
+# Prefix of option names in `changed` and `values`.
+_OPTION_PREFIX = "options."
 
 # Actions that name the admin's own change; only for a credited change.
 _SCOPED = (ChangeAction.RECONFIGURED, ChangeAction.OPTIONS_CHANGED)
@@ -302,7 +305,10 @@ class ConfigEntryCollector(BaseCollector):
             {
                 *details["changed"],
                 # By hash too: values `==` can miss (1 and 1.0) still count.
-                *_changed_keys(old.options, new.options),
+                *(
+                    _OPTION_PREFIX + key
+                    for key in _changed_keys(old.options, new.options)
+                ),
                 *(name for name in _NAMED_FIELDS if name in changed),
             }
         )
@@ -315,7 +321,10 @@ class ConfigEntryCollector(BaseCollector):
         def fields(snapshot: EntrySnapshot) -> dict[str, Any]:
             return {
                 **{name: getattr(snapshot, name) for name in _VALUE_FIELDS},
-                **snapshot.option_values,
+                **{
+                    _OPTION_PREFIX + str(key): value
+                    for key, value in snapshot.option_values.items()
+                },
             }
 
         return diff_details(
