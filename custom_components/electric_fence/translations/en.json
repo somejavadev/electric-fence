@@ -14,6 +14,41 @@
     "sensor": {
       "failed_logins": {
         "name": "Failed logins"
+      },
+      "active_bans": {
+        "name": "Active bans"
+      },
+      "bans_24h": {
+        "name": "Bans 24h"
+      },
+      "attacked_usernames": {
+        "name": "Attacked usernames"
+      },
+      "last_failed_login": {
+        "name": "Last failed login"
+      },
+      "last_ban": {
+        "name": "Last ban"
+      },
+      "last_new_country_login": {
+        "name": "Last new country login"
+      },
+      "admins_without_mfa": {
+        "name": "Admins without MFA"
+      },
+      "geoip_updated": {
+        "name": "GeoIP updated"
+      }
+    },
+    "binary_sensor": {
+      "login_attack": {
+        "name": "Login attack"
+      },
+      "security_warnings": {
+        "name": "Security warnings"
+      },
+      "auto_ban_available": {
+        "name": "Auto ban available"
       }
     }
   },

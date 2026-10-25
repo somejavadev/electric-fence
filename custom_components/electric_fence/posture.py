@@ -85,8 +85,9 @@ async def async_check(
     return items
 
 
-async def _admins_without_mfa(hass: HomeAssistant) -> PostureItem:
-    users = [
+async def async_admins_without_mfa(hass: HomeAssistant) -> list[dict[str, str | None]]:
+    """Return the active, non-system admins that have no MFA module enabled."""
+    return [
         {"id": user.id, "name": user.name}
         for user in await hass.auth.async_get_users()
         if user.is_active
@@ -94,6 +95,10 @@ async def _admins_without_mfa(hass: HomeAssistant) -> PostureItem:
         and not user.system_generated
         and not await hass.auth.async_get_enabled_mfa(user)
     ]
+
+
+async def _admins_without_mfa(hass: HomeAssistant) -> PostureItem:
+    users = await async_admins_without_mfa(hass)
     return _item("admins_without_mfa", "warning" if users else "ok", users=users)
 
 

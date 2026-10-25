@@ -58,7 +58,7 @@ DB_FILENAME = "electric_fence.db"
 DATA_DIRNAME = "electric_fence"
 PURGE_INTERVAL = timedelta(hours=24)
 FIRST_PURGE_DELAY = timedelta(minutes=5)
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 # Each collector task appends its class here.
 COLLECTOR_TYPES: list[type[BaseCollector]] = [

@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 import sqlite3
 
@@ -15,9 +15,12 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.models import (
+    ChangeAction,
+    ChangeKind,
     LoginAttempt,
     LoginReason,
     LoginResult,
+    SettingsChange,
     Source,
     UserExists,
 )
@@ -26,13 +29,17 @@ from custom_components.electric_fence.sensor import (
     FailedLoginsSensor,
     merge_seed,
 )
+from custom_components.electric_fence.sensor_protection import (
+    ActiveBansSensor,
+    LastNewCountryLoginSensor,
+)
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import FenceStore
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from tests.helpers import flush_worker
+from tests.helpers import create_hass_user, flush_worker
 
 ENTITY_ID = "sensor.electric_fence_failed_logins"
 
@@ -380,3 +387,206 @@ async def test_sensor_removed_on_unload(
     assert await hass.config_entries.async_unload(setup_entry.entry_id)
     assert hass.states.get(ENTITY_ID).state == "unavailable"
     assert not worker._listeners  # noqa: SLF001
+
+
+SENSOR = "sensor.electric_fence_"
+BINARY = "binary_sensor.electric_fence_"
+BAN_IP = "203.0.113.9"
+
+
+async def settle(hass: HomeAssistant) -> None:
+    """Let listeners and tasks run."""
+    await hass.async_block_till_done()
+
+
+async def test_entities_created(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """All eleven entities exist and failed_logins is still there."""
+    for entity_id in (
+        "sensor.electric_fence_failed_logins",
+        f"{SENSOR}active_bans",
+        f"{SENSOR}bans_24h",
+        f"{SENSOR}attacked_usernames",
+        f"{SENSOR}last_failed_login",
+        f"{SENSOR}last_ban",
+        f"{SENSOR}last_new_country_login",
+        f"{SENSOR}admins_without_mfa",
+        f"{SENSOR}geoip_updated",
+        f"{BINARY}login_attack",
+        f"{BINARY}security_warnings",
+        f"{BINARY}auto_ban_available",
+    ):
+        assert hass.states.get(entity_id) is not None, entity_id
+    assert hass.states.get(ENTITY_ID).state == "0"
+
+
+async def test_active_bans_updates_on_ban(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A ban raises active_bans and bans_24h and sets last_ban."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert hass.states.get(f"{SENSOR}active_bans").state == "0"
+    assert hass.states.get(f"{SENSOR}last_ban").state == "unknown"
+
+    assert await bans.async_ban(BAN_IP, 5, "RU", None)
+    await settle(hass)
+
+    state = hass.states.get(f"{SENSOR}active_bans")
+    assert state.state == "1"
+    assert state.attributes["last_ip"] == BAN_IP
+    assert state.attributes["last_country"] == "RU"
+    assert hass.states.get(f"{SENSOR}bans_24h").state == "1"
+    assert hass.states.get(f"{SENSOR}last_ban").state == bans.last_ban_at.isoformat(
+        timespec="seconds"
+    )
+
+    assert await bans.async_unban(BAN_IP, None, None)
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}active_bans").state == "0"
+    assert hass.states.get(f"{SENSOR}bans_24h").state == "1"
+
+
+async def test_bans_24h_reevaluated_each_minute(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """The count falls after 24 hours without a further ban event."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert await bans.async_ban(BAN_IP, 5, "RU", None)
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}bans_24h").state == "1"
+
+    freezer.tick(timedelta(hours=24, minutes=1))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}bans_24h").state == "0"
+
+
+async def test_state_never_contains_ip(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Counts are numbers, and identifying attributes are unrecorded."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert await bans.async_ban(BAN_IP, 5, "RU", None)
+    await settle(hass)
+
+    assert hass.states.get(f"{SENSOR}active_bans").state.isdigit()
+    assert {"last_ip", "last_country"} <= ActiveBansSensor._unrecorded_attributes  # noqa: SLF001
+    assert {"user", "country"} <= LastNewCountryLoginSensor._unrecorded_attributes  # noqa: SLF001
+    assert BAN_IP not in "".join(
+        s.state
+        for s in hass.states.async_all()
+        if s.domain in ("sensor", "binary_sensor")
+    )
+
+
+async def test_attacked_usernames_and_login_attack(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """An attack on a username turns login_attack on and counts it."""
+    guard = setup_entry.runtime_data.username_guard
+    assert guard is not None
+    assert hass.states.get(f"{BINARY}login_attack").state == "off"
+    for i in range(10):
+        guard.on_attempt(
+            "admin",
+            f"198.51.100.{i % 3 + 1}",
+            LoginResult.FAILED,
+            LoginReason.WRONG_PASSWORD,
+        )
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}attacked_usernames").state == "1"
+    assert hass.states.get(f"{BINARY}login_attack").state == "on"
+    assert "admin" not in hass.states.get(f"{BINARY}login_attack").state
+
+
+async def test_last_failed_login_tracks_and_seeds(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A failed login sets the timestamp; a restart seeds it from the store."""
+    ts = dt_util.utcnow().replace(microsecond=0)
+    assert hass.states.get(f"{SENSOR}last_failed_login").state == "unknown"
+    await submit(hass, setup_entry, attempt(ts=ts))
+    assert hass.states.get(f"{SENSOR}last_failed_login").state == ts.isoformat()
+
+    assert await hass.config_entries.async_reload(setup_entry.entry_id)
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}last_failed_login").state == ts.isoformat()
+
+
+async def test_last_new_country_login(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A new-country login sets the timestamp, user and country."""
+    user = await create_hass_user(hass, "alice", "pw")
+    ts = dt_util.utcnow().replace(microsecond=0)
+    login = attempt(
+        result=LoginResult.SUCCESS,
+        reason=LoginReason.OK,
+        user_id=user.id,
+        user_exists=UserExists.YES,
+    )
+    await submit(hass, setup_entry, replace(login, ts=ts, country_code="US"))
+    assert hass.states.get(f"{SENSOR}last_new_country_login").state == "unknown"
+    await submit(hass, setup_entry, replace(login, ts=ts, country_code="DE"))
+    state = hass.states.get(f"{SENSOR}last_new_country_login")
+    assert state.state == ts.isoformat()
+    assert state.attributes["user"] == "alice"
+    assert state.attributes["country"] == "DE"
+    assert hass.states.get(f"{SENSOR}last_failed_login").state == "unknown"
+
+
+async def test_admins_without_mfa(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The count follows user changes."""
+    assert hass.states.get(f"{SENSOR}admins_without_mfa").state == "0"
+    await create_hass_user(hass, "alice", "pw")
+    setup_entry.runtime_data.worker.submit(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.USER,
+            action=ChangeAction.ADDED,
+            target_id=None,
+            target_name=None,
+            details={},
+            actor_user_id=None,
+            actor_name=None,
+            actor_ip=None,
+        )
+    )
+    await flush_worker(hass)
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}admins_without_mfa").state == "1"
+
+
+async def test_geoip_updated(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """The database date shows as midnight UTC, unknown without one."""
+    status = setup_entry.runtime_data.geo_status
+    assert status is not None
+    status.db_date = None
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
+    await settle(hass)
+    assert hass.states.get(f"{SENSOR}geoip_updated").state == "unknown"
+
+    status.db_date = date(2026, 10, 1)
+    freezer.tick(timedelta(minutes=16))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert (
+        hass.states.get(f"{SENSOR}geoip_updated").state == "2026-10-01T00:00:00+00:00"
+    )
+
+
+async def test_unavailable_without_manager(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Entities whose manager is missing report unavailable instead of raising."""
+    runtime = setup_entry.runtime_data
+    runtime.bans = None
+    assert ActiveBansSensor(setup_entry).available is False
