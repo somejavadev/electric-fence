@@ -46,6 +46,8 @@ class IpPolicy:
         self._guard.call(self._on_attempt, ip, result, reason)
 
     def _trust(self, key: str, when: datetime) -> None:
+        if is_exempt(self._hass, key):
+            return
         self._trusted[key] = when
         self._trusted.move_to_end(key)
         while len(self._trusted) > MAX_TRACKED:

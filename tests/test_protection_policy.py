@@ -183,11 +183,25 @@ async def test_bans_unavailable(
     hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
 ) -> None:
     """No ban is requested without a usable ban manager."""
-    runtime.bans.available = False  # type: ignore[union-attr]
+    bans = runtime.bans
+    assert bans is not None
+    bans.available = False
     _fail(policy, 5)
+    await hass.async_block_till_done()
+    bans.async_ban.assert_not_awaited()  # type: ignore[attr-defined]
     runtime.bans = None
     _fail(policy, 5)
     await hass.async_block_till_done()
+    bans.async_ban.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_exempt_never_trusted(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """Exempt addresses take no space in the trusted map."""
+    policy.seed_trusted({"10.0.0.5": dt_util.utcnow()})
+    policy.on_attempt("10.0.0.6", *OK)
+    assert not policy._trusted  # noqa: SLF001
 
 
 async def test_exempt_ip_never_counted(
@@ -236,5 +250,7 @@ async def test_never_raises(
     runtime.bans.async_ban.side_effect = RuntimeError("boom")  # type: ignore[union-attr]
     _fail(policy, 5)
     await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once()  # type: ignore[union-attr]
+    # Broken settings raise inside on_attempt itself, which the guard absorbs.
     runtime.settings = None  # type: ignore[assignment]
     _fail(policy, 1)
