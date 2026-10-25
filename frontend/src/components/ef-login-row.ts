@@ -1,11 +1,9 @@
 import { LitElement, css, html, nothing } from "lit";
-import { formatTime, reasonLabel, truncate } from "../format.ts";
+import { MAX_TEXT, formatTime, reasonLabel, truncate } from "../format.ts";
 import "./ef-flag.ts";
 import { strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
 import type { HomeAssistant, LoginItem } from "../types.ts";
-
-export const MAX_TEXT = 64;
 
 /** Country code; "local" only when the login really came from the local network. */
 export function locationLabel(item: LoginItem): string {

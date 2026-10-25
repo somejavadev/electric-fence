@@ -678,6 +678,44 @@ describe("hostile values in the other tabs", () => {
     );
   });
 
+  it("protection changes keep a hostile IP and username as text", async () => {
+    for (const item of [
+      change({
+        kind: "ip_ban",
+        action: "banned",
+        target_id: H("banip"),
+        actor_ip: null,
+      }),
+      change({
+        kind: "login_protection",
+        action: "attack_started",
+        target_name: H("attackname"),
+        details: { countries: [H("country")], failures: 3, ip_count: 2 },
+        actor_ip: null,
+      }),
+    ]) {
+      const el = document.createElement("ef-change-row");
+      el.hass = hass;
+      el.item = item;
+      el.details = true;
+      document.body.append(el);
+      await el.updateComplete;
+      const elements = allShadowElements(el.shadowRoot as ShadowRoot);
+      expect(elements.some((e) => e.localName === "img")).toBe(false);
+      expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
+      const carriers = elements.filter((e) =>
+        [...e.childNodes].some(
+          (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+        ),
+      );
+      expect(carriers.length).toBeGreaterThan(0);
+      for (const carrier of carriers) {
+        expect(carrier.closest("bdi")).not.toBeNull();
+      }
+      document.body.replaceChildren();
+    }
+  });
+
   it("truncates long values and keeps the full text in title", async () => {
     const long = "a".repeat(10_000);
     const fake = fakeApi({

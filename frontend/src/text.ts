@@ -1,6 +1,5 @@
 import { html } from "lit";
-import { MAX_TEXT } from "./components/ef-login-row.ts";
-import { truncate } from "./format.ts";
+import { MAX_TEXT, truncate } from "./format.ts";
 
 /** Text, isolated and truncated, with the full value in the tooltip. */
 export const bdiText = (value: string, max = MAX_TEXT) => {

@@ -90,6 +90,8 @@ export const strings = {
       analytics: "Analytics",
       logger: "Logging",
       recorder: "Recorder",
+      ip_ban: "IP bans",
+      login_protection: "Login protection",
     },
     actor: "Actor",
     anyActor: "Anyone",
@@ -120,6 +122,22 @@ export const strings = {
     settingNames: { location_name: "Home name" } as Record<string, string>,
     hiddenValue: "changed (hidden)",
     noValue: "—",
+    /** Detail lines of ban and login protection changes. */
+    protection: {
+      failures: "Failed attempts",
+      expires: "Expires",
+      never: "Never",
+      banNumber: "Ban number",
+      addresses: "Addresses",
+      countries: "Countries",
+      how: "How it ended",
+      source: "Source",
+      cleared: "Users cleared",
+      reasons: {
+        quiet: "Went quiet",
+        ended_by_user: "Ended by a user",
+      } as Record<string, string>,
+    },
   },
   loadMore: "Load more",
   users: {
@@ -174,8 +192,10 @@ export const strings = {
     },
     never: "Never",
     ended: "Ended",
+    expiresMinutes: (n: number): string => `Expires in ${n} min`,
+    expiresHours: (n: number): string => `Expires in ${n} h`,
+    expiresDays: (n: number): string => `Expires in ${n} d`,
     open: "Show details",
-    close: "Close",
     hostname: "Host name",
     failures: "Failed attempts",
     banNumber: "Ban number",
@@ -300,13 +320,15 @@ export function banExpiry(
   if (Number.isNaN(left)) {
     return strings.bans.unknown;
   }
-  if (left < HOUR) {
-    return `Expires in ${Math.max(1, Math.ceil(left / MINUTE))} min`;
+  const b = strings.bans;
+  const minutes = Math.max(1, Math.round(left / MINUTE));
+  if (minutes < 60) {
+    return b.expiresMinutes(minutes);
   }
   if (left < 48 * HOUR) {
-    return `Expires in ${Math.round(left / HOUR)} h`;
+    return b.expiresHours(Math.round(left / HOUR));
   }
-  return `Expires in ${Math.round(left / (24 * HOUR))} d`;
+  return b.expiresDays(Math.round(left / (24 * HOUR)));
 }
 
 const SYSTEM_SENTENCES: Record<string, Record<string, string>> = {
@@ -346,8 +368,47 @@ function systemSentence(item: ChangeItem): string | undefined {
   return (Object.hasOwn(own, item.action) ? own[item.action] : own[""]) ?? "";
 }
 
+/** Sentence for a ban or login protection change; undefined for others. */
+function protectionSentence(item: ChangeItem): string | undefined {
+  if (item.kind === "ip_ban") {
+    const ip = cut(item.target_id ?? strings.unknownIp);
+    switch (item.action) {
+      case "banned":
+        return `banned ${ip}`;
+      case "unbanned":
+        return `unbanned ${ip}`;
+      case "expired":
+        return `ban of ${ip} expired`;
+      case "removed":
+        return `ban of ${ip} was removed from ip_bans.yaml`;
+      default:
+        return `changed the ban of ${ip}`;
+    }
+  }
+  if (item.kind === "login_protection") {
+    const name = cut(item.target_name ?? strings.unknownUser);
+    switch (item.action) {
+      case "attack_started":
+        return `username ${name} came under attack`;
+      case "attack_ended":
+        return `attack on ${name} ended`;
+      case "slowdown_ended":
+        return `ended the slow-down for ${name}`;
+      case "countries_cleared":
+        return "cleared known login countries";
+      default:
+        return "changed login protection";
+    }
+  }
+  return undefined;
+}
+
 /** Sentence for a settings change, such as "added integration Tuya". */
 export function changeSentence(item: ChangeItem): string {
+  const protection = protectionSentence(item);
+  if (protection !== undefined) {
+    return protection;
+  }
   const fixed = systemSentence(item);
   if (fixed !== undefined) {
     return fixed;

@@ -1,20 +1,15 @@
 import { html, nothing } from "lit";
 import { clearCountries, fetchStatus } from "../api.ts";
 import "../components/ef-confirm-dialog.ts";
-import { MAX_TEXT } from "../components/ef-login-row.ts";
 import { navigate } from "../fire-event.ts";
-import { formatDate, truncate } from "../format.ts";
+import { formatDate } from "../format.ts";
 import { strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
+import { bdiText } from "../text.ts";
 import type { Status } from "../types.ts";
 import { LiveView } from "./live-view.ts";
 
 export const SETTINGS_PATH = "/config/integrations/integration/electric_fence";
-
-const text = (value: string, max = MAX_TEXT) => {
-  const t = truncate(value, max);
-  return html`<bdi title=${t.full}>${t.short}</bdi>`;
-};
 
 /** Settings tab: read-only status; options live in Home Assistant. */
 export class EfSettings extends LiveView {
@@ -65,7 +60,7 @@ export class EfSettings extends LiveView {
         <tbody>
           <tr>
             <th scope="row">${s.provider}</th>
-            <td>${s.providers[geo.provider] ?? text(geo.provider)}</td>
+            <td>${s.providers[geo.provider] ?? bdiText(geo.provider)}</td>
           </tr>
           <tr>
             <th scope="row">${s.databaseDate}</th>
@@ -76,7 +71,7 @@ export class EfSettings extends LiveView {
           <tr>
             <th scope="row">${s.lastError}</th>
             <td>
-              ${geo.last_error === null ? s.none : html`<span class="geo-error">${text(geo.last_error, 256)}</span>`}
+              ${geo.last_error === null ? s.none : html`<span class="geo-error">${bdiText(geo.last_error, 256)}</span>`}
             </td>
           </tr>
         </tbody>
@@ -101,6 +96,9 @@ export class EfSettings extends LiveView {
   };
 
   private _onClear = async (): Promise<void> => {
+    if (this._busy) {
+      return;
+    }
     this._busy = true;
     this._error = "";
     try {
@@ -172,7 +170,7 @@ export class EfSettings extends LiveView {
             targets.length === 0
               ? s.none
               : targets.map(
-                  (t, i) => html`${i > 0 ? ", " : nothing}${text(t)}`,
+                  (t, i) => html`${i > 0 ? ", " : nothing}${bdiText(t)}`,
                 ),
           ],
         ])}
@@ -222,7 +220,7 @@ export class EfSettings extends LiveView {
           (c) =>
             html`<tr>
               <th scope="row">
-                ${Object.hasOwn(s.collectorNames, c.name) ? s.collectorNames[c.name] : text(c.name)}
+                ${Object.hasOwn(s.collectorNames, c.name) ? s.collectorNames[c.name] : bdiText(c.name)}
               </th>
               <td>
                 <span class="tag ${c.enabled ? "good" : "warn"}"
@@ -230,7 +228,7 @@ export class EfSettings extends LiveView {
                 >
               </td>
               <td>
-                ${c.reason.map((r, i) => html`${i > 0 ? ", " : nothing}${text(r)}`)}
+                ${c.reason.map((r, i) => html`${i > 0 ? ", " : nothing}${bdiText(r)}`)}
               </td>
             </tr>`,
         )}

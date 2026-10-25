@@ -249,6 +249,9 @@ export class EfBans extends LiveView {
   };
 
   private _onConfirm = async (): Promise<void> => {
+    if (this._busy) {
+      return;
+    }
     const ban = this._ban();
     if (ban === undefined) {
       this._confirming = false;
@@ -358,8 +361,8 @@ export class EfBans extends LiveView {
                 <button
                   type="button"
                   class="close"
-                  aria-label=${b.close}
-                  title=${b.close}
+                  aria-label=${strings.confirm.close}
+                  title=${strings.confirm.close}
                   @click=${this._close}
                 >
                   <ha-icon aria-hidden="true" icon="mdi:close"></ha-icon>
@@ -367,7 +370,8 @@ export class EfBans extends LiveView {
               </header>
               ${this._tag(ban)} ${this._facts(ban)}
               ${
-                ban.ended_at === null
+                // Unban needs the ban manager, like banning does.
+                ban.ended_at === null && this._page?.available === true
                   ? html`<div class="actions">
                       <button
                         type="button"

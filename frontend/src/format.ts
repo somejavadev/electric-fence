@@ -12,6 +12,9 @@ const REASON_LABELS: Record<LoginReason, string> = {
   throttled: "Too many attempts",
 };
 
+/** Longest user-supplied text shown before it is cut. */
+export const MAX_TEXT = 64;
+
 /** Format an ISO timestamp in the user's language and the server time zone. */
 export function formatTime(iso: string, hass: HomeAssistant): string {
   const date = new Date(iso);

@@ -74,7 +74,9 @@ export type KnownChangeKind =
   | "network"
   | "analytics"
   | "logger"
-  | "recorder";
+  | "recorder"
+  | "ip_ban"
+  | "login_protection";
 
 /** A kind from a newer or older database may be any string. */
 export type ChangeKind = KnownChangeKind | (string & Record<never, never>);
@@ -92,6 +94,13 @@ export type ChangeAction =
   | "confirmed"
   | "purged"
   | "withdrawn"
+  | "banned"
+  | "unbanned"
+  | "expired"
+  | "attack_started"
+  | "attack_ended"
+  | "slowdown_ended"
+  | "countries_cleared"
   | (string & Record<never, never>);
 
 /** A stored settings change. A null `actor_user_id` means System. */

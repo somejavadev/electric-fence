@@ -1,17 +1,13 @@
 import { css, html, nothing } from "lit";
 import { fetchUsers } from "../api.ts";
 import "../components/ef-flag.ts";
-import { locationLabel, MAX_TEXT } from "../components/ef-login-row.ts";
-import { formatTime, truncate } from "../format.ts";
+import { locationLabel } from "../components/ef-login-row.ts";
+import { formatTime } from "../format.ts";
 import { strings } from "../strings.ts";
 import { dialogStyles, viewStyles } from "../styles.ts";
+import { bdiText } from "../text.ts";
 import type { SessionItem, UserItem } from "../types.ts";
 import { LiveView } from "./live-view.ts";
-
-const text = (value: string) => {
-  const t = truncate(value, MAX_TEXT);
-  return html`<bdi title=${t.full}>${t.short}</bdi>`;
-};
 
 const DIALOG_TITLE = "user-dialog-title";
 
@@ -188,10 +184,10 @@ export class EfUsers extends LiveView {
         }}
       >
         <span class="primary"
-          >${text(user.name ?? user.username ?? strings.unknownUser)}</span
+          >${bdiText(user.name ?? user.username ?? strings.unknownUser)}</span
         >
         <span class="secondary">
-          ${user.username === null ? nothing : html`${text(user.username)} · `}
+          ${user.username === null ? nothing : html`${bdiText(user.username)} · `}
           ${this._lastLogin(user, true)}
         </span>
         ${this._tags(user)}
@@ -207,10 +203,10 @@ export class EfUsers extends LiveView {
       : undefined;
     return html`<li class="session">
       <span class="primary"
-        >${text(s.client_name ?? s.client_id ?? strings.unknownClient)}</span
+        >${bdiText(s.client_name ?? s.client_id ?? strings.unknownClient)}</span
       >
       <span class="secondary">
-        ${type ?? text(s.token_type)} ·
+        ${type ?? bdiText(s.token_type)} ·
         ${
           s.last_used_at === null
             ? u.neverUsed
@@ -236,13 +232,13 @@ export class EfUsers extends LiveView {
               <header>
                 <div class="title" tabindex="-1" autofocus>
                   <h3 id=${DIALOG_TITLE}>
-                    ${text(user.name ?? user.username ?? strings.unknownUser)}
+                    ${bdiText(user.name ?? user.username ?? strings.unknownUser)}
                   </h3>
                   ${
                     user.username === null
                       ? nothing
                       : html`<span class="secondary"
-                          >${text(user.username)}</span
+                          >${bdiText(user.username)}</span
                         >`
                   }
                 </div>

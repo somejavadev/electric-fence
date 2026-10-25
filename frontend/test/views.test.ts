@@ -9,6 +9,8 @@ import type { ActivityFilters } from "../src/views/ef-activity.ts";
 import { EfAudit, matchesChange } from "../src/views/ef-audit.ts";
 import type { AuditFilters } from "../src/views/ef-audit.ts";
 import { EfSettings } from "../src/views/ef-settings.ts";
+import { EfChangeRow } from "../src/components/ef-change-row.ts";
+import { changeSentence } from "../src/strings.ts";
 import { EfUsers } from "../src/views/ef-users.ts";
 import { LIVE_CAP, REFRESH_DELAY_MS } from "../src/views/live-view.ts";
 import type { LoginItem, Status, UserItem } from "../src/types.ts";
@@ -474,6 +476,8 @@ describe("audit details use the real backend shapes", () => {
       "Analytics",
       "Logging",
       "Recorder",
+      "IP bans",
+      "Login protection",
     ]);
   });
 
@@ -1112,5 +1116,127 @@ describe("protection in Settings", () => {
     expect(root.querySelector("[role=status]")?.textContent).toContain(
       "Known countries cleared",
     );
+  });
+});
+
+describe("protection changes in the Audit", () => {
+  const ipBan = (action: string, details: Record<string, unknown> = {}) =>
+    change({
+      kind: "ip_ban",
+      action,
+      target_id: "203.0.113.9",
+      target_name: null,
+      details,
+      actor_ip: null,
+    });
+  const guard = (action: string, details: Record<string, unknown> = {}) =>
+    change({
+      kind: "login_protection",
+      action,
+      target_id: null,
+      target_name: "admin",
+      details,
+      actor_ip: null,
+    });
+
+  it.each([
+    [ipBan("banned"), "banned 203.0.113.9"],
+    [ipBan("unbanned"), "unbanned 203.0.113.9"],
+    [ipBan("expired"), "ban of 203.0.113.9 expired"],
+    [ipBan("removed"), "ban of 203.0.113.9 was removed from ip_bans.yaml"],
+    [guard("attack_started"), "username admin came under attack"],
+    [guard("attack_ended"), "attack on admin ended"],
+    [guard("slowdown_ended"), "ended the slow-down for admin"],
+    [
+      change({
+        kind: "login_protection",
+        action: "countries_cleared",
+        target_id: null,
+        target_name: null,
+      }),
+      "cleared known login countries",
+    ],
+  ])("protection sentence %#", (item, sentence) => {
+    expect(changeSentence(item)).toBe(sentence);
+  });
+
+  async function row(item: ReturnType<typeof change>): Promise<ShadowRoot> {
+    const el = document.createElement("ef-change-row");
+    el.hass = fakeApi({}).hass;
+    el.item = item;
+    el.details = true;
+    document.body.append(el);
+    await el.updateComplete;
+    return el.shadowRoot as ShadowRoot;
+  }
+
+  it("shows the ban's details", async () => {
+    const root = await row(
+      ipBan("banned", {
+        failures: 5,
+        expires_at: "2026-10-25T09:00:00+00:00",
+        ban_number: 2,
+      }),
+    );
+    const text = root.querySelector(".details")?.textContent ?? "";
+    expect(text).toMatch(/Failed attempts:\s*5/);
+    expect(text).toMatch(/Expires:\s*Oct 25, 2026/);
+    expect(text).toMatch(/Ban number:\s*2/);
+    const never = await row(
+      ipBan("banned", { failures: 5, expires_at: null, ban_number: 4 }),
+    );
+    expect(never.querySelector(".details")?.textContent).toMatch(
+      /Expires:\s*Never/,
+    );
+  });
+
+  it("shows the attack's details", async () => {
+    const root = await row(
+      guard("slowdown_ended", {
+        failures: 14,
+        ip_count: 4,
+        countries: ["CN", "RU"],
+        reason: "ended_by_user",
+      }),
+    );
+    const text = root.querySelector(".details")?.textContent ?? "";
+    expect(text).toMatch(/Failed attempts:\s*14/);
+    expect(text).toMatch(/Addresses:\s*4/);
+    expect(text).toMatch(/Countries:\s*CN, RU/);
+    expect(text).toMatch(/How it ended:\s*Ended by a user/);
+  });
+
+  it("shows no unknown IP chip for protection changes", async () => {
+    expect((await row(ipBan("unbanned"))).textContent).not.toContain(
+      "unknown IP",
+    );
+    expect((await row(guard("attack_started"))).textContent).not.toContain(
+      "unknown IP",
+    );
+    expect((await row(change({ actor_ip: null }))).textContent).toContain(
+      "unknown IP",
+    );
+    expect(EfChangeRow).toBeTruthy();
+  });
+
+  it("the Audit list shows the details lines too", async () => {
+    const fake = fakeApi({
+      changes: {
+        items: [
+          {
+            ...ipBan("banned", {
+              failures: 5,
+              expires_at: null,
+              ban_number: 1,
+            }),
+            id: 9,
+          },
+        ],
+        next_before_id: null,
+      },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", fake);
+    expect(el.shadowRoot?.textContent).toMatch(/Ban number:\s*1/);
   });
 });

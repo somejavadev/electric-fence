@@ -266,6 +266,30 @@ describe("ef-bans", () => {
     ).toBe(false);
   });
 
+  it("offers no Unban while bans cannot be applied", async () => {
+    const fake = fakeApi({ bans: page([ban()], false, "backend_error") });
+    const el = await mount(fake);
+    root(el).querySelector<HTMLButtonElement>("button.ban")?.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")?.open).toBe(true);
+    expect(root(el).querySelector("dialog button.unban")).toBeNull();
+  });
+
+  it("sends one unban for a double click on confirm", async () => {
+    const fake = fakeApi({ bans: page([ban()]), unban: { unbanned: true } });
+    const el = await mount(fake);
+    root(el).querySelector<HTMLButtonElement>("button.ban")?.click();
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>("dialog button.unban")?.click();
+    await settle(el);
+    const confirm =
+      confirmRoot(el)?.querySelector<HTMLButtonElement>("button.confirm");
+    confirm?.click();
+    confirm?.click();
+    await settle(el);
+    expect(fake.of("unban")).toHaveLength(1);
+  });
+
   it("unavailable empty state", async () => {
     const fake = fakeApi({ bans: page([], false, "ip_ban_disabled") });
     const el = await mount(fake);
@@ -317,6 +341,8 @@ describe("banExpiry", () => {
     [{ expires_at: at(20_000), ended_at: null }, "Expires in 1 min"],
     [{ expires_at: at(-5_000), ended_at: null }, "Expires in 1 min"],
     [{ expires_at: at(72 * HOUR), ended_at: null }, "Expires in 3 d"],
+    [{ expires_at: at(59.5 * 60_000), ended_at: null }, "Expires in 1 h"],
+    [{ expires_at: at(59 * 60_000), ended_at: null }, "Expires in 59 min"],
     [{ expires_at: at(3 * HOUR), ended_at: at(-HOUR) }, "Ended"],
   ])("%o reads %s", (b, label) => {
     expect(banExpiry(b, now)).toBe(label);

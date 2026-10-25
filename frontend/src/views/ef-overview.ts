@@ -34,7 +34,10 @@ const isNotLoaded = (err: unknown): boolean =>
   "code" in err &&
   err.code === "not_loaded";
 
-/** Overview tab (layout A): four cards answering the first questions. */
+/**
+ * Overview tab (layout A): cards answering the first questions, with any
+ * usernames under attack above them.
+ */
 export class EfOverview extends LitElement {
   static override properties = {
     hass: { attribute: false },
@@ -348,7 +351,7 @@ export class EfOverview extends LitElement {
 
   private _onConfirmEnd = async (): Promise<void> => {
     const username = this._ending;
-    if (username === undefined) {
+    if (username === undefined || this._busy) {
       return;
     }
     this._busy = true;
