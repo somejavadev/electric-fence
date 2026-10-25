@@ -1,6 +1,7 @@
 """Tests for the protection tables in the SQLite storage."""
 
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sqlite3
@@ -110,12 +111,51 @@ def test_migrates_v1(tmp_path: Path) -> None:
 
     store = FenceStore(path)
     store.open()
-    with sqlite3.connect(path) as check:
+    with closing(sqlite3.connect(path)) as check:
         assert check.execute("PRAGMA user_version").fetchone()[0] == 2
     rows = store.query_logins(LoginFilter())
     assert [r.new_country for r in rows] == [False]
     assert store.note_country("u1", "NL") is False
     assert store.note_country("u1", "DE") is True
+    store.close()
+
+
+def _v1_db(path: Path, extra: str = "") -> None:
+    with closing(sqlite3.connect(path)) as con:
+        con.executescript(V1_SCHEMA + extra)
+        con.execute("PRAGMA user_version = 1")
+        con.commit()
+
+
+def test_migrates_v1_with_column_already_added(tmp_path: Path) -> None:
+    """A v1 database left with the new column (crashed migration) still opens."""
+    path = tmp_path / "fence.db"
+    _v1_db(
+        path,
+        "ALTER TABLE login_attempts ADD COLUMN new_country INTEGER NOT NULL DEFAULT 0;",
+    )
+    store = FenceStore(path)
+    store.open()
+    store.close()
+    with closing(sqlite3.connect(path)) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_failed_migration_rolls_back(tmp_path: Path) -> None:
+    """A failing migration leaves the v1 database intact and openable."""
+    path = tmp_path / "fence.db"
+    _v1_db(path, "CREATE TABLE bans (id INTEGER);")
+    with pytest.raises(sqlite3.Error):
+        FenceStore(path).open()
+    with closing(sqlite3.connect(path)) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 1
+        columns = [r[1] for r in check.execute("PRAGMA table_info(login_attempts)")]
+        assert "new_country" not in columns
+        check.execute("DROP TABLE bans")
+        check.commit()
+    store = FenceStore(path)
+    store.open()
+    store.close()
 
 
 def test_reopen_after_migration_keeps_countries(tmp_path: Path) -> None:
@@ -127,6 +167,7 @@ def test_reopen_after_migration_keeps_countries(tmp_path: Path) -> None:
     store.close()
     store.open()
     assert store.known_countries("u1") == ["NL"]
+    store.close()
 
 
 def test_schema_version() -> None:

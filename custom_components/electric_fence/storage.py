@@ -127,13 +127,23 @@ _SEED_COUNTRIES = (
     "WHERE result = 'success' AND user_id IS NOT NULL AND country_code IS NOT NULL;"
 )
 
-_MIGRATE_V1 = (
-    "BEGIN;"
+_ADD_NEW_COUNTRY = (
     "ALTER TABLE login_attempts ADD COLUMN new_country INTEGER NOT NULL DEFAULT 0;"
-    + _PROTECTION_SCHEMA
-    + _SEED_COUNTRIES
-    + "COMMIT;"
 )
+
+
+def _migration_v1(db: sqlite3.Connection) -> str:
+    """Return the v1 to v2 script; user_version is set inside its transaction."""
+    columns = {r[1] for r in db.execute("PRAGMA table_info(login_attempts)")}
+    return (
+        "BEGIN;"
+        + ("" if "new_country" in columns else _ADD_NEW_COUNTRY)
+        + _PROTECTION_SCHEMA
+        + _SEED_COUNTRIES
+        + f"PRAGMA user_version = {int(SCHEMA_VERSION)};"
+        + "COMMIT;"
+    )
+
 
 _LOGIN_COLUMNS = (
     "id, ts, result, reason, username_typed, user_exists, user_id, provider, ip, "
@@ -463,7 +473,7 @@ class FenceStore:
                 db.execute("PRAGMA journal_mode = WAL")
                 if version == 1:
                     try:
-                        db.executescript(_MIGRATE_V1)
+                        db.executescript(_migration_v1(db))
                     except BaseException:
                         with contextlib.suppress(sqlite3.Error):
                             db.execute("ROLLBACK")
