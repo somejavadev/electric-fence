@@ -220,7 +220,8 @@ def test_diff_missing_key_is_none() -> None:
 def test_cap_value_long() -> None:
     """Long values are truncated with an ellipsis."""
     out = cap_value("x" * 5000)
-    assert len(out) <= 1025 and out.endswith("…")
+    assert len(out) <= 1025
+    assert out.endswith("…")
 
 
 def test_cap_value_short_and_unserialisable() -> None:

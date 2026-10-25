@@ -179,7 +179,7 @@ describe("ef-overview", () => {
       el.hass = { ...fake.hass };
       await settle(el);
     }
-    expect(fake.calls.length).toBe(fetches);
+    expect(fake.calls).toHaveLength(fetches);
     expect(fake.subscriptions()).toBe(subs);
     expect(el.shadowRoot?.textContent).toContain("unloaded or reloaded");
     expect(cards(el)).toHaveLength(0);

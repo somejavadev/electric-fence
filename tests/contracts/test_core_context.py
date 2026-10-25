@@ -197,7 +197,8 @@ async def test_async_response_ws_handler_runs_in_task_with_copied_context(
     msg = await client.receive_json()
 
     assert msg["success"]
-    assert seen["var"] is SENTINEL and seen["task"] is not seen["reader_task"]
+    assert seen["var"] is SENTINEL
+    assert seen["task"] is not seen["reader_task"]
 
 
 async def _observe_flow_setup_update(

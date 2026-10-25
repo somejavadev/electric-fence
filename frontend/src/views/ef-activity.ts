@@ -211,7 +211,10 @@ export class EfActivity extends LiveView {
     if (name === "country") {
       next.country = value.toUpperCase();
     }
-    if (name === "range" && !TIME_RANGES.some((r) => r === value)) {
+    if (
+      name === "range" &&
+      !(TIME_RANGES as readonly string[]).includes(value)
+    ) {
       return;
     }
     this._filters = next;

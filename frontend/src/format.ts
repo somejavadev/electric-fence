@@ -58,7 +58,9 @@ export function countryFlag(code: string | null): string {
     return "";
   }
   return String.fromCodePoint(
-    ...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65),
+    ...[...code.toUpperCase()].map(
+      (c) => 0x1f1e6 + (c.codePointAt(0) ?? 65) - 65,
+    ),
   );
 }
 
@@ -74,7 +76,7 @@ export function truncate(
   return { short: `${chars.slice(0, max).join("")}…`, full: text };
 }
 
-export function reasonLabel(reason: LoginReason | string): string {
+export function reasonLabel(reason: string): string {
   return (REASON_LABELS as Record<string, string>)[reason] ?? reason;
 }
 
@@ -89,10 +91,10 @@ export const TIME_RANGES: readonly TimeRange[] = [
 ];
 
 const RANGE_MS: Record<Exclude<TimeRange, "all">, number> = {
-  "24h": 24 * 3600_000,
-  "7d": 7 * 24 * 3600_000,
-  "30d": 30 * 24 * 3600_000,
-  "90d": 90 * 24 * 3600_000,
+  "24h": 24 * 3_600_000,
+  "7d": 7 * 24 * 3_600_000,
+  "30d": 30 * 24 * 3_600_000,
+  "90d": 90 * 24 * 3_600_000,
 };
 
 /** ISO UTC start of a range; `undefined` for "all" (no lower bound). */

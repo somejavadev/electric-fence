@@ -171,12 +171,10 @@ export abstract class LiveView extends LitElement {
 
   /** Refetch after a push; a timer already running covers later pushes. */
   protected _scheduleRefresh(): void {
-    if (this._timer === undefined) {
-      this._timer = setTimeout(() => {
-        this._timer = undefined;
-        void this._refresh();
-      }, REFRESH_DELAY_MS);
-    }
+    this._timer ??= setTimeout(() => {
+      this._timer = undefined;
+      void this._refresh();
+    }, REFRESH_DELAY_MS);
   }
 
   private _markUnloaded(): void {

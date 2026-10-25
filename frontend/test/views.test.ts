@@ -151,7 +151,7 @@ describe("ef-activity", () => {
     chooseOption(bar(el), "range", "all");
     await settle(el);
     expect(new URLSearchParams(location.search).get("range")).toBe("all");
-    expect(history.length).toBe(before);
+    expect(history).toHaveLength(before);
     const last = fake.of("logins").at(-1);
     expect(last).toMatchObject({ result: "blocked" });
     expect(last).not.toHaveProperty("since");
@@ -197,7 +197,7 @@ describe("ef-activity", () => {
     });
     await settle(filtered);
     expect(rows()).toBe(2);
-    expect(el.shadowRoot?.querySelectorAll("ef-login-row").length).toBe(1);
+    expect(el.shadowRoot?.querySelectorAll("ef-login-row")).toHaveLength(1);
     [...(filtered.shadowRoot?.querySelectorAll("button") ?? [])]
       .find((b) => b.textContent.trim() === "Load more")
       ?.click();
@@ -215,7 +215,7 @@ describe("ef-activity", () => {
       });
     }
     await settle(el);
-    expect(el.shadowRoot?.querySelectorAll("ef-login-row").length).toBe(200);
+    expect(el.shadowRoot?.querySelectorAll("ef-login-row")).toHaveLength(200);
   });
 
   it("stays unloaded after an unloaded event", async () => {
@@ -226,7 +226,7 @@ describe("ef-activity", () => {
     await settle(el);
     el.hass = fake.hass;
     await settle(el);
-    expect(fake.sent.length).toBe(calls);
+    expect(fake.sent).toHaveLength(calls);
     expect(el.shadowRoot?.textContent).toContain("unloaded");
   });
 
@@ -298,7 +298,7 @@ describe("ef-audit", () => {
       item: change({ id: null, ts: new Date().toISOString() }),
     });
     await settle(el);
-    expect(el.shadowRoot?.querySelectorAll("ef-change-row").length).toBe(3);
+    expect(el.shadowRoot?.querySelectorAll("ef-change-row")).toHaveLength(3);
   });
 });
 
@@ -747,7 +747,7 @@ describe("paging and lifecycle", () => {
     const before = fake.of("logins").length;
     el.shadowRoot?.querySelector<HTMLButtonElement>(".notice button")?.click();
     await settle(el);
-    expect(fake.of("logins").length).toBe(before + 1);
+    expect(fake.of("logins")).toHaveLength(before + 1);
     expect(el.shadowRoot?.textContent).not.toContain("unloaded");
 
     fake.push({ type: "unloaded" });
@@ -755,7 +755,7 @@ describe("paging and lifecycle", () => {
     expect(el.shadowRoot?.textContent).toContain("unloaded");
     document.dispatchEvent(new Event("visibilitychange"));
     await settle(el);
-    expect(fake.of("logins").length).toBe(before + 2);
+    expect(fake.of("logins")).toHaveLength(before + 2);
   });
 
   it("prepends exactly the matching pushes, and caps at LIVE_CAP", async () => {
@@ -933,7 +933,7 @@ describe("ef-login-row", () => {
     });
     const shown = root.querySelector(".url");
     expect(shown?.getAttribute("title")).toBe(url);
-    expect(shown?.textContent.length).toBe(65);
+    expect(shown?.textContent).toHaveLength(65);
     expect((await row({ url })).querySelector(".url")).toBeNull();
   });
 

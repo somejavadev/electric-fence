@@ -26,7 +26,7 @@ const hass = {
 const HOSTILE = [
   "<img src=x onerror=alert(1)>",
   "javascript:alert(1)",
-  "‮evil",
+  "\u202eevil",
   "a".repeat(10_000),
 ];
 
@@ -296,7 +296,7 @@ describe("hostile values in the other tabs", () => {
     }
     const carriers = elements.filter((e) =>
       [...e.childNodes].some(
-        (n) => n.nodeType === 3 && (n.textContent ?? "").includes("‮"),
+        (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
       ),
     );
     expect(carriers.length).toBeGreaterThanOrEqual(labels.length);
@@ -392,7 +392,7 @@ describe("hostile values in the other tabs", () => {
     ].filter((b) => b.getAttribute("title") === long);
     expect(values).toHaveLength(3);
     for (const value of values) {
-      expect(value.textContent.length).toBe(65);
+      expect(value.textContent).toHaveLength(65);
     }
   });
 
