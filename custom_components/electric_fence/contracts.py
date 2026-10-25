@@ -494,3 +494,52 @@ register_contract(
         _check_system_settings_services,
     )
 )
+
+
+def _check_ban_manager(hass: HomeAssistant) -> str | None:
+    """Core's ban manager keeps the names and attributes the backend uses."""
+    from homeassistant.components.http import ban  # noqa: PLC0415
+
+    for name in ("KEY_BAN_MANAGER", "KEY_FAILED_LOGIN_ATTEMPTS"):
+        if not hasattr(ban, name):
+            return f"http.ban.{name} is missing"
+    manager = getattr(ban, "IpBanManager", None)
+    if manager is None or not callable(getattr(manager, "async_add_ban", None)):
+        return "IpBanManager.async_add_ban is missing"
+    if not inspect.iscoroutinefunction(manager.async_add_ban):
+        return "IpBanManager.async_add_ban is not a coroutine function"
+    ban_cls = getattr(ban, "IpBan", None)
+    if ban_cls is None:
+        return "IpBan is missing"
+    sample = ban_cls("203.0.113.1")
+    for attr in ("ip_address", "banned_at"):
+        if not hasattr(sample, attr):
+            return f"IpBan.{attr} is missing"
+    instance = manager(hass)
+    for attr in ("ip_bans_lookup", "path"):
+        if not hasattr(instance, attr):
+            return f"IpBanManager.{attr} is missing"
+    if not isinstance(instance.ip_bans_lookup, dict):
+        return "IpBanManager.ip_bans_lookup is not a dict"
+    return None
+
+
+def _check_ban_middleware_lookup(hass: HomeAssistant) -> str | None:
+    """Check the ban middleware still enforces bans through `ip_bans_lookup`."""
+    from homeassistant.components.http import ban  # noqa: PLC0415
+
+    if not callable(getattr(ban, "ban_middleware", None)):
+        return "http.ban.ban_middleware is missing"
+    try:
+        source = inspect.getsource(ban.ban_middleware)
+    except OSError, TypeError:
+        return "the ban_middleware source is unavailable"
+    if "ip_bans_lookup" not in source:
+        return "ban_middleware no longer reads ip_bans_lookup"
+    return None
+
+
+register_contract(Contract("ban_manager", "protection", _check_ban_manager))
+register_contract(
+    Contract("ban_middleware_lookup", "protection", _check_ban_middleware_lookup)
+)
