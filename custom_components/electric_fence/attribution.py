@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.auth.models import User
 from homeassistant.auth.providers.homeassistant import HassAuthProvider
 from homeassistant.components.http.const import KEY_HASS_USER
-from homeassistant.components.websocket_api import ActiveConnection
+from homeassistant.components.websocket_api import ActiveConnection, current_connection
 from homeassistant.components.websocket_api.const import (
     DOMAIN as WEBSOCKET_API_DOMAIN,
     WebSocketCommandHandler,
@@ -475,6 +475,30 @@ def ws_ip(connection: ActiveConnection) -> str | None:
         return remote
     request = current_request.get()
     return _str(request.remote) if request is not None else None
+
+
+def call_ip(user_id: str) -> str | None:
+    """Return the IP of the user's own action this service call runs in.
+
+    The action scope, then the WebSocket connection, then the HTTP request,
+    each only when it belongs to the same user; else None.
+    """
+    scope = current_actor()
+    if scope is not None and scope.user_id == user_id:
+        return scope.ip
+    connection = current_connection.get()
+    if (
+        connection is not None
+        and connection.user is not None
+        and connection.user.id == user_id
+    ):
+        return ws_ip(connection)
+    request = current_request.get()
+    if request is not None:
+        user = request.get(KEY_HASS_USER)
+        if user is not None and user.id == user_id:
+            return _str(request.remote)
+    return None
 
 
 def _ws_enter(

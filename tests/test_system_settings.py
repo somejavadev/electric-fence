@@ -272,6 +272,8 @@ def _mock_fake(hass: HomeAssistant) -> None:
 @pytest.fixture(autouse=True)
 def _test_specs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SystemSettingsCollector, "WS_SPECS", TEST_SPECS)
+    # The services are tested in their own module.
+    monkeypatch.setattr(SystemSettingsCollector, "SERVICE_SPECS", ())
 
 
 @pytest.fixture

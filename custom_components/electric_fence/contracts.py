@@ -423,3 +423,74 @@ _AREA_CHECKS: dict[str, Callable[[HomeAssistant], str | None]] = {
 register_contract(
     Contract("system_settings_ws", "system_settings", _check_system_settings_ws)
 )
+
+
+def _check_system_settings_services(hass: HomeAssistant) -> str | None:
+    """Every service the collector wraps is Core's `Service` with a `HassJob`.
+
+    The registry keeps them in its private `_services[domain][service]`, and
+    runs `Service.job` from `_execute_service`. Each service is checked once
+    its component is loaded, with the `call.data` fields its reader uses
+    and the component state the reader reads.
+    """
+    from homeassistant.core import HassJob, Service, ServiceRegistry  # noqa: PLC0415
+
+    from .collectors.system_settings import SystemSettingsCollector  # noqa: PLC0415
+
+    if not callable(getattr(ServiceRegistry, "_execute_service", None)):
+        return "ServiceRegistry._execute_service is missing"
+    services = getattr(hass.services, "_services", None)
+    if not isinstance(services, dict):
+        return "ServiceRegistry._services is not a mapping"
+    specs = [
+        spec
+        for spec in SystemSettingsCollector.SERVICE_SPECS
+        if spec.domain in hass.config.components
+    ]
+    missing = [
+        f"{spec.domain}.{spec.service}"
+        for spec in specs
+        if spec.service not in services.get(spec.domain, {})
+    ]
+    if missing:
+        return f"services not registered: {', '.join(missing)}"
+    for spec in specs:
+        name = f"{spec.domain}.{spec.service}"
+        service = services[spec.domain][spec.service]
+        if not isinstance(service, Service):
+            return f"{name} is not a Service"
+        if not isinstance(getattr(service, "job", None), HassJob):
+            return f"{name}: Service.job is not a HassJob"
+        if spec.service_keys:
+            if (keys := _schema_keys(service.schema)) is None:
+                return f"{name}: the service schema has no field names"
+            if absent := [key for key in spec.service_keys if key not in keys]:
+                return f"{name}: service fields missing: {', '.join(absent)}"
+    for component, check in _SERVICE_AREA_CHECKS.items():
+        if component in hass.config.components and (reason := check(hass)):
+            return f"{component}: {reason}"
+    return None
+
+
+def _check_recorder_area(hass: HomeAssistant) -> str | None:
+    from homeassistant.helpers.recorder import DATA_INSTANCE  # noqa: PLC0415
+
+    if (instance := hass.data.get(DATA_INSTANCE)) is None:
+        return "the recorder instance is missing"
+    if not hasattr(instance, "enabled"):
+        return "Recorder.enabled is missing"
+    return None
+
+
+_SERVICE_AREA_CHECKS: dict[str, Callable[[HomeAssistant], str | None]] = {
+    "recorder": _check_recorder_area,
+}
+
+
+register_contract(
+    Contract(
+        "system_settings_services",
+        "system_settings_services",
+        _check_system_settings_services,
+    )
+)

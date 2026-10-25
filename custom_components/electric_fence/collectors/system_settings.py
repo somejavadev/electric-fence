@@ -18,6 +18,16 @@ records the change itself. For each command in `WS_SPECS`:
 - The before snapshot is a deep copy, so a setting Core changes in place
   still shows its old value.
 
+For each service in `SERVICE_SPECS` (the logger and recorder services; not
+service calls in general), the registered `Service`'s job is replaced by a
+wrapper (`hooks.wrap_service`). It reads before, awaits Core's handler, and
+records only when the handler returned: the difference, or for `always_record`
+specs the parameters. The actor is the call context's user (System without
+one), the IP that of the same user's action scope, WebSocket connection or
+HTTP request (`attribution.call_ip`). The services have their own contract
+(`system_settings_services`): when it fails, only the service wrapping is
+disabled and the collector's repair issue is raised; the WebSocket part stays.
+
 Safety (spec §4): Core's handler is called exactly once and its return value
 or exception passes through unchanged. Reading, diffing and submitting run
 inside `self.guard`; when any of that fails, the call goes through untouched
@@ -37,15 +47,21 @@ from homeassistant.components.websocket_api.const import (
     WebSocketCommandHandler,
 )
 from homeassistant.const import EVENT_COMPONENT_LOADED
-from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    HomeAssistant,
+    ServiceCall,
+    callback,
+)
 from homeassistant.setup import ATTR_COMPONENT, EventComponentLoaded
 from homeassistant.util import dt as dt_util
 from homeassistant.util.json import json_loads
 
-from ..attribution import ws_ip
-from ..contracts import CONTRACTS
+from ..attribution import auth_users, call_ip, ws_ip
+from ..contracts import CONTRACTS, check_contracts
 from ..failopen import FailOpen
-from ..hooks import wrap_ws_command
+from ..hooks import HookHandle, ServiceHandler, wrap_service, wrap_ws_command
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..redact import diff_details
 from ..repairs import async_report_disabled_collector
@@ -58,6 +74,9 @@ type Reader = Callable[[HomeAssistant, dict[str, Any]], Mapping[str, Any] | None
 type ActionFor = Callable[[dict[str, Any]], ChangeAction]
 
 _CONTRACT = "system_settings_ws"
+# The services part has its own contract "collector", so a failure disables
+# the service wrapping only (see `SystemSettingsCollector.install`).
+SERVICES_CONTRACT_GROUP = "system_settings_services"
 # Message keys that are not command parameters.
 _ENVELOPE = frozenset({"id", "type"})
 
@@ -334,6 +353,130 @@ AREA_SPECS: tuple[WsSpec, ...] = (
 )
 
 
+type ServiceReader = Callable[[HomeAssistant, ServiceCall], Mapping[str, Any] | None]
+type ServiceActionFor = Callable[[Mapping[str, Any], Mapping[str, Any]], ChangeAction]
+
+
+@dataclass(frozen=True)
+class ServiceSpec:
+    """How to record one registered service.
+
+    `read(hass, call)` returns a fresh snapshot of the area's settings (or,
+    for `always_record` specs, the parameters to record), or None when the
+    area is not available. `action` is fixed, or chosen from the before and
+    after snapshots.
+    """
+
+    domain: str
+    service: str
+    kind: ChangeKind
+    action: ChangeAction | ServiceActionFor
+    target_name: str
+    read: ServiceReader
+    # Record the parameters on success, instead of a before/after difference.
+    always_record: bool = False
+    # `call.data` fields the reader uses; the contract checks Core's service
+    # schema still has them.
+    service_keys: tuple[str, ...] = ()
+
+    def action_for(
+        self, before: Mapping[str, Any], after: Mapping[str, Any]
+    ) -> ChangeAction:
+        """Return the action recorded for this change."""
+        if isinstance(self.action, ChangeAction):
+            return self.action
+        return self.action(before, after)
+
+
+def _logger_levels(hass: HomeAssistant, call: ServiceCall) -> Mapping[str, Any]:
+    """Return the level names of the loggers named in the call."""
+    return {str(name): _level(str(name)) for name in call.data}
+
+
+def _logger_default(hass: HomeAssistant, call: ServiceCall) -> Mapping[str, Any]:
+    """Return the root logger's level name."""
+    return {"default": logging.getLevelName(logging.getLogger().level)}
+
+
+def _recorder_enabled(
+    hass: HomeAssistant, call: ServiceCall
+) -> Mapping[str, Any] | None:
+    """Return whether the recorder records."""
+    from homeassistant.helpers.recorder import DATA_INSTANCE  # noqa: PLC0415
+
+    if (instance := hass.data.get(DATA_INSTANCE)) is None:
+        return None
+    return {"enabled": instance.enabled}
+
+
+PURGE_PARAMS = ("keep_days", "repack", "apply_filter")
+PURGE_ENTITIES_PARAMS = ("entity_id", "domains", "entity_globs", "keep_days")
+
+
+def _call_params(keys: tuple[str, ...]) -> ServiceReader:
+    def read(hass: HomeAssistant, call: ServiceCall) -> Mapping[str, Any]:
+        """Return the call's parameters the service uses."""
+        return {key: call.data.get(key) for key in keys}
+
+    return read
+
+
+SERVICE_AREA_SPECS: tuple[ServiceSpec, ...] = (
+    ServiceSpec(
+        "logger",
+        "set_level",
+        ChangeKind.LOGGER,
+        ChangeAction.UPDATED,
+        "Logging",
+        _logger_levels,
+    ),
+    ServiceSpec(
+        "logger",
+        "set_default_level",
+        ChangeKind.LOGGER,
+        ChangeAction.UPDATED,
+        "Logging",
+        _logger_default,
+    ),
+    ServiceSpec(
+        "recorder",
+        "disable",
+        ChangeKind.RECORDER,
+        ChangeAction.DISABLED,
+        "Recorder",
+        _recorder_enabled,
+    ),
+    ServiceSpec(
+        "recorder",
+        "enable",
+        ChangeKind.RECORDER,
+        ChangeAction.ENABLED,
+        "Recorder",
+        _recorder_enabled,
+    ),
+    ServiceSpec(
+        "recorder",
+        "purge",
+        ChangeKind.RECORDER,
+        ChangeAction.PURGED,
+        "Recorder",
+        _call_params(PURGE_PARAMS),
+        always_record=True,
+        service_keys=PURGE_PARAMS,
+    ),
+    ServiceSpec(
+        "recorder",
+        "purge_entities",
+        ChangeKind.RECORDER,
+        ChangeAction.PURGED,
+        "Recorder",
+        _call_params(PURGE_ENTITIES_PARAMS),
+        always_record=True,
+        service_keys=PURGE_ENTITIES_PARAMS,
+    ),
+)
+
+
 class _ResultWatch:
     """An `ActiveConnection` stand-in that watches one message's answer.
 
@@ -457,12 +600,26 @@ def _actor(connection: ActiveConnection) -> _Actor:
     )
 
 
+def _call_actor(hass: HomeAssistant, call: ServiceCall) -> _Actor:
+    """Return who called the service: its context's user, else System."""
+    if (user_id := call.context.user_id) is None:
+        return _Actor(user_id=None, user_name=None, ip=None)
+    users = auth_users(hass)
+    user = users.get(user_id) if users is not None else None
+    return _Actor(
+        user_id=user_id,
+        user_name=user.name if user is not None else None,
+        ip=call_ip(user_id),
+    )
+
+
 class SystemSettingsCollector(BaseCollector):
-    """Record admin WebSocket commands that change system settings."""
+    """Record admin WebSocket commands and services that change system settings."""
 
     name = "system_settings"
 
     WS_SPECS: ClassVar[tuple[WsSpec, ...]] = AREA_SPECS
+    SERVICE_SPECS: ClassVar[tuple[ServiceSpec, ...]] = SERVICE_AREA_SPECS
 
     def __init__(self, hass: HomeAssistant, runtime: Runtime) -> None:
         """Initialise the collector."""
@@ -471,15 +628,34 @@ class SystemSettingsCollector(BaseCollector):
         self._waiting: set[str] = set()
         self._loaded_unsub: CALLBACK_TYPE | None = None
         self._wrapped: set[str] = set()
+        # The service part: its own handles, and why it is disabled (if so).
+        self._service_handles: list[HookHandle] = []
+        self._wrapped_services: set[str] = set()
+        self._services_reasons: list[str] = []
+
+    def install(self) -> bool:
+        """Install; a failed services contract disables the services only.
+
+        The WebSocket part stays installed. The collector's repair issue is
+        raised with the services' reasons (prefixed "services: "), which are
+        also its `disabled_reason`.
+        """
+        if not super().install():
+            return False
+        if self._services_reasons:
+            self._report_services_disabled()
+        return True
 
     def _install(self) -> None:
-        # The contract already passed for the components that are loaded.
+        # The WebSocket contract already passed for the components loaded.
         self._wrap_ws_commands()
+        self._services_reasons = check_contracts(self.hass, SERVICES_CONTRACT_GROUP)
+        if not self._services_reasons:
+            self._wrap_services()
+        loaded = self.hass.config.components
         self._waiting = {
-            spec.component
-            for spec in self.WS_SPECS
-            if spec.component not in self.hass.config.components
-        }
+            spec.component for spec in self.WS_SPECS if spec.component not in loaded
+        } | {spec.domain for spec in self.SERVICE_SPECS if spec.domain not in loaded}
         if self._waiting:
             self._loaded_unsub = self.hass.bus.async_listen(
                 EVENT_COMPONENT_LOADED,
@@ -490,6 +666,7 @@ class SystemSettingsCollector(BaseCollector):
     def _uninstall(self) -> None:
         self._waiting.clear()
         self._wrapped.clear()
+        self._unwrap_services()
         if self._loaded_unsub is not None:
             unsub, self._loaded_unsub = self._loaded_unsub, None
             unsub()
@@ -510,13 +687,25 @@ class SystemSettingsCollector(BaseCollector):
 
     def _install_ws_late(self) -> None:
         reason = CONTRACTS[_CONTRACT].check(self.hass)
-        if reason is None:
-            self._wrap_ws_commands()
+        if reason is not None:
+            # Same outcome as a contract failing at install.
+            self.uninstall()
+            self.disabled_reason = [reason]
+            async_report_disabled_collector(self.hass, self.name, [reason])
             return
-        # Same outcome as a contract failing at install.
-        self.uninstall()
-        self.disabled_reason = [reason]
-        async_report_disabled_collector(self.hass, self.name, [reason])
+        self._wrap_ws_commands()
+        if self._services_reasons:
+            return
+        if reasons := check_contracts(self.hass, SERVICES_CONTRACT_GROUP):
+            self._unwrap_services()
+            self._services_reasons = reasons
+            self._report_services_disabled()
+            return
+        self._wrap_services()
+
+    def _report_services_disabled(self) -> None:
+        self.disabled_reason = [f"services: {r}" for r in self._services_reasons]
+        async_report_disabled_collector(self.hass, self.name, self.disabled_reason)
 
     def _wrap_ws_commands(self) -> None:
         """Wrap the registered commands of loaded components, each once."""
@@ -533,7 +722,87 @@ class SystemSettingsCollector(BaseCollector):
                 )
                 self._wrapped.add(spec.command)
 
-    # The wrapper. Core's call runs untouched; ours never raises.
+    def _wrap_services(self) -> None:
+        """Wrap the registered services of loaded components, each once."""
+        services = self.hass.services._services  # noqa: SLF001
+        loaded = self.hass.config.components
+        for spec in self.SERVICE_SPECS:
+            key = f"{spec.domain}.{spec.service}"
+            if (
+                key not in self._wrapped_services
+                and spec.domain in loaded
+                and spec.service in services.get(spec.domain, {})
+            ):
+                self._service_handles.append(
+                    wrap_service(
+                        self.hass, spec.domain, spec.service, self._wrap_service(spec)
+                    )
+                )
+                self._wrapped_services.add(key)
+
+    def _unwrap_services(self) -> None:
+        handles, self._service_handles = self._service_handles, []
+        self._wrapped_services.clear()
+        for handle in handles:
+            try:
+                handle.restore()
+            except Exception:  # noqa: BLE001
+                self.guard.errors += 1
+
+    # The wrappers. Core's call runs untouched; ours never raises.
+
+    def _wrap_service(
+        self, spec: ServiceSpec
+    ) -> Callable[[ServiceHandler], ServiceHandler]:
+        def make(original: ServiceHandler) -> ServiceHandler:
+            async def handler(call: ServiceCall) -> Any:
+                pending = self.guard.call(self._service_before, spec, call)
+                # Core's handler: its result or exception passes unchanged.
+                result = await original(call)
+                if pending is not None:
+                    self.guard.call(self._service_after, spec, call, *pending)
+                return result
+
+            return handler
+
+        return make
+
+    def _service_before(
+        self, spec: ServiceSpec, call: ServiceCall
+    ) -> tuple[_Actor, dict[str, Any]] | None:
+        """Read before Core's handler: who calls, and the snapshot."""
+        if (found := spec.read(self.hass, call)) is None:
+            return None
+        # Deep: Core may change nested settings in place.
+        return _call_actor(self.hass, call), copy.deepcopy(dict(found))
+
+    def _service_after(
+        self,
+        spec: ServiceSpec,
+        call: ServiceCall,
+        actor: _Actor,
+        before: dict[str, Any],
+    ) -> None:
+        """Record once Core's handler returned (inside the guard)."""
+        if spec.always_record:
+            after: Mapping[str, Any] = before
+            details = self._params_details(before)
+        else:
+            if (found := spec.read(self.hass, call)) is None:
+                return
+            after = found
+            details = diff_details(
+                before, after, include_values=self.runtime.settings.record_values
+            )
+            if not details["changed"]:
+                return
+        self._submit(
+            spec.kind,
+            spec.action_for(before, after),
+            spec.target_name,
+            actor,
+            details,
+        )
 
     def _wrap_ws(
         self, spec: WsSpec
@@ -564,7 +833,7 @@ class SystemSettingsCollector(BaseCollector):
         before = copy.deepcopy(dict(found))
         actor = _actor(connection)
         if spec.record_before:
-            self._submit(spec, actor, msg, self._params_details(before))
+            self._submit_ws(spec, actor, msg, self._params_details(before))
             return None
 
         def on_success() -> None:
@@ -591,7 +860,7 @@ class SystemSettingsCollector(BaseCollector):
             )
             if not details["changed"]:
                 return
-        self._submit(spec, actor, msg, details)
+        self._submit_ws(spec, actor, msg, details)
 
     def _params_details(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """Details of an action: the parameters given (not None), redacted."""
@@ -600,20 +869,30 @@ class SystemSettingsCollector(BaseCollector):
             {}, given, include_values=self.runtime.settings.record_values
         )
 
-    def _submit(
+    def _submit_ws(
         self,
         spec: WsSpec,
         actor: _Actor,
         msg: dict[str, Any],
         details: dict[str, Any],
     ) -> None:
+        self._submit(spec.kind, spec.action_for(msg), spec.target_name, actor, details)
+
+    def _submit(
+        self,
+        kind: ChangeKind,
+        action: ChangeAction,
+        target_name: str,
+        actor: _Actor,
+        details: dict[str, Any],
+    ) -> None:
         self.runtime.worker.submit(
             SettingsChange(
                 ts=dt_util.utcnow(),
-                kind=spec.kind,
-                action=spec.action_for(msg),
+                kind=kind,
+                action=action,
                 target_id=None,
-                target_name=spec.target_name,
+                target_name=target_name,
                 details=details,
                 actor_user_id=actor.user_id,
                 actor_name=actor.user_name,

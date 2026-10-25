@@ -8,7 +8,7 @@ from homeassistant.components.websocket_api.const import (
     DOMAIN as WEBSOCKET_API_DOMAIN,
     WebSocketCommandHandler,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HassJob, HassJobType, HomeAssistant, ServiceCall
 
 _MISSING: Any = object()
 
@@ -152,5 +152,61 @@ def wrap_ws_command(
 
     def put_back() -> None:
         handlers[command] = original
+
+    return HookHandle(state, is_current, put_back)
+
+
+type ServiceHandler = Callable[[ServiceCall], Awaitable[Any]]
+
+
+async def run_service_job(
+    hass: HomeAssistant, job: HassJob[..., Any], call: ServiceCall
+) -> Any:
+    """Run a service's job as Core's `ServiceRegistry._execute_service` does."""
+    target = job.target
+    if job.job_type is HassJobType.Coroutinefunction:
+        return await target(call)
+    if job.job_type is HassJobType.Callback:
+        return target(call)
+    return await hass.async_add_executor_job(target, call)
+
+
+def wrap_service(
+    hass: HomeAssistant,
+    domain: str,
+    service: str,
+    make_wrapper: Callable[[ServiceHandler], ServiceHandler],
+) -> HookHandle:
+    """Wrap a registered service's handler (the `Service` object's job).
+
+    The registry's private `_services[domain][service]` is Core's `Service`
+    (pinned by a contract). Its job is replaced by a coroutine job that runs
+    our wrapper, which gets a function running Core's original job exactly
+    as Core would (same thread, same result, same exception).
+    """
+    service_obj = hass.services._services[domain][service]  # noqa: SLF001
+    original: HassJob[..., Any] = service_obj.job
+    state = _State()
+
+    async def run_original(call: ServiceCall) -> Any:
+        return await run_service_job(hass, original, call)
+
+    inner = make_wrapper(run_original)
+
+    async def service_wrapper(call: ServiceCall) -> Any:
+        if state.passthrough:
+            return await run_original(call)
+        return await inner(call)
+
+    job = HassJob(
+        service_wrapper, original.name, job_type=HassJobType.Coroutinefunction
+    )
+    service_obj.job = job
+
+    def is_current() -> bool:
+        return service_obj.job is job
+
+    def put_back() -> None:
+        service_obj.job = original
 
     return HookHandle(state, is_current, put_back)
