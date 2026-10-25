@@ -441,6 +441,26 @@ def _time_clauses(
         params.append(_to_text(until))
 
 
+def read_active_ban_ips(path: Path) -> list[str]:
+    """Return the addresses of the active bans in a closed database.
+
+    Opened read-only, so nothing is created or migrated; [] without a
+    database or a bans table.
+    """
+    if not path.is_file():
+        return []
+    db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        if not db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bans'"
+        ).fetchone():
+            return []
+        rows = db.execute("SELECT ip FROM bans WHERE ended_at IS NULL").fetchall()
+    finally:
+        db.close()
+    return [str(r[0]) for r in rows]
+
+
 class FenceStore:
     """SQLite repository. Synchronous and thread-safe via one lock."""
 

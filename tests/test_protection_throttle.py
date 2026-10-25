@@ -87,9 +87,14 @@ async def guard(hass: HomeAssistant, runtime: Runtime) -> AsyncIterator[Username
     await hass.async_block_till_done()
 
 
-def _fail(guard: UsernameGuard, times: int, user: str = "admin") -> None:
+def _fail(
+    guard: UsernameGuard,
+    times: int,
+    user: str = "admin",
+    exists: UserExists = UserExists.YES,
+) -> None:
     for i in range(times):
-        guard.on_attempt(user, IPS[i % len(IPS)], *FAIL)
+        guard.on_attempt(user, IPS[i % len(IPS)], *FAIL, exists)
 
 
 def _changes(runtime: Runtime, action: ChangeAction) -> list[SettingsChange]:
@@ -161,6 +166,7 @@ async def test_attack_starts(
     [event] = events
     assert event.data == {
         "username": "admin",
+        "username_masked": False,
         "ips": sorted(IPS),
         "ip_count": 3,
         "countries": [],
@@ -169,6 +175,56 @@ async def test_attack_starts(
     }
     runtime.alerts.username_attack.assert_called_once()  # type: ignore[union-attr]
     assert runtime.alerts.username_attack.call_args.args[0].username == "admin"  # type: ignore[union-attr]
+
+
+async def test_unknown_username_masked_outside_panel(
+    hass: HomeAssistant, runtime: Runtime, guard: UsernameGuard, store: FenceStore
+) -> None:
+    """A name no user has is masked in the event and alert; the store keeps it."""
+    events: list[Event] = async_capture_events(hass, EVENT_USERNAME_ATTACK)
+    _fail(guard, 10, "hostile-secret", UserExists.NO)
+    await hass.async_block_till_done()
+    [view] = guard.active_attacks()
+    assert view.username == "hostile-secret"
+    assert not view.user_exists
+    [row] = store.query_attacks(active=True)
+    assert row.username == "hostile-secret"
+    [change] = _changes(runtime, ChangeAction.ATTACK_STARTED)
+    assert change.target_name == "hostile-secret"
+    assert change.details["user_exists"] is False
+    [event] = events
+    assert event.data["username"] == "ho•••"
+    assert event.data["username_masked"] is True
+    alert_view = runtime.alerts.username_attack.call_args.args[0]  # type: ignore[union-attr]
+    assert alert_view.display() == ("ho•••", True)
+
+    assert await guard.async_end("hostile-secret", "u1", "Ann")
+    await hass.async_block_till_done()
+    assert events[-1].data["username"] == "ho•••"
+    [ended] = _changes(runtime, ChangeAction.SLOWDOWN_ENDED)
+    assert ended.details["user_exists"] is False
+
+
+async def test_existing_user_learned_later(
+    hass: HomeAssistant, runtime: Runtime, guard: UsernameGuard
+) -> None:
+    """A later attempt or record that finds the user shows the name in full."""
+    events: list[Event] = async_capture_events(hass, EVENT_USERNAME_ATTACK)
+    _fail(guard, 10, "admin", UserExists.UNKNOWN)
+    await hass.async_block_till_done()
+    assert events[0].data["username"] == "ad•••"
+    guard.on_record(_record())
+    [view] = guard.active_attacks()
+    assert view.user_exists
+    assert await guard.async_end("admin", None, None)
+    await hass.async_block_till_done()
+    assert events[-1].data["username"] == "admin"
+    assert events[-1].data["username_masked"] is False
+
+    _fail(guard, 10, "bob", UserExists.UNKNOWN)
+    _fail(guard, 1, "bob", UserExists.YES)
+    [view] = guard.active_attacks()
+    assert view.user_exists
 
 
 async def test_needs_min_ips(hass: HomeAssistant, guard: UsernameGuard) -> None:

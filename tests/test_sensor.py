@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import date, timedelta
+from ipaddress import ip_address
 from pathlib import Path
 import sqlite3
 
@@ -380,7 +381,8 @@ async def test_sensor_hides_identifying_attributes_from_recorder(
 ) -> None:
     """The username and IP are not written to the recorder history."""
     entity = hass.data["entity_components"]["sensor"].get_entity(ENTITY_ID)
-    assert entity._unrecorded_attributes >= {"last_username", "last_ip"}  # noqa: SLF001
+    unrecorded = entity._unrecorded_attributes  # noqa: SLF001
+    assert unrecorded >= {"last_username", "last_ip", "last_country"}
     assert "last_reason" not in entity._unrecorded_attributes  # noqa: SLF001
 
 
@@ -451,6 +453,22 @@ async def test_active_bans_updates_on_ban(
     await settle(hass)
     assert hass.states.get(f"{SENSOR}active_bans").state == "0"
     assert hass.states.get(f"{SENSOR}bans_in_the_last_24_hours").state == "1"
+
+
+async def test_active_bans_follow_core_bans(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """A ban Core makes itself shows within a minute, without a ban event."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert hass.states.get(f"{SENSOR}active_bans").state == "0"
+    await bans.backend.async_add(ip_address("198.51.100.20"))
+    freezer.tick(timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    state = hass.states.get(f"{SENSOR}active_bans")
+    assert state.state == "1"
+    assert state.attributes["last_ip"] == "198.51.100.20"
 
 
 async def test_bans_24h_reevaluated_each_minute(

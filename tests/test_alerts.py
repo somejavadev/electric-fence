@@ -1,6 +1,7 @@
 """Tests for the alerter."""
 
-from collections.abc import Iterator
+import asyncio
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -9,11 +10,14 @@ from typing import Any
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
     async_capture_events,
+    async_fire_time_changed,
     async_mock_service,
 )
 
 from custom_components.electric_fence.alerts import Alerter
+from custom_components.electric_fence.logbook import async_describe_events
 from custom_components.electric_fence.models import (
     LoginAttempt,
     LoginReason,
@@ -23,6 +27,8 @@ from custom_components.electric_fence.models import (
 )
 from custom_components.electric_fence.notifier import (
     EVENT_IP_BANNED,
+    EVENT_SETTINGS_CHANGED,
+    EVENT_USERNAME_ATTACK,
     NOTIFICATION_ID,
     Notifier,
 )
@@ -33,13 +39,14 @@ from custom_components.electric_fence.protection.throttle import AttackView
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import FenceStore
+from homeassistant.components.logbook import LOGBOOK_ENTRY_MESSAGE
 from homeassistant.components.persistent_notification import (
     _async_get_or_create_notifications,
 )
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-from tests.helpers import make_runtime
+from tests.helpers import flush_worker, make_runtime
 
 IP = "203.0.113.9"
 
@@ -54,14 +61,16 @@ def store(tmp_path: Path) -> Iterator[FenceStore]:
 
 
 @pytest.fixture
-async def runtime(hass: HomeAssistant, store: FenceStore) -> Runtime:
+async def runtime(hass: HomeAssistant, store: FenceStore) -> AsyncIterator[Runtime]:
     """Return a runtime with an alerter and a phone target."""
     assert await async_setup_component(hass, "persistent_notification", {})
     rt = make_runtime(hass, store)
     rt.settings = Settings(notify_targets=("notify.phone",))
-    rt.alerts = Alerter(hass, rt)
+    alerter = Alerter(hass, rt)
+    rt.alerts = alerter
     hass.states.async_set("notify.phone", "unknown")
-    return rt
+    yield rt
+    alerter.async_stop()
 
 
 @pytest.fixture
@@ -94,6 +103,17 @@ def bell(hass: HomeAssistant, notification_id: str) -> dict[str, str] | None:
 async def settle(hass: HomeAssistant) -> None:
     """Let the push background tasks finish."""
     await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def settle_loaded(hass: HomeAssistant) -> None:
+    """Let a loaded entry's work and the pushes finish.
+
+    The worker runs as a background task for as long as the entry is loaded,
+    so this can't wait for every background task.
+    """
+    for _ in range(3):
+        await hass.async_block_till_done()
+        await asyncio.sleep(0)
 
 
 async def test_switch_off_stops_message_not_event(
@@ -200,7 +220,7 @@ async def test_username_attack(
     """The attack message names the count, addresses and countries."""
     assert runtime.alerts is not None
     runtime.alerts.username_attack(
-        AttackView("admin", dt_util.utcnow(), 12, 4, ["NL", "DE"], 1)
+        AttackView("admin", dt_util.utcnow(), 12, 4, ["NL", "DE"], 1, user_exists=True)
     )
     await settle(hass)
     note = bell(hass, "electric_fence_username_attack")
@@ -211,6 +231,23 @@ async def test_username_attack(
     )
     assert note["title"] == "Electric Fence: username under attack"
     assert sends[0].data["message"].startswith("Username admin is under attack")
+
+
+async def test_username_attack_masks_unknown_name(
+    hass: HomeAssistant, runtime: Runtime, sends: list[ServiceCall]
+) -> None:
+    """A username that belongs to no user is masked on the bell and the phone."""
+    assert runtime.alerts is not None
+    runtime.alerts.username_attack(
+        AttackView("hostile-secret", dt_util.utcnow(), 12, 4, [], 1)
+    )
+    await settle(hass)
+    note = bell(hass, "electric_fence_username_attack")
+    assert note is not None
+    assert "hostile-secret" not in note["message"]
+    assert note["message"].startswith("Username `ho•••` is under attack")
+    assert "hostile-secret" not in sends[0].data["message"]
+    assert sends[0].data["message"].startswith("Username ho••• is under attack")
 
 
 def success(**kw: Any) -> LoginAttempt:
@@ -292,6 +329,90 @@ async def test_failed_login_push_rate_limited(
     assert len(sends) == 2
 
 
+async def test_ban_push_rate_limited(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A flood of bans: every ban on the bell, one push, then one summary."""
+    assert runtime.alerts is not None
+    runtime.alerts.ip_banned(ban_view())
+    await settle(hass)
+    assert len(sends) == 1
+    assert sends[0].data["message"].startswith(f"Banned {IP}")
+    for i in range(20):
+        freezer.tick(timedelta(seconds=10))
+        runtime.alerts.ip_banned(ban_view(ip=normalise_ip(f"198.51.100.{i}")))
+    await settle(hass)
+    note = bell(hass, "electric_fence_ip_banned")
+    assert note is not None
+    assert note["message"].startswith("Banned `198.51.100.19`")
+    assert len(sends) == 1
+
+    freezer.tick(timedelta(minutes=10))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 2
+    assert sends[1].data["title"] == "Electric Fence: IP banned"
+    assert sends[1].data["message"] == "20 addresses banned since the last message."
+
+    # The summary counts as a push: the next ban waits for the interval.
+    freezer.tick(timedelta(minutes=1))
+    runtime.alerts.ip_banned(ban_view())
+    await settle(hass)
+    assert len(sends) == 2
+    freezer.tick(timedelta(minutes=10))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert sends[2].data["message"] == "1 address banned since the last message."
+
+
+async def test_ban_push_folds_waiting_bans(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A ban pushed while a summary still waits carries the waiting count."""
+    assert runtime.alerts is not None
+    runtime.alerts.ip_banned(ban_view())
+    freezer.tick(timedelta(minutes=1))
+    runtime.alerts.ip_banned(ban_view())
+    freezer.tick(timedelta(minutes=10))
+    # Before the summary timer runs.
+    runtime.alerts.ip_banned(ban_view())
+    await settle(hass)
+    assert len(sends) == 2
+    assert (
+        sends[1]
+        .data["message"]
+        .startswith(f"2 addresses banned since the last message. Latest: Banned {IP}")
+    )
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 2
+
+
+async def test_ban_summary_skipped_when_switched_off(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Turning the kind off before the summary is due sends nothing."""
+    assert runtime.alerts is not None
+    runtime.alerts.ip_banned(ban_view())
+    runtime.alerts.ip_banned(ban_view())
+    runtime.settings = Settings(
+        notify_ip_banned=False, notify_targets=("notify.phone",)
+    )
+    freezer.tick(timedelta(minutes=10))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 1
+
+
 async def test_failed_login_off(
     hass: HomeAssistant, runtime: Runtime, sends: list[ServiceCall]
 ) -> None:
@@ -345,3 +466,74 @@ async def test_never_raises(hass: HomeAssistant, runtime: Runtime) -> None:
     runtime.settings = None  # type: ignore[assignment]
     runtime.alerts.ip_banned(ban_view())
     runtime.alerts.failed_login("x")
+
+
+async def test_ban_end_to_end_notifies(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, sends: list[ServiceCall]
+) -> None:
+    """Failures from one address ban it, ring the bell and push to the phone."""
+    runtime = setup_entry.runtime_data
+    runtime.settings = replace(
+        runtime.settings, notify_ip_banned=True, notify_targets=("notify.phone",)
+    )
+    hass.states.async_set("notify.phone", "unknown")
+    policy = runtime.ip_policy
+    assert policy is not None
+    for _ in range(runtime.settings.ban_threshold):
+        policy.on_attempt(IP, LoginResult.FAILED, LoginReason.WRONG_PASSWORD)
+    await settle_loaded(hass)
+    assert runtime.bans is not None
+    assert [str(v.ip) for v in runtime.bans.active()] == [IP]
+    note = bell(hass, "electric_fence_ip_banned")
+    assert note is not None
+    assert note["message"].startswith(f"Banned `{IP}`")
+    [call] = sends
+    assert call.data["entity_id"] == "notify.phone"
+    assert call.data["message"].startswith(f"Banned {IP}")
+
+
+async def test_attack_end_to_end_masks_unknown_username(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, sends: list[ServiceCall]
+) -> None:
+    """A hostile username stays masked in every sink outside the panel."""
+    runtime = setup_entry.runtime_data
+    runtime.settings = replace(runtime.settings, notify_targets=("notify.phone",))
+    hass.states.async_set("notify.phone", "unknown")
+    attack_events = async_capture_events(hass, EVENT_USERNAME_ATTACK)
+    change_events = async_capture_events(hass, EVENT_SETTINGS_CHANGED)
+    guard = runtime.username_guard
+    assert guard is not None
+    hostile = "hostile-secret"
+    for i in range(10):
+        guard.on_attempt(
+            hostile,
+            f"198.51.100.{i % 3 + 1}",
+            LoginResult.FAILED,
+            LoginReason.NO_SUCH_USER,
+            UserExists.NO,
+        )
+    assert await guard.async_end(hostile, None, "Ann")
+    await settle_loaded(hass)
+    await flush_worker(hass)
+    await settle_loaded(hass)
+
+    describe = {}
+
+    def register(domain: str, event_type: str, fn: Any) -> None:
+        describe[event_type] = fn
+
+    async_describe_events(hass, register)
+    texts = [str(e.data) for e in attack_events + change_events]
+    texts += [
+        describe[EVENT_SETTINGS_CHANGED](e)[LOGBOOK_ENTRY_MESSAGE]
+        for e in change_events
+    ]
+    note = bell(hass, "electric_fence_username_attack")
+    assert note is not None
+    texts += [note["message"], *(c.data["message"] for c in sends)]
+    assert len(change_events) == 2
+    assert all(hostile not in t for t in texts)
+    assert any("ho•••" in t for t in texts)
+    assert attack_events[0].data["username_masked"] is True
+    # The panel (and the store behind it) keeps the full name.
+    assert [a.username for a in runtime.store.query_attacks(active=False)] == [hostile]

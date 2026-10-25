@@ -25,6 +25,7 @@ from ..models import (
 )
 from ..notifier import EVENT_IP_BANNED
 from ..repairs import (
+    async_clear_disabled_collector,
     async_clear_ip_ban_disabled,
     async_report_disabled_collector,
     async_report_ip_ban_disabled,
@@ -201,6 +202,8 @@ class BanManager:
             async_report_disabled_collector(
                 self._hass, "protection", self._contract_reasons
             )
+        else:
+            async_clear_disabled_collector(self._hass, "protection")
         self._sync_ip_ban_issue()
         try:
             loaded = await self._hass.async_add_executor_job(

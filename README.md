@@ -140,9 +140,10 @@ An IP ban event has these fields: `ip`, `country`, `hostname`, `failures`,
 `expires_at` (`null` for a permanent ban), and `ban_number` (how many times
 Electric Fence has banned this address within 30 days).
 
-A username attack event has these fields: `username`, `ips` (up to 20),
-`ip_count`, `countries`, `started_at`, and `state`, which is `started` or
-`ended`.
+A username attack event has these fields: `username`, `username_masked`,
+`ips` (up to 20), `ip_count`, `countries`, `started_at`, and `state`, which is
+`started` or `ended`. As in a failed login event, `username` is shown in full
+only when it belongs to an existing user, and masked otherwise.
 
 A new country login event has these fields: `user_id`, `username` (the user's
 name), `ip`, `country`, `hostname`, and `previous_countries_count`.
@@ -153,10 +154,15 @@ change without a person behind it has no user and shows as **System** in the
 panel.
 
 - `kind` is one of `config_entry`, `user`, `core_config`, `backup`, `http`,
-  `network`, `analytics`, `logger`, or `recorder`.
+  `network`, `analytics`, `logger`, `recorder`, `ip_ban`, or
+  `login_protection`.
 - `action` is one of `added`, `removed`, `updated`, `reconfigured`,
   `options_changed`, `enabled`, `disabled`, `password_changed`,
-  `restore_requested`, `confirmed`, `purged`, or `withdrawn`.
+  `restore_requested`, `confirmed`, `purged`, `withdrawn`, `banned`,
+  `unbanned`, `expired`, `attack_started`, `attack_ended`, `slowdown_ended`, or
+  `countries_cleared`.
+- For `login_protection`, `target_name` is the attacked username, masked
+  unless it belongs to an existing user.
 - `changed` lists the names of the settings that changed, never their values.
   Integration options are namespaced as `options.<key>`, and the panel shows
   them as "Option: ...".
@@ -263,6 +269,11 @@ settings. Messages appear as persistent notifications. Add notify entities
 (such as the Home Assistant companion app on your phone) to **Phone
 notifications** to get them there too.
 
+Failed logins and bans reach your phone at most once every 10 minutes each.
+The persistent notification always shows the latest. Bans made in between are
+summed up in one message, for example "3 addresses banned since the last
+message".
+
 > [!WARNING]
 > Sensor attributes and event fields contain text typed by whoever tried to
 > log in, which means an attacker controls it. Never render it as HTML in a
@@ -278,8 +289,8 @@ resolver your system is configured to use. You can turn it off in the settings.
 
 - **Usernames.** The username someone typed is stored, and shown in full only
   in the admin panel. Everywhere else (the notification, the events, the
-  sensor, and the logbook) a username that doesn't belong to a known user is
-  masked, for example `ad•••`.
+  sensor, the logbook, and username attack messages) a username that doesn't
+  belong to a known user is masked, for example `ad•••`.
 - **Network details.** IP addresses, host names (from reverse DNS), URLs, and
   user agents are stored.
 - **Setting values.** With **Record before and after values** on, values are
@@ -304,12 +315,14 @@ resolver your system is configured to use. You can turn it off in the settings.
   out of the recorder.
 - **Retention.** Records older than the retention period are deleted. The
   default is 90 days.
-- **Removal.** Removing the integration deletes `.storage/electric_fence.db`
-  and the `.storage/electric_fence/` folder, which holds the GeoIP database.
-- **Recorder.** The sensor's `last_username` and `last_ip` attributes are
-  excluded from the recorder, so they don't end up in your long-term history.
-  To keep the events out of the recorder too, add this to your
-  `configuration.yaml`:
+- **Removal.** Removing the integration lifts Electric Fence's active bans
+  (other bans in `ip_bans.yaml` stay), then deletes
+  `.storage/electric_fence.db` and the `.storage/electric_fence/` folder, which
+  holds the GeoIP database.
+- **Recorder.** The sensor's `last_username`, `last_ip`, and `last_country`
+  attributes are excluded from the recorder, so they don't end up in your
+  long-term history. To keep the events out of the recorder too, add this to
+  your `configuration.yaml`:
 
   ```yaml
   recorder:
@@ -332,8 +345,10 @@ is licensed under
 ## Known limits
 
 - Bans are per IP address only. There are no ranges or countries in v0.2.
-- A ban that Electric Fence couldn't write to `ip_bans.yaml` lasts until Home
-  Assistant restarts. It then shows as **Other** in the Bans tab.
+- A ban whose record Electric Fence couldn't store in its database still
+  works, but after a restart it shows as **Other** in the Bans tab and never
+  expires. A ban that couldn't be written to `ip_bans.yaml` disappears when
+  Home Assistant restarts.
 - Electric Fence can't ban or slow down an address that Home Assistant sees as
   a local or proxy address (see [Protection](#protection)).
 - Admin actions that Electric Fence can't tie to a person, and changes an

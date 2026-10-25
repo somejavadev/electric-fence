@@ -4,12 +4,17 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 
-from custom_components.electric_fence.models import LoginReason, LoginResult
+from custom_components.electric_fence.models import (
+    LoginAttempt,
+    LoginReason,
+    LoginResult,
+    UserExists,
+)
 from custom_components.electric_fence.protection import policy as policy_module
 from custom_components.electric_fence.protection.policy import IpPolicy
 from custom_components.electric_fence.runtime import Runtime
@@ -47,6 +52,29 @@ def runtime(hass: HomeAssistant, store: FenceStore) -> Runtime:
 def policy(hass: HomeAssistant, runtime: Runtime) -> IpPolicy:
     """Return the policy under test."""
     return IpPolicy(hass, runtime)
+
+
+def _success(
+    ip: str | None = IP,
+    *,
+    confirmed: bool = True,
+    result: LoginResult = LoginResult.SUCCESS,
+) -> LoginAttempt:
+    return LoginAttempt(
+        ts=dt_util.utcnow(),
+        result=result,
+        reason=LoginReason.OK,
+        username_typed="alice",
+        user_exists=UserExists.YES,
+        user_id="u1",
+        provider=None,
+        ip=ip,
+        source=None,
+        url=None,
+        user_agent=None,
+        client_id=None,
+        confirmed=confirmed,
+    )
 
 
 def _fail(policy: IpPolicy, times: int, ip: str = IP) -> None:
@@ -123,8 +151,9 @@ async def test_trusted_after_success(
     policy: IpPolicy,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """A recent success protects the address until the trusted window ends."""
+    """A recent confirmed success protects the address until the window ends."""
     policy.on_attempt(IP, *OK)
+    policy.on_record(_success())
     _fail(policy, 5)
     await hass.async_block_till_done()
     runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
@@ -147,6 +176,26 @@ async def test_success_resets_count(
     _fail(policy, 4)
     await hass.async_block_till_done()
     runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
+
+
+async def test_unconfirmed_success_does_not_trust(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """Like the startup seed, only a confirmed success trusts an address."""
+    policy.on_attempt(IP, *OK)
+    policy.on_record(_success(confirmed=False))
+    policy.on_record(_success(result=LoginResult.BLOCKED))
+    policy.on_record(_success(ip=None))
+    policy.on_record(_success(ip="not an ip"))
+    _fail(policy, 5)
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once()  # type: ignore[union-attr]
+
+
+async def test_record_hook_fails_open(hass: HomeAssistant, policy: IpPolicy) -> None:
+    """An error while trusting never raises out of the listener."""
+    with patch.object(policy, "_trust", side_effect=RuntimeError):
+        policy.on_record(_success())
 
 
 async def test_blocked_does_not_trust(
@@ -200,7 +249,7 @@ async def test_exempt_never_trusted(
 ) -> None:
     """Exempt addresses take no space in the trusted map."""
     policy.seed_trusted({"10.0.0.5": dt_util.utcnow()})
-    policy.on_attempt("10.0.0.6", *OK)
+    policy.on_record(_success("10.0.0.6"))
     assert not policy._trusted  # noqa: SLF001
 
 

@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from ..failopen import FailOpen
-from ..models import COUNTED_FAILURES, LoginReason, LoginResult
+from ..models import COUNTED_FAILURES, LoginAttempt, LoginReason, LoginResult, Record
 from .network import is_exempt, normalise_ip
 
 if TYPE_CHECKING:
@@ -31,6 +31,7 @@ class IpPolicy:
         self._failures: OrderedDict[str, deque[datetime]] = OrderedDict()
         self._trusted: OrderedDict[str, datetime] = OrderedDict()
         self._guard = FailOpen("ip policy")
+        self._record_guard = FailOpen("ip policy record")
 
     def seed_trusted(self, ips: dict[str, datetime]) -> None:
         """Trust addresses that logged in successfully before this run."""
@@ -45,10 +46,27 @@ class IpPolicy:
         """Count a login attempt; memory only, never raises."""
         self._guard.call(self._on_attempt, ip, result, reason)
 
+    @callback
+    def on_record(self, record: Record) -> None:
+        """Trust the address of a confirmed success (worker listener)."""
+        self._record_guard.call(self._on_record, record)
+
+    def _on_record(self, record: Record) -> None:
+        # The same rule as the startup seed: a success counts once its token
+        # was issued, so an unconfirmed (or blocked) one never trusts.
+        if (
+            not isinstance(record, LoginAttempt)
+            or record.result is not LoginResult.SUCCESS
+            or not record.confirmed
+            or (addr := normalise_ip(record.ip)) is None
+        ):
+            return
+        self._trust(str(addr), record.ts)
+
     def _trust(self, key: str, when: datetime) -> None:
         if is_exempt(self._hass, key):
             return
-        self._trusted[key] = when
+        self._trusted[key] = max(when, self._trusted.get(key, when))
         self._trusted.move_to_end(key)
         while len(self._trusted) > MAX_TRACKED:
             self._trusted.popitem(last=False)
@@ -68,7 +86,6 @@ class IpPolicy:
         key = str(addr)
         now = dt_util.utcnow()
         if result is LoginResult.SUCCESS:
-            self._trust(key, now)
             self._failures.pop(key, None)
             return
         if reason not in COUNTED_FAILURES or is_exempt(self._hass, addr):

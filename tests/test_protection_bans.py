@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
+from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.models import (
     ChangeAction,
     ChangeKind,
@@ -31,6 +32,7 @@ from custom_components.electric_fence.storage import FenceStore
 from homeassistant.components.http.ban import KEY_BAN_MANAGER, IpBanManager
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from tests.helpers import make_runtime
@@ -392,6 +394,28 @@ async def test_unavailable_when_contracts_fail(
     assert manager.available is False
     assert manager.unavailable_reason == "contracts"
     assert await manager.async_ban(IP, 5, None, None) is False
+    manager.async_stop()
+
+
+async def test_contract_issue_cleared_when_contracts_pass(
+    hass: HomeAssistant, runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repair issue from a broken contract goes once the contracts pass."""
+    reasons = ["IpBan is missing"]
+    monkeypatch.setattr(
+        "custom_components.electric_fence.protection.bans.check_contracts",
+        lambda hass, collector: list(reasons),
+    )
+    manager = await _manager(hass, runtime)
+    manager.async_stop()
+    registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, "collector_disabled_protection")
+
+    reasons.clear()
+    manager = BanManager(hass, runtime, CoreBanBackend(hass))
+    await manager.async_start()
+    assert manager.available
+    assert registry.async_get_issue(DOMAIN, "collector_disabled_protection") is None
     manager.async_stop()
 
 

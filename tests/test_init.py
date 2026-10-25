@@ -1,6 +1,7 @@
 """Tests for Electric Fence setup and unload."""
 
 import asyncio
+from ipaddress import ip_address
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -12,14 +13,17 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.electric_fence.collectors.base import BaseCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.geo.enrich import GeoEnricher
+from custom_components.electric_fence.protection.network import normalise_ip
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import SCHEMA_VERSION
 from homeassistant import config_entries
+from homeassistant.components.http.ban import KEY_BAN_MANAGER
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import yaml as yaml_util
 
 
 async def test_setup_and_unload(
@@ -187,3 +191,100 @@ async def test_newer_database_refused_with_repair_issue(
     assert await hass.config_entries.async_reload(entry.entry_id)
     assert entry.state is ConfigEntryState.LOADED
     assert ir.async_get(hass).async_get_issue(DOMAIN, "schema_too_new") is None
+
+
+async def test_remove_lifts_own_bans_and_clears_issues(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removal lifts Electric Fence's active bans only, then deletes the data."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert await bans.async_ban("203.0.113.9", 5, None, None)
+    assert await bans.async_ban("203.0.113.10", 5, None, None)
+    assert await bans.async_unban("203.0.113.10", None, None)
+    other = ip_address("198.51.100.1")
+    await bans.backend.async_add(other)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "collector_disabled_protection",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="collector_disabled",
+    )
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "ip_ban_disabled",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="ip_ban_disabled",
+    )
+    db = Path(hass.config.path(".storage", "electric_fence.db"))
+
+    await hass.config_entries.async_remove(setup_entry.entry_id)
+    await hass.async_block_till_done()
+
+    lookup = hass.http.app[KEY_BAN_MANAGER].ip_bans_lookup
+    # The other ban stays, with its mapped form.
+    assert {normalise_ip(k) for k in lookup} == {other}
+    bans_file = yaml_util.load_yaml_dict(hass.config.path("ip_bans.yaml"))
+    assert {normalise_ip(k) for k in bans_file} == {other}
+    registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, "collector_disabled_protection") is None
+    assert registry.async_get_issue(DOMAIN, "ip_ban_disabled") is None
+    assert not db.exists()
+
+
+async def test_remove_fails_open_on_ban_errors(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A database or ban that can't be handled never stops the removal."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert await bans.async_ban("203.0.113.9", 5, None, None)
+    assert await bans.async_ban("203.0.113.10", 5, None, None)
+    db = Path(hass.config.path(".storage", "electric_fence.db"))
+    monkeypatch.setattr(
+        "custom_components.electric_fence.read_active_ban_ips",
+        lambda path: ["bad", "203.0.113.9", "203.0.113.10"],
+    )
+    calls: list[object] = []
+
+    async def remove(self: object, ip: object) -> bool:
+        calls.append(ip)
+        if len(calls) == 1:
+            raise RuntimeError("203.0.113.9")
+        return True
+
+    monkeypatch.setattr(
+        "custom_components.electric_fence.CoreBanBackend.async_remove", remove
+    )
+    await hass.config_entries.async_remove(setup_entry.entry_id)
+    await hass.async_block_till_done()
+    assert calls == [ip_address("203.0.113.9"), ip_address("203.0.113.10")]
+    assert "could not lift a ban on removal: RuntimeError" in caplog.text
+    assert "203.0.113" not in caplog.text
+    assert not db.exists()
+
+
+async def test_remove_fails_open_on_unreadable_database(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unreadable database is logged by type and the files still go."""
+
+    def boom(path: Path) -> list[str]:
+        raise sqlite3.DatabaseError(str(path))
+
+    monkeypatch.setattr("custom_components.electric_fence.read_active_ban_ips", boom)
+    db = Path(hass.config.path(".storage", "electric_fence.db"))
+    await hass.config_entries.async_remove(setup_entry.entry_id)
+    await hass.async_block_till_done()
+    assert "could not read its bans on removal: DatabaseError" in caplog.text
+    assert not db.exists()

@@ -23,8 +23,9 @@ from ..models import (
     LoginResult,
     Record,
     SettingsChange,
+    UserExists,
 )
-from ..notifier import EVENT_USERNAME_ATTACK
+from ..notifier import EVENT_USERNAME_ATTACK, display_name, exists_of
 from ..privacy import sanitise_text
 from .network import is_exempt, normalise_ip
 
@@ -77,6 +78,14 @@ class AttackView:
     ip_count: int
     countries: list[str]
     attack_id: int | None
+    # Whether the username belongs to an existing user: only then is it shown
+    # in full outside the panel.
+    user_exists: bool = False
+
+    def display(self) -> tuple[str, bool]:
+        """Return (name, masked) as shown outside the panel."""
+        name, masked = display_name(self.username, exists_of(self.user_exists))
+        return name or "", masked
 
 
 @dataclass(slots=True, eq=False)
@@ -87,6 +96,7 @@ class _Attack:
     failures: int
     ips: set[str]
     countries: set[str] = field(default_factory=set)
+    user_exists: bool = False
     # Counted failures since the start; the delay doubles with each.
     since_start: int = 0
     attack_id: int | None = None
@@ -108,6 +118,7 @@ class _Attack:
             ip_count=len(self.ips),
             countries=sorted(self.countries),
             attack_id=self.attack_id,
+            user_exists=self.user_exists,
         )
 
     def wake(self) -> None:
@@ -169,9 +180,10 @@ class UsernameGuard:
         ip: str | None,
         result: LoginResult,
         reason: LoginReason,
+        exists: UserExists = UserExists.UNKNOWN,
     ) -> None:
         """Count a login attempt; memory only, never raises."""
-        self._attempt_guard.call(self._on_attempt, username, ip, result, reason)
+        self._attempt_guard.call(self._on_attempt, username, ip, result, reason, exists)
 
     @callback
     def on_record(self, record: Record) -> None:
@@ -244,6 +256,7 @@ class UsernameGuard:
         ip: str | None,
         result: LoginResult,
         reason: LoginReason,
+        exists: UserExists,
     ) -> None:
         if self._stopped or result is LoginResult.SUCCESS:
             return
@@ -255,6 +268,7 @@ class UsernameGuard:
         assert username is not None
         ip_key = str(addr)
         if (attack := self._attacks.get(key)) is not None:
+            attack.user_exists |= exists is UserExists.YES
             attack.failures += 1
             attack.since_start += 1
             if len(attack.ips) < MAX_TRACKED:
@@ -284,7 +298,11 @@ class UsernameGuard:
             return
         del self._failures[key]
         name = sanitise_text(username) or key
-        self._start(_Attack(key, name, now, len(entries), ips))
+        self._start(
+            _Attack(
+                key, name, now, len(entries), ips, user_exists=exists is UserExists.YES
+            )
+        )
 
     def _start(self, attack: _Attack) -> None:
         self._attacks[attack.key] = attack
@@ -317,6 +335,7 @@ class UsernameGuard:
         key = self.key(record.username_typed)
         if key is None or (attack := self._attacks.get(key)) is None:
             return
+        attack.user_exists |= record.user_exists is UserExists.YES
         addr = normalise_ip(record.ip)
         if addr is not None and not is_exempt(self._hass, addr):
             if len(attack.ips) < MAX_TRACKED:
@@ -555,6 +574,9 @@ class UsernameGuard:
         actor_user_id: str | None = None,
         actor_name: str | None = None,
     ) -> None:
+        # The stored name is the full one (for the panel); the flag tells
+        # every other sink whether to mask it.
+        details = {**details, "user_exists": attack.user_exists}
         self._runtime.worker.submit(
             SettingsChange(
                 ts=dt_util.utcnow(),
@@ -570,10 +592,12 @@ class UsernameGuard:
         )
 
     def _fire(self, attack: _Attack, state: Literal["started", "ended"]) -> None:
+        username, masked = attack.view().display()
         self._hass.bus.async_fire(
             EVENT_USERNAME_ATTACK,
             {
-                "username": attack.username,
+                "username": username,
+                "username_masked": masked,
                 "ips": sorted(attack.ips)[:EVENT_MAX_IPS],
                 "ip_count": len(attack.ips),
                 "countries": sorted(attack.countries),

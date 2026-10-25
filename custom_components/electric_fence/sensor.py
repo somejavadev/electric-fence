@@ -73,7 +73,7 @@ class FailedLoginsSensor(SensorEntity):
     _attr_should_poll = False
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "attempts"
-    _unrecorded_attributes = frozenset({"last_username", "last_ip"})
+    _unrecorded_attributes = frozenset({"last_username", "last_ip", "last_country"})
 
     def __init__(self, entry: ElectricFenceConfigEntry) -> None:
         """Initialise the sensor."""

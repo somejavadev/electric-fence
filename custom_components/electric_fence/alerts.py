@@ -6,7 +6,8 @@ import logging
 from typing import Literal
 
 from homeassistant.components import persistent_notification
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .attribution import auth_users
@@ -22,11 +23,17 @@ from .runtime import Runtime
 _LOGGER = logging.getLogger(__name__)
 
 PUSH_INTERVAL = timedelta(minutes=10)
+BAN_TITLE = "Electric Fence: IP banned"
 
 
 def _plain(message: str) -> str:
     """Return the bell text as phone text: no panel link, no markdown code."""
     return message.replace(PANEL_LINK, "").replace("`", "").strip()
+
+
+def _banned_text(count: int) -> str:
+    noun = "address" if count == 1 else "addresses"
+    return f"{count} {noun} banned since the last message."
 
 
 def _when(value: datetime) -> str:
@@ -42,6 +49,21 @@ class Alerter:
         self._runtime = runtime
         self._guard = FailOpen("alerts")
         self._last_push: datetime | None = None
+        # Ban pushes are limited like failed logins; the bell shows every ban.
+        self._last_ban_push: datetime | None = None
+        self._bans_unpushed = 0
+        self._unsub_ban_push: CALLBACK_TYPE | None = None
+
+    @callback
+    def async_stop(self) -> None:
+        """Cancel a pending ban summary."""
+        self._cancel_ban_push()
+        self._bans_unpushed = 0
+
+    def _cancel_ban_push(self) -> None:
+        if self._unsub_ban_push is not None:
+            self._unsub_ban_push()
+            self._unsub_ban_push = None
 
     @callback
     def failed_login(self, message: str) -> None:
@@ -80,11 +102,43 @@ class Alerter:
     def _ip_banned(self, view: BanView) -> None:
         if not self._runtime.settings.notify_ip_banned:
             return
-        self._send(
-            f"{DOMAIN}_ip_banned",
-            "Electric Fence: IP banned",
-            self._ban_text(view),
-        )
+        now = dt_util.utcnow()
+        last = self._last_ban_push
+        message = self._ban_text(view)
+        self._send(f"{DOMAIN}_ip_banned", BAN_TITLE, message, push=False)
+        if last is None or now - last >= PUSH_INTERVAL:
+            self._last_ban_push = now
+            # Bans still waiting for the summary go along with this one.
+            waiting, self._bans_unpushed = self._bans_unpushed, 0
+            self._cancel_ban_push()
+            plain = _plain(message)
+            if waiting:
+                plain = f"{_banned_text(waiting + 1)} Latest: {plain}"
+            self._push(BAN_TITLE, plain)
+            return
+        self._bans_unpushed += 1
+        if self._unsub_ban_push is None:
+            self._unsub_ban_push = async_call_later(
+                self._hass,
+                last + PUSH_INTERVAL - now,
+                HassJob(
+                    self._on_ban_push_due,
+                    "electric_fence ban push",
+                    cancel_on_shutdown=True,
+                ),
+            )
+
+    @callback
+    def _on_ban_push_due(self, _now: datetime) -> None:
+        self._unsub_ban_push = None
+        self._guard.call(self._push_ban_summary)
+
+    def _push_ban_summary(self) -> None:
+        count, self._bans_unpushed = self._bans_unpushed, 0
+        if not count or not self._runtime.settings.notify_ip_banned:
+            return
+        self._last_ban_push = dt_util.utcnow()
+        self._push(BAN_TITLE, _banned_text(count))
 
     def _ban_ended(self, view: BanView, how: Literal["expired", "unbanned"]) -> None:
         if not self._runtime.settings.notify_ban_ended:
@@ -100,7 +154,7 @@ class Alerter:
             return
         countries = ", ".join(inline_text(c) for c in view.countries)
         where = f" ({countries})" if countries else ""
-        name = md_code(inline_text(view.username))
+        name = md_code(view.display()[0])
         self._send(
             f"{DOMAIN}_username_attack",
             "Electric Fence: username under attack",
@@ -146,8 +200,10 @@ class Alerter:
         persistent_notification.async_create(
             self._hass, message, title, notification_id
         )
-        if not push:
-            return
+        if push:
+            self._push(title, _plain(message))
+
+    def _push(self, title: str, plain: str) -> None:
         targets = [
             t
             for t in self._runtime.settings.notify_targets
@@ -155,7 +211,7 @@ class Alerter:
         ]
         if targets:
             self._hass.async_create_background_task(
-                self._async_push(targets, title, _plain(message)),
+                self._async_push(targets, title, plain),
                 "electric_fence push",
             )
 

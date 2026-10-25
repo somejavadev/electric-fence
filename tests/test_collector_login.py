@@ -920,27 +920,33 @@ async def test_records_carry_enum_values(
     assert submitted[0].flow_id is not None
 
 
-async def test_will_block_mirrors_worker_rules(
+async def test_block_reason_mirrors_worker_rules(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
-    """The request mark predicts the worker's block rules, from memory."""
+    """The block prediction follows the worker's block rules, from memory."""
     collector = _collector(hass)
     alice = await create_hass_user(hass, "alice", "right")
     credentials = alice.credentials[0]
-    assert not collector._will_block(None, Source.REMOTE)
-    assert not collector._will_block(Mock(id="unlinked"), Source.REMOTE)
-    assert not collector._will_block(credentials, Source.REMOTE)
+    assert collector._block_reason(None, Source.REMOTE) is None
+    assert collector._block_reason(Mock(id="unlinked"), Source.REMOTE) is None
+    assert collector._block_reason(credentials, Source.REMOTE) is None
     await hass.auth.async_update_user(alice, local_only=True)
-    assert not collector._will_block(credentials, Source.LOCAL)
-    assert collector._will_block(credentials, Source.REMOTE)
+    assert collector._block_reason(credentials, Source.LOCAL) is None
+    assert (
+        collector._block_reason(credentials, Source.REMOTE)
+        is LoginReason.BLOCKED_LOCAL_ONLY
+    )
     with patch(
         "custom_components.electric_fence.collectors.login.auth_users",
         return_value=None,
     ):
-        assert not collector._will_block(credentials, Source.REMOTE)
+        assert collector._block_reason(credentials, Source.REMOTE) is None
 
 
 FORWARDED_IP = "203.0.113.9"
+FAIL_EXISTS = (LoginResult.FAILED, LoginReason.WRONG_PASSWORD, UserExists.YES)
+BLOCKED_LOCAL = (LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY, UserExists.YES)
+BLOCKED_INACTIVE = (LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE, UserExists.YES)
 XFF = {"X-Forwarded-For": FORWARDED_IP}
 ATTACK_IPS = ("198.51.100.1", "198.51.100.2", "198.51.100.3")
 
@@ -1204,11 +1210,49 @@ async def test_observe_feeds_policies(
         (FORWARDED_IP, LoginResult.SUCCESS, LoginReason.OK),
     ]
     assert [c.args for c in name_attempt.call_args_list] == [
-        (" Alice ", FORWARDED_IP, LoginResult.FAILED, LoginReason.WRONG_PASSWORD),
-        ("alice", FORWARDED_IP, LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY),
-        ("alice", FORWARDED_IP, LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE),
-        ("alice", FORWARDED_IP, LoginResult.SUCCESS, LoginReason.OK),
+        (" Alice ", FORWARDED_IP, *FAIL_EXISTS),
+        ("alice", FORWARDED_IP, *BLOCKED_LOCAL),
+        ("alice", FORWARDED_IP, *BLOCKED_INACTIVE),
+        ("alice", FORWARDED_IP, LoginResult.SUCCESS, LoginReason.OK, UserExists.YES),
     ]
+
+
+async def test_policies_counted_when_record_fails(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Both policies count the attempt even when building the record raises.
+
+    Also when the block lookup raises, and when one policy raises.
+    """
+    collector = _collector(hass)
+    runtime = collector.runtime
+    request = Mock(remote=FORWARDED_IP, path="/auth/login_flow/f", headers={})
+    token = current_request.set(request)
+    form = {"type": FlowResultType.FORM, "errors": {"base": "invalid_auth"}}
+    try:
+        with (
+            patch.object(runtime.ip_policy, "on_attempt") as ip_attempt,
+            patch.object(runtime.username_guard, "on_attempt") as name_attempt,
+        ):
+            with patch.object(runtime.worker, "submit", side_effect=RuntimeError):
+                collector._observe("f", None, {"username": "bob"}, form)
+            with patch.object(collector, "_block_reason", side_effect=RuntimeError):
+                collector._observe(
+                    "g",
+                    None,
+                    {"username": "bob"},
+                    {"type": FlowResultType.CREATE_ENTRY},
+                )
+            ip_attempt.side_effect = RuntimeError
+            collector._observe("h", None, {"username": "bob"}, form)
+    finally:
+        current_request.reset(token)
+    assert [c.args[1:] for c in ip_attempt.call_args_list] == [
+        (LoginResult.FAILED, LoginReason.INVALID_CREDENTIALS),
+        (LoginResult.SUCCESS, LoginReason.OK),
+        (LoginResult.FAILED, LoginReason.INVALID_CREDENTIALS),
+    ]
+    assert len(name_attempt.call_args_list) == 3
 
 
 async def test_observe_without_policies(

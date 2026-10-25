@@ -20,6 +20,7 @@ from custom_components.electric_fence.storage import (
     SCHEMA_VERSION,
     FenceStore,
     LoginFilter,
+    read_active_ban_ips,
 )
 
 NOW = datetime(2026, 10, 24, 12, 0, 0, tzinfo=UTC)
@@ -350,3 +351,26 @@ def _login(ts: datetime, result: LoginResult, ip: str) -> LoginAttempt:
         user_agent=None,
         client_id=None,
     )
+
+
+def test_read_active_ban_ips(tmp_path: Path) -> None:
+    """Active bans are read from a closed database without changing it."""
+    path = tmp_path / "fence.db"
+    assert read_active_ban_ips(path) == []
+    s = FenceStore(path)
+    s.open()
+    add_ban(s)
+    ended = add_ban(s, ip="198.51.100.8")
+    s.end_ban(ended, NOW, "expired", None, None)
+    s.close()
+    before = path.read_bytes()
+    assert read_active_ban_ips(path) == [IP]
+    assert path.read_bytes() == before
+
+
+def test_read_active_ban_ips_without_bans_table(tmp_path: Path) -> None:
+    """A database from before bans existed has none."""
+    path = tmp_path / "fence.db"
+    with closing(sqlite3.connect(path)) as db:
+        db.executescript(V1_SCHEMA)
+    assert read_active_ban_ips(path) == []

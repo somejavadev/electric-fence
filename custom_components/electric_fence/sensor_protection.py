@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.core import CALLBACK_TYPE, callback
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from . import ElectricFenceConfigEntry
@@ -59,9 +59,20 @@ class ActiveBansSensor(FenceEntity, SensorEntity):
         return {"last_ip": str(last.ip), "last_country": last.country_code}
 
     async def async_added_to_hass(self) -> None:
-        """Follow the ban manager."""
+        """Follow the ban manager, and Core's own bans every minute."""
         if (bans := self._entry.runtime_data.bans) is not None:
             self.async_on_remove(bans.add_listener(self._write))
+            # Core bans without telling anyone. Its lookup is in memory, and
+            # an unchanged state writes nothing to the bus.
+            self.async_on_remove(
+                async_track_time_interval(
+                    self.hass,
+                    self._write,
+                    BANS_RECHECK,
+                    name="electric_fence active bans",
+                    cancel_on_shutdown=True,
+                )
+            )
 
 
 class Bans24hSensor(FenceEntity, SensorEntity):

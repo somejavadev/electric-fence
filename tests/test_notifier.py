@@ -27,6 +27,7 @@ from custom_components.electric_fence.models import (
 )
 from custom_components.electric_fence.notifier import (
     NOTIFICATION_ID,
+    REASON_TEXT,
     Notifier,
     build_message,
     country_text,
@@ -275,6 +276,45 @@ async def test_settings_changed_event_system_has_null_actor(
     assert events[1].data["ip"] == "192.168.1.5"
     assert events[1].data["kind"] == "user"
     assert notification(hass) is None
+
+
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ({"user_exists": False}, "ho•••"),
+        ({}, "ho•••"),
+        ({"user_exists": "yes"}, "ho•••"),
+        ({"user_exists": True}, "hostile-secret"),
+    ],
+)
+async def test_settings_changed_event_masks_attacked_username(
+    hass: HomeAssistant,
+    notifier: Notifier,
+    details: dict[str, object],
+    expected: str,
+) -> None:
+    """An attacked username is shown in full only for an existing user."""
+    events = async_capture_events(hass, "electric_fence_settings_changed")
+    notifier.on_record(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.LOGIN_PROTECTION,
+            action=ChangeAction.ATTACK_STARTED,
+            target_id=None,
+            target_name="hostile-secret",
+            details=details,
+            actor_user_id=None,
+            actor_name=None,
+            actor_ip=None,
+        )
+    )
+    await hass.async_block_till_done()
+    assert events[0].data["target_name"] == expected
+
+
+def test_throttled_reason_text() -> None:
+    """A refused attempt reads as too many attempts."""
+    assert REASON_TEXT[LoginReason.THROTTLED] == "too many attempts"
 
 
 async def test_notification_text_masks_and_counts(

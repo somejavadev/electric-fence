@@ -7,6 +7,7 @@ import ipaddress
 from ipaddress import IPv4Address, IPv6Address
 import logging
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Literal
 
@@ -24,6 +25,9 @@ from .network import IpAddress, normalise_ip
 _LOGGER = logging.getLogger(__name__)
 
 HEALTH_IP_BAN_DISABLED = "ip_ban_disabled"
+# What Core's own append creates under the usual umask. Reading the umask
+# means setting it, process-wide, which other threads would race.
+_NEW_FILE_MODE = 0o644
 
 
 class BlockingBackend(ABC):
@@ -93,6 +97,11 @@ def _rewrite_bans_file(
             tmp.unlink(missing_ok=True)
             raise
     try:
+        # The temporary file is 0600; keep the original's mode.
+        if target.exists():
+            shutil.copymode(target, tmp)
+        else:
+            tmp.chmod(_NEW_FILE_MODE)
         tmp.replace(target)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -117,11 +126,14 @@ class CoreBanBackend(BlockingBackend):
             return
         if (addr := normalise_ip(ip)) is None:
             return
-        await manager.async_add_ban(addr)
-        if isinstance(addr, IPv4Address):
-            # Core's middleware matches the remote address exactly, and a
-            # dual-stack socket reports IPv4 clients in mapped form.
-            await manager.async_add_ban(IPv6Address(f"::ffff:{addr}"))
+        # Core appends to the file; during a rewrite the append would land on
+        # the replaced file and be lost on restart.
+        async with self._lock:
+            await manager.async_add_ban(addr)
+            if isinstance(addr, IPv4Address):
+                # Core's middleware matches the remote address exactly, and a
+                # dual-stack socket reports IPv4 clients in mapped form.
+                await manager.async_add_ban(IPv6Address(f"::ffff:{addr}"))
 
     async def async_remove(self, ip: IPv4Address | IPv6Address) -> bool:
         """Unban in memory, in Core's counter and in the file."""

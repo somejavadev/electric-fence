@@ -4,7 +4,11 @@ import asyncio
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
+import stat
+import threading
+import time
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -12,6 +16,7 @@ from custom_components.electric_fence.protection.backend import (
     BlockingBackend,
     CoreBanBackend,
 )
+from custom_components.electric_fence.protection.network import normalise_ip
 from homeassistant.components.http.ban import (
     KEY_BAN_MANAGER,
     KEY_FAILED_LOGIN_ATTEMPTS,
@@ -193,3 +198,51 @@ async def test_add_bans_mapped_form_too(hass: HomeAssistant) -> None:
     assert IP not in lookup
     assert mapped not in lookup
     assert _file_ips(hass) == {}
+
+
+async def test_rewrite_keeps_file_mode(hass: HomeAssistant) -> None:
+    """A rewrite keeps the file's mode, not the temporary file's 0600."""
+    backend = await _setup(hass)
+    await backend.async_add(IP)
+    path = _bans_path(hass)
+    path.chmod(0o640)
+    assert await backend.async_remove(IP)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+async def test_rewrite_new_file_is_readable(hass: HomeAssistant) -> None:
+    """Without a file, the written one gets the usual 0644."""
+    backend = await _setup(hass)
+    lookup = hass.http.app[KEY_BAN_MANAGER].ip_bans_lookup
+    lookup[FOREIGN] = IpBan(FOREIGN)
+    lookup[IP] = IpBan(IP)
+    path = _bans_path(hass)
+    assert not path.exists()
+    assert await backend.async_remove(IP)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert list(_file_ips(hass)) == [str(FOREIGN)]
+
+
+async def test_concurrent_add_and_remove(hass: HomeAssistant) -> None:
+    """A ban added during a rewrite is still in the file afterwards."""
+    backend = await _setup(hass)
+    kept = ip_address("192.0.2.5")
+    await backend.async_add(kept)
+    await backend.async_add(FOREIGN)
+    original_dump = yaml_util.dump
+    dumping = threading.Event()
+
+    def slow_dump(data: Any) -> str:
+        # Between reading the file and replacing it: Core's append would
+        # land on the file that is about to be replaced.
+        dumping.set()
+        time.sleep(0.2)
+        return original_dump(data)
+
+    with patch.object(yaml_util, "dump", slow_dump):
+        remove = asyncio.ensure_future(backend.async_remove(FOREIGN))
+        assert await hass.async_add_executor_job(dumping.wait, 5)
+        await backend.async_add(IP)
+        assert await remove
+    assert set(backend.list_ips()) == {IP, kept}
+    assert {normalise_ip(k) for k in _file_ips(hass)} == {IP, kept}

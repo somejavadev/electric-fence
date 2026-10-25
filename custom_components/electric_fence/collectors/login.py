@@ -412,6 +412,45 @@ class LoginCollector(BaseCollector):
         """Queue a login attempt, mark the request and count it for the policies."""
         request = current_request.get()
         ip = self._attempt_ip(info, request)
+        ip_text = str(ip) if ip is not None else None
+        blocked = self.guard.call(
+            self._submit_attempt,
+            request,
+            ip,
+            flow_id,
+            typed,
+            handler,
+            outcome,
+            reason,
+            exists,
+            mfa_module,
+            credentials,
+        )
+        if blocked is not None:
+            outcome, reason = LoginResult.BLOCKED, blocked
+        # Counted even when the record can't be built or queued (the worker's
+        # queue is full, a lookup failed): a flood must not switch protection
+        # off. Each policy in its own guard, so one failing never skips the
+        # other.
+        if (policy := self.runtime.ip_policy) is not None:
+            self.guard.call(policy.on_attempt, ip_text, outcome, reason)
+        if (guard := self.runtime.username_guard) is not None:
+            self.guard.call(guard.on_attempt, typed, ip_text, outcome, reason, exists)
+
+    def _submit_attempt(
+        self,
+        request: Any,
+        ip: _IP | None,
+        flow_id: Any,
+        typed: str | None,
+        handler: _Handler | None,
+        outcome: LoginResult,
+        reason: LoginReason,
+        exists: UserExists,
+        mfa_module: str | None,
+        credentials: Credentials | None,
+    ) -> LoginReason | None:
+        """Queue the record and mark the request; return why a success is blocked."""
         if is_cloud_connection(self.hass):
             source: Source | None = Source.CLOUD
         elif ip is None:
@@ -445,25 +484,16 @@ class LoginCollector(BaseCollector):
                 credentials=credentials,
             )
         )
-        if outcome is LoginResult.SUCCESS and (
-            blocked := self._block_reason(credentials, source)
-        ):
-            outcome, reason = LoginResult.BLOCKED, blocked
+        blocked = (
+            self._block_reason(credentials, source)
+            if outcome is LoginResult.SUCCESS
+            else None
+        )
         if queued and isinstance(request, MutableMapping):
-            request[REQUEST_RECORDED] = outcome is not LoginResult.SUCCESS
-        # Counted even when the worker's queue is full: a flood must not
-        # switch protection off.
-        ip_text = str(ip) if ip is not None else None
-        if (policy := self.runtime.ip_policy) is not None:
-            policy.on_attempt(ip_text, outcome, reason)
-        if (guard := self.runtime.username_guard) is not None:
-            guard.on_attempt(typed, ip_text, outcome, reason)
-
-    def _will_block(
-        self, credentials: Credentials | None, source: Source | None
-    ) -> bool:
-        """Return True if the worker will store this success as blocked."""
-        return self._block_reason(credentials, source) is not None
+            request[REQUEST_RECORDED] = outcome is not LoginResult.SUCCESS or (
+                blocked is not None
+            )
+        return blocked
 
     def _block_reason(
         self, credentials: Credentials | None, source: Source | None
