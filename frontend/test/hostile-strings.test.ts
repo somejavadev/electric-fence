@@ -210,6 +210,8 @@ describe("hostile values across the whole overview", () => {
         "ef-login-row",
         "ef-change-row",
         "ef-posture-list",
+        // Posture icons: the icon name is a constant, never data.
+        "ha-icon",
         "article",
         "header",
         "button",
@@ -224,6 +226,17 @@ describe("hostile values across the whole overview", () => {
       ]),
     );
     expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
+    const icons = elements
+      .filter((e) => e.localName === "ha-icon")
+      .map((e) => e.getAttribute("icon"));
+    expect(icons.length).toBeGreaterThan(0);
+    for (const icon of icons) {
+      expect([
+        "mdi:check-circle-outline",
+        "mdi:alert-circle-outline",
+        "mdi:close-circle-outline",
+      ]).toContain(icon);
+    }
 
     const shown = allShadowElements(el.shadowRoot as ShadowRoot)
       .map((e) => e.textContent)

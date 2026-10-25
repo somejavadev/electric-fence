@@ -73,7 +73,7 @@ export class EfOverview extends LitElement {
     .empty,
     .loading {
       margin: 8px 0 0;
-      font-size: 14px;
+      font-size: var(--ha-font-size-m, 14px);
       color: var(--secondary-text-color);
     }
     .notice {
@@ -101,11 +101,11 @@ export class EfOverview extends LitElement {
     }
     .hint {
       color: var(--secondary-text-color);
-      font-size: 14px;
+      font-size: var(--ha-font-size-m, 14px);
     }
     .attribution {
       margin: 16px 0 0;
-      font-size: 12px;
+      font-size: var(--ha-font-size-s, 12px);
       color: var(--secondary-text-color);
     }
   `;

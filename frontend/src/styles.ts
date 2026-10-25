@@ -7,6 +7,8 @@ export const panelStyles = css`
     min-height: 100vh;
     background: var(--primary-background-color);
     color: var(--primary-text-color);
+    font-size: var(--ha-font-size-m, 14px);
+    line-height: var(--ha-line-height-normal, 1.6);
   }
   header {
     display: flex;
@@ -18,7 +20,7 @@ export const panelStyles = css`
     border-bottom: 1px solid var(--divider-color);
   }
   h1 {
-    font-size: 20px;
+    font-size: var(--ha-font-size-xl, 20px);
     font-weight: 400;
     margin: 0;
   }
@@ -69,13 +71,13 @@ export const rowStyles = css`
     align-items: baseline;
     gap: 2px 8px;
     padding: 6px 0;
-    font-size: 14px;
+    font-size: var(--ha-font-size-m, 14px);
   }
   .time,
   .ip,
   .where {
     color: var(--secondary-text-color);
-    font-size: 12px;
+    font-size: var(--ha-font-size-s, 12px);
   }
   .main {
     font-weight: 500;
@@ -85,23 +87,26 @@ export const rowStyles = css`
     unicode-bidi: isolate;
   }
   .tag {
-    padding: 0 6px;
-    border-radius: 4px;
-    font-size: 12px;
-    border: 1px solid var(--divider-color);
-    color: var(--secondary-text-color);
+    padding: 0 8px;
+    border-radius: var(--ha-border-radius-xl, 16px);
+    font-size: var(--ha-font-size-s, 12px);
+    font-weight: var(--ha-font-weight-medium, 500);
+    color: var(--primary-text-color);
+    background: color-mix(
+      in srgb,
+      var(--secondary-text-color) 15%,
+      transparent
+    );
   }
+  /* Tinted like ha-label: status colours are too light for small text. */
   .tag.bad {
-    color: var(--error-color);
-    border-color: var(--error-color);
+    background: color-mix(in srgb, var(--error-color) 20%, transparent);
   }
   .tag.good {
-    color: var(--success-color);
-    border-color: var(--success-color);
+    background: color-mix(in srgb, var(--success-color) 20%, transparent);
   }
   .tag.warn {
-    color: var(--warning-color);
-    border-color: var(--warning-color);
+    background: color-mix(in srgb, var(--warning-color) 25%, transparent);
   }
 `;
 
@@ -111,8 +116,11 @@ export const viewStyles = css`
     display: block;
   }
   h2 {
-    font-size: 16px;
-    font-weight: 500;
+    /* Home Assistant's card header (ha-card .card-header). */
+    font-size: var(--ha-card-header-font-size, var(--ha-font-size-2xl, 24px));
+    font-weight: var(--ha-font-weight-normal, 400);
+    letter-spacing: -0.012em;
+    line-height: var(--ha-line-height-condensed, 1.2);
     margin: 0 0 8px;
   }
   ul {
@@ -127,7 +135,7 @@ export const viewStyles = css`
   .loading,
   .hint {
     margin: 8px 0 0;
-    font-size: 14px;
+    font-size: var(--ha-font-size-m, 14px);
     color: var(--secondary-text-color);
   }
   .notice {
@@ -176,7 +184,7 @@ export const viewStyles = css`
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 14px;
+    font-size: var(--ha-font-size-m, 14px);
   }
   th,
   td {
@@ -193,26 +201,33 @@ export const viewStyles = css`
   .tag {
     display: inline-block;
     margin-inline-end: 4px;
-    padding: 0 6px;
-    border-radius: 4px;
-    font-size: 12px;
-    border: 1px solid var(--divider-color);
-    color: var(--secondary-text-color);
+    padding: 0 8px;
+    border-radius: var(--ha-border-radius-xl, 16px);
+    font-size: var(--ha-font-size-s, 12px);
+    font-weight: var(--ha-font-weight-medium, 500);
+    color: var(--primary-text-color);
+    background: color-mix(
+      in srgb,
+      var(--secondary-text-color) 15%,
+      transparent
+    );
+  }
+  /* Tinted like ha-label: status colours are too light for small text. */
+  .tag.bad {
+    background: color-mix(in srgb, var(--error-color) 20%, transparent);
   }
   .tag.good {
-    color: var(--success-color);
-    border-color: var(--success-color);
+    background: color-mix(in srgb, var(--success-color) 20%, transparent);
   }
   .tag.warn {
-    color: var(--warning-color);
-    border-color: var(--warning-color);
+    background: color-mix(in srgb, var(--warning-color) 25%, transparent);
   }
   .sub {
     color: var(--secondary-text-color);
-    font-size: 12px;
+    font-size: var(--ha-font-size-s, 12px);
   }
   .details {
-    font-size: 12px;
+    font-size: var(--ha-font-size-s, 12px);
     color: var(--secondary-text-color);
     padding-bottom: 6px;
   }

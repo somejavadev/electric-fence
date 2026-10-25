@@ -60,7 +60,7 @@ export class EfLoginRow extends LitElement {
         background: none;
         color: var(--primary-color);
         font: inherit;
-        font-size: 12px;
+        font-size: var(--ha-font-size-s, 12px);
         cursor: pointer;
       }
       .details {
@@ -68,7 +68,7 @@ export class EfLoginRow extends LitElement {
         grid-template-columns: max-content minmax(0, 1fr);
         gap: 2px 12px;
         margin: 0 0 6px;
-        font-size: 12px;
+        font-size: var(--ha-font-size-s, 12px);
         color: var(--secondary-text-color);
       }
       .details dd {

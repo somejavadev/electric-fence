@@ -47,13 +47,13 @@ export class EfFilterBar extends LitElement {
       display: flex;
       flex-direction: column;
       gap: 4px;
-      font-size: 12px;
+      font-size: var(--ha-font-size-s, 12px);
       color: var(--secondary-text-color);
     }
     label.check {
       flex-direction: row;
       align-items: center;
-      font-size: 14px;
+      font-size: var(--ha-font-size-m, 14px);
       color: var(--primary-text-color);
     }
     select,

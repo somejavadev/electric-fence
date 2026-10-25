@@ -46,18 +46,21 @@ export class EfAnswerCard extends LitElement {
       background: none;
       color: var(--primary-text-color);
       font: inherit;
-      font-size: 16px;
-      font-weight: 500;
+      /* Home Assistant's card header (ha-card .card-header). */
+      font-size: var(--ha-card-header-font-size, var(--ha-font-size-2xl, 24px));
+      font-weight: var(--ha-font-weight-normal, 400);
+      letter-spacing: -0.012em;
+      line-height: var(--ha-line-height-condensed, 1.2);
       text-align: start;
       cursor: pointer;
     }
     .count {
-      font-size: 28px;
-      line-height: 1;
+      font-size: var(--ha-font-size-3xl, 28px);
+      line-height: var(--ha-line-height-condensed, 1.2);
       color: var(--primary-text-color);
     }
     .note {
-      font-size: 14px;
+      font-size: var(--ha-font-size-m, 14px);
       color: var(--secondary-text-color);
     }
   `;

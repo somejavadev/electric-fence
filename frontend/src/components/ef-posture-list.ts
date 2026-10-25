@@ -2,7 +2,11 @@ import { LitElement, css, html } from "lit";
 import { postureText, strings } from "../strings.ts";
 import type { PostureItem } from "../types.ts";
 
-const GLYPH = { ok: "✓", warning: "!", error: "✕" } as const;
+const ICON = {
+  ok: "mdi:check-circle-outline",
+  warning: "mdi:alert-circle-outline",
+  error: "mdi:close-circle-outline",
+} as const;
 
 /** The posture checklist: one friendly sentence per check. */
 export class EfPostureList extends LitElement {
@@ -18,24 +22,23 @@ export class EfPostureList extends LitElement {
     }
     li {
       display: flex;
+      align-items: flex-start;
       gap: 8px;
       padding: 6px 0;
-      font-size: 14px;
+      font-size: var(--ha-font-size-m, 14px);
       overflow-wrap: anywhere;
     }
-    .glyph {
+    ha-icon {
       flex: none;
-      width: 1.2em;
-      text-align: center;
-      font-weight: 700;
+      --mdc-icon-size: 20px;
     }
-    .ok .glyph {
+    .ok ha-icon {
       color: var(--success-color);
     }
-    .warning .glyph {
+    .warning ha-icon {
       color: var(--warning-color);
     }
-    .error .glyph {
+    .error ha-icon {
       color: var(--error-color);
     }
   `;
@@ -51,9 +54,11 @@ export class EfPostureList extends LitElement {
         ${this.items.map(
           (item) => html`
             <li class=${item.level}>
-              <span class="glyph" aria-label=${strings.level[item.level]}
-                >${GLYPH[item.level]}</span
-              >
+              <ha-icon
+                icon=${ICON[item.level]}
+                role="img"
+                aria-label=${strings.level[item.level]}
+              ></ha-icon>
               <bdi class="text">${postureText(item)}</bdi>
             </li>
           `,
