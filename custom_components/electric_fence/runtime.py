@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .geo.updater import GeoUpdater
     from .notifier import Notifier
     from .protection.bans import BanManager
+    from .protection.policy import IpPolicy
 
 
 @dataclass
@@ -29,7 +30,7 @@ class Runtime:
     geo_status: GeoStatus | None = None
     geo_updater: GeoUpdater | None = None
     bans: BanManager | None = None
-    # Typed by the tasks that add them (IpPolicy, UsernameGuard, Alerter).
-    ip_policy: Any = None
+    ip_policy: IpPolicy | None = None
+    # Typed by the tasks that add them (UsernameGuard, Alerter).
     username_guard: Any = None
     alerts: Any = None

@@ -38,6 +38,7 @@ from .notifier import Notifier
 from .panel import async_register_panel, async_unregister_panel
 from .protection.backend import CoreBanBackend
 from .protection.bans import BanManager
+from .protection.policy import IpPolicy
 from .repairs import async_clear_schema_too_new, async_report_schema_too_new
 from .runtime import Runtime
 from .settings import Settings
@@ -181,6 +182,20 @@ async def async_setup_entry(
     runtime.bans = bans
     entry.async_on_unload(bans.async_stop)
     await bans.async_start()
+
+    ip_policy = IpPolicy(hass, runtime)
+    runtime.ip_policy = ip_policy
+    try:
+        trusted = await hass.async_add_executor_job(
+            store.last_success_ips_since,
+            dt_util.utcnow() - settings.trusted_window,
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not load trusted addresses: %s", type(err).__name__
+        )
+    else:
+        ip_policy.seed_trusted(trusted)
 
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)
