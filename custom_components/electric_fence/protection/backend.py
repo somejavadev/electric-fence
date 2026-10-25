@@ -1,10 +1,13 @@
 """Blocking backends: where bans are actually enforced."""
 
 from abc import ABC, abstractmethod
+import asyncio
 from datetime import datetime
+import ipaddress
 from ipaddress import IPv4Address, IPv6Address
 import logging
 from pathlib import Path
+import tempfile
 from typing import Literal
 
 from homeassistant.components.http.ban import (
@@ -66,14 +69,34 @@ def _rewrite_bans_file(
         return
 
     kept = {key: value for key, value in current.items() if normalise_ip(key) != remove}
-    present = {normalise_ip(key) for key in kept}
+    present = set()
+    for key in kept:
+        try:
+            present.add(ipaddress.ip_address(key))
+        except ValueError:
+            continue
     for ip, banned_at in keep_from_memory.items():
-        if ip != remove and ip not in present:
+        if normalise_ip(ip) != remove and ip not in present:
             kept[str(ip)] = {"banned_at": banned_at.isoformat()}
 
-    tmp = Path(f"{path}.tmp")
-    tmp.write_text(yaml_util.dump(kept), encoding="utf8")
-    tmp.replace(path)
+    # An empty mapping must stay an empty file: Core appends to it, and "{}"
+    # followed by more entries is not valid YAML.
+    content = yaml_util.dump(kept) if kept else ""
+    target = Path(path)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf8", dir=target.parent, prefix=f"{target.name}.", delete=False
+    ) as out:
+        tmp = Path(out.name)
+        try:
+            out.write(content)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    try:
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 class CoreBanBackend(BlockingBackend):
@@ -82,6 +105,7 @@ class CoreBanBackend(BlockingBackend):
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialise the backend."""
         self._hass = hass
+        self._lock = asyncio.Lock()
 
     def _manager(self) -> IpBanManager | None:
         http = getattr(self._hass, "http", None)
@@ -94,6 +118,10 @@ class CoreBanBackend(BlockingBackend):
         if (addr := normalise_ip(ip)) is None:
             return
         await manager.async_add_ban(addr)
+        if isinstance(addr, IPv4Address):
+            # Core's middleware matches the remote address exactly, and a
+            # dual-stack socket reports IPv4 clients in mapped form.
+            await manager.async_add_ban(IPv6Address(f"::ffff:{addr}"))
 
     async def async_remove(self, ip: IPv4Address | IPv6Address) -> bool:
         """Unban in memory, in Core's counter and in the file."""
@@ -101,23 +129,22 @@ class CoreBanBackend(BlockingBackend):
             return False
         if (addr := normalise_ip(ip)) is None:
             return False
-        lookup = manager.ip_bans_lookup
-        for key in [k for k in lookup if normalise_ip(k) == addr]:
-            lookup.pop(key, None)
-        attempts = self._hass.http.app[KEY_FAILED_LOGIN_ATTEMPTS]
-        for key in [k for k in attempts if normalise_ip(k) == addr]:
-            attempts.pop(key, None)
-        keep = {
-            norm: ban.banned_at
-            for ban in list(manager.ip_bans_lookup.values())
-            if (norm := normalise_ip(ban.ip_address)) is not None
-        }
-        try:
-            await self._hass.async_add_executor_job(
-                _rewrite_bans_file, manager.path, addr, keep
-            )
-        except OSError as err:
-            _LOGGER.warning("Could not update the IP bans file: %s", type(err).__name__)
+        async with self._lock:
+            lookup = manager.ip_bans_lookup
+            for key in [k for k in lookup if normalise_ip(k) == addr]:
+                lookup.pop(key, None)
+            attempts = self._hass.http.app[KEY_FAILED_LOGIN_ATTEMPTS]
+            for key in [k for k in attempts if normalise_ip(k) == addr]:
+                attempts.pop(key, None)
+            keep = {ban.ip_address: ban.banned_at for ban in list(lookup.values())}
+            try:
+                await self._hass.async_add_executor_job(
+                    _rewrite_bans_file, manager.path, addr, keep
+                )
+            except OSError as err:
+                _LOGGER.warning(
+                    "Could not update the IP bans file: %s", type(err).__name__
+                )
         return True
 
     def list_ips(self) -> dict[IPv4Address | IPv6Address, datetime]:

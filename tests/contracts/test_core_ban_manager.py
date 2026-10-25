@@ -55,3 +55,30 @@ async def test_ban_middleware_contract_fails_when_lookup_unused(
     assert CONTRACTS["ban_middleware_lookup"].check(hass) == (
         "ban_middleware no longer reads ip_bans_lookup"
     )
+
+
+@pytest.mark.parametrize("missing", ["ip_address", "banned_at"])
+async def test_ban_manager_contract_fails_without_ip_ban_attribute(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    """An `IpBan` without `ip_address` or `banned_at` fails the contract."""
+
+    class Bare:
+        def __init__(self, ip: object) -> None:
+            if missing != "ip_address":
+                self.ip_address = ip
+            if missing != "banned_at":
+                self.banned_at = None
+
+    monkeypatch.setattr(ban, "IpBan", Bare)
+    assert CONTRACTS["ban_manager"].check(hass) == f"IpBan.{missing} is missing"
+
+
+async def test_ban_manager_contract_fails_when_add_ban_is_sync(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A synchronous `async_add_ban` fails the contract."""
+    monkeypatch.setattr(ban.IpBanManager, "async_add_ban", lambda self, ip: None)
+    assert CONTRACTS["ban_manager"].check(hass) == (
+        "IpBanManager.async_add_ban is not a coroutine function"
+    )

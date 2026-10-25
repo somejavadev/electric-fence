@@ -1,5 +1,6 @@
 """Tests for the blocking backends."""
 
+import asyncio
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
@@ -125,9 +126,12 @@ async def test_remove_missing_file(hass: HomeAssistant) -> None:
 async def test_remove_resets_core_counter(hass: HomeAssistant) -> None:
     """Unbanning clears Core's failed-login counter for the address."""
     backend = await _setup(hass)
+    mapped = ip_address("::ffff:203.0.113.9")
     hass.http.app[KEY_FAILED_LOGIN_ATTEMPTS][IP] = 9
-    await backend.async_remove(IP)
+    hass.http.app[KEY_FAILED_LOGIN_ATTEMPTS][mapped] = 4
+    assert await backend.async_remove(IP) is True
     assert IP not in hass.http.app[KEY_FAILED_LOGIN_ATTEMPTS]
+    assert mapped not in hass.http.app[KEY_FAILED_LOGIN_ATTEMPTS]
 
 
 async def test_health_ip_ban_disabled(hass: HomeAssistant) -> None:
@@ -145,3 +149,47 @@ async def test_reads_replaced_lookup(hass: HomeAssistant) -> None:
     manager = hass.http.app[KEY_BAN_MANAGER]
     manager.ip_bans_lookup = {IP: IpBan(IP)}
     assert IP in backend.list_ips()
+
+
+async def test_remove_last_ban_leaves_appendable_file(hass: HomeAssistant) -> None:
+    """Core appending after the last removal keeps the file loadable."""
+    backend = await _setup(hass)
+    await backend.async_add(IP)
+    assert await backend.async_remove(IP)
+    assert _bans_path(hass).read_text(encoding="utf8") == ""
+
+    other = ip_address("192.0.2.5")
+    await backend.async_add(other)
+    assert str(other) in _file_ips(hass)
+
+
+async def test_concurrent_removes(hass: HomeAssistant) -> None:
+    """Two removals at once leave both addresses gone and the file valid."""
+    backend = await _setup(hass)
+    await backend.async_add(IP)
+    await backend.async_add(FOREIGN)
+    results = await asyncio.gather(
+        backend.async_remove(IP), backend.async_remove(FOREIGN)
+    )
+    assert results == [True, True]
+    assert backend.list_ips() == {}
+    assert _file_ips(hass) == {}
+    assert [p.name for p in Path(hass.config.path()).glob("ip_bans.yaml*")] == [
+        "ip_bans.yaml"
+    ]
+
+
+async def test_add_bans_mapped_form_too(hass: HomeAssistant) -> None:
+    """An IPv4 ban also covers the mapped form, listed once and removed together."""
+    backend = await _setup(hass)
+    mapped = ip_address("::ffff:203.0.113.9")
+    lookup = hass.http.app[KEY_BAN_MANAGER].ip_bans_lookup
+    await backend.async_add(IP)
+    assert IP in lookup
+    assert mapped in lookup
+    assert list(backend.list_ips()) == [IP]
+
+    assert await backend.async_remove(IP)
+    assert IP not in lookup
+    assert mapped not in lookup
+    assert _file_ips(hass) == {}
