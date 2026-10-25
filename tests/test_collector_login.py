@@ -31,7 +31,7 @@ from custom_components.electric_fence.settings import Settings
 from homeassistant.auth import auth_manager_from_config
 from homeassistant.auth.models import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, UnknownFlow, UnknownHandler
 from homeassistant.helpers.http import current_request
 from homeassistant.setup import async_setup_component
 from tests.helpers import (
@@ -642,12 +642,10 @@ async def test_original_exception_reraised_and_not_observed(
 ) -> None:
     """Exceptions from Core pass through unchanged, and nothing is recorded."""
     collector = _collector(hass)
-    with pytest.raises(Exception) as err:
+    with pytest.raises(UnknownFlow):
         await hass.auth.login_flow.async_configure("no-such-flow", {"username": "a"})
-    assert type(err.value).__name__ == "UnknownFlow"
-    with pytest.raises(Exception) as err:
+    with pytest.raises(UnknownHandler):
         await hass.auth.login_flow.async_init(("nope", None), context={})
-    assert type(err.value).__name__ == "UnknownHandler"
     await flush_worker(hass)
     assert store_rows(hass) == []
     assert collector.guard.errors == 0

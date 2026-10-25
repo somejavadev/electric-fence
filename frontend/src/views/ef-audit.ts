@@ -150,11 +150,17 @@ export class EfAudit extends LiveView {
   private _onFilter = (event: CustomEvent<FilterChange>): void => {
     const { name, value } = event.detail;
     const next = { ...this._filters };
-    if (name === "kind" && (value === "" || KINDS.some((k) => k === value))) {
+    if (
+      name === "kind" &&
+      (value === "" || (KINDS as readonly string[]).includes(value))
+    ) {
       next.kind = value as AuditFilters["kind"];
     } else if (name === "actor") {
       next.actor = value;
-    } else if (name === "range" && TIME_RANGES.some((r) => r === value)) {
+    } else if (
+      name === "range" &&
+      (TIME_RANGES as readonly string[]).includes(value)
+    ) {
       next.range = value as TimeRange;
     } else if (name === "system") {
       next.system = value === "1";

@@ -111,7 +111,7 @@ function sameValue(a: unknown, b: unknown): boolean {
  */
 function beforeAfter(before: unknown, after: unknown): [string, string] {
   if (isRecord(before) && isRecord(after)) {
-    const keys = [...Object.keys(before)];
+    const keys = Object.keys(before);
     for (const key of Object.keys(after)) {
       if (!keys.includes(key)) {
         keys.push(key);

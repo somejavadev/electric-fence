@@ -30,7 +30,9 @@ def test_typed_username_sanitised_and_truncated():
     """Check typed username sanitised and truncated."""
     raw = "a\x00b\u202e" + "x" * 10_000
     out = sanitise_text(raw)
-    assert "\x00" not in out and len(out) == 256 and out.startswith("ab\u202e")
+    assert "\x00" not in out
+    assert len(out) == 256
+    assert out.startswith("ab\u202e")
 
 
 def test_sanitise_text_none_and_controls():

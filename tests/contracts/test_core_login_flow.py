@@ -70,6 +70,5 @@ async def test_mfa_invalid_code_reported_in_errors(
         )
         last_result = await resp.json()
 
-    assert last_result["step_id"] == "mfa" and last_result["errors"] == {
-        "base": "invalid_code"
-    }
+    assert last_result["step_id"] == "mfa"
+    assert last_result["errors"] == {"base": "invalid_code"}

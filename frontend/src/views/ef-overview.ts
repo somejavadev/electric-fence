@@ -225,12 +225,10 @@ export class EfOverview extends LitElement {
     }
     // Pushes carry `id: null`; the refetch replaces the lists anyway. A
     // timer already running covers every push that arrives before it fires.
-    if (this._timer === undefined) {
-      this._timer = setTimeout(() => {
-        this._timer = undefined;
-        void this._refresh(this._generation);
-      }, REFRESH_DELAY_MS);
-    }
+    this._timer ??= setTimeout(() => {
+      this._timer = undefined;
+      void this._refresh(this._generation);
+    }, REFRESH_DELAY_MS);
   }
 
   private _markUnloaded(): void {

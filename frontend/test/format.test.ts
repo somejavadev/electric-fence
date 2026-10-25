@@ -32,7 +32,7 @@ describe("truncate", () => {
   it("cuts to the limit plus an ellipsis and keeps the full text", () => {
     const text = "x".repeat(100);
     const { short, full } = truncate(text, 64);
-    expect(short.length).toBe(65);
+    expect(short).toHaveLength(65);
     expect(short.endsWith("…")).toBe(true);
     expect(full).toBe(text);
   });
@@ -41,7 +41,7 @@ describe("truncate", () => {
   });
   it("never splits a surrogate pair", () => {
     const { short } = truncate("😀".repeat(70), 64);
-    expect([...short].length).toBe(65);
+    expect([...short]).toHaveLength(65);
   });
 });
 

@@ -21,8 +21,8 @@ const ICONS = new Map<string, CustomIcon>([
   ["logo", { path: GLYPH_PATH, viewBox: "0 0 24 24" }],
 ]);
 
-export async function getIcon(name: string): Promise<CustomIcon | undefined> {
-  return ICONS.get(name);
+export function getIcon(name: string): Promise<CustomIcon | undefined> {
+  return Promise.resolve(ICONS.get(name));
 }
 
 // An ha-icon that looked the set up before it existed caches the miss (it sets

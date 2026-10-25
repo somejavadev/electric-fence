@@ -5,7 +5,7 @@ Every command is admin only. The JSON shapes are documented in `shapes.py`.
 
 from datetime import UTC, datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import probatio
 
@@ -187,14 +187,13 @@ async def ws_logins(
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     result = msg.get("result")
+    result_filter: LoginResult | Literal["failed_or_blocked"] | None = None
+    if result == FAILED_OR_BLOCKED:
+        result_filter = FAILED_OR_BLOCKED
+    elif result is not None:
+        result_filter = LoginResult(result)
     flt = LoginFilter(
-        result=(
-            FAILED_OR_BLOCKED
-            if result == FAILED_OR_BLOCKED
-            else LoginResult(result)
-            if result is not None
-            else None
-        ),
+        result=result_filter,
         user_id=msg.get("user_id"),
         username_contains=msg.get("username"),
         ip=msg.get("ip"),
