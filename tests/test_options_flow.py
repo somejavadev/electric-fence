@@ -1,6 +1,7 @@
 """Tests for the Electric Fence options flow and live settings."""
 
 from datetime import timedelta
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -440,30 +441,84 @@ async def test_options_flow_shows_record_values(
     assert setup_entry.runtime_data.settings.record_values is True
 
 
+def _valued_change(name: str) -> SettingsChange:
+    """Return a system change that carries recorded values."""
+    return SettingsChange(
+        ts=dt_util.utcnow(),
+        kind=ChangeKind.CORE_CONFIG,
+        action=ChangeAction.UPDATED,
+        target_id=None,
+        target_name=None,
+        details={"changed": [name], "values": {name: {"before": 1, "after": 2}}},
+        actor_user_id=None,
+        actor_name=None,
+        actor_ip=None,
+    )
+
+
+async def _stored(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
+    """Return the stored change details keyed by the first changed name."""
+    store = entry.runtime_data.store
+    rows = await hass.async_add_executor_job(
+        lambda: store.query_changes(ChangeFilter(include_system=True))
+    )
+    return {r.details["changed"][0]: r.details for r in rows}
+
+
 async def test_turning_off_strips_values(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
-    """Switching record_values off removes stored values, queued rows included."""
+    """Switching record_values off removes values that were stored."""
     runtime = setup_entry.runtime_data
     await _change(hass, setup_entry, record_values=True)
-    runtime.worker.submit(
-        SettingsChange(
-            ts=dt_util.utcnow(),
-            kind=ChangeKind.CORE_CONFIG,
-            action=ChangeAction.UPDATED,
-            target_id=None,
-            target_name=None,
-            details={"changed": ["a"], "values": {"a": {"before": 1, "after": 2}}},
-            actor_user_id=None,
-            actor_name=None,
-            actor_ip=None,
-        )
-    )
-    await _change(hass, setup_entry, record_values=False)
+    runtime.worker.submit(_valued_change("a"))
     await runtime.worker.async_flush()
-    rows = await hass.async_add_executor_job(
-        lambda: runtime.store.query_changes(ChangeFilter(include_system=True))
-    )
-    assert rows
-    assert all("values" not in r.details for r in rows)
-    assert any(r.details == {"changed": ["a"]} for r in rows)
+    assert "values" in (await _stored(hass, setup_entry))["a"]
+
+    await _change(hass, setup_entry, record_values=False)
+    assert (await _stored(hass, setup_entry))["a"] == {"changed": ["a"]}
+
+
+async def test_turning_off_strips_rows_still_queued(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row whose write is still pending when the option goes off is stripped."""
+    runtime = setup_entry.runtime_data
+    await _change(hass, setup_entry, record_values=True)
+    real_insert = runtime.store.insert
+    release = threading.Event()
+
+    def slow_insert(batch: Any) -> None:
+        release.wait(5)
+        real_insert(batch)
+
+    monkeypatch.setattr(runtime.store, "insert", slow_insert)
+    # The write only finishes after the options change has started, so the
+    # strip must wait for it (flush first).
+    hass.loop.call_later(0.2, release.set)
+    runtime.worker.submit(_valued_change("late"))
+    await _change(hass, setup_entry, record_values=False)
+    release.set()
+    await runtime.worker.async_flush()
+    assert (await _stored(hass, setup_entry))["late"] == {"changed": ["late"]}
+
+
+async def test_values_kept_when_not_turned_off(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Turning the option on, or saving with it still on or off, strips nothing."""
+    runtime = setup_entry.runtime_data
+    await _change(hass, setup_entry, record_values=True)
+    runtime.worker.submit(_valued_change("a"))
+    await runtime.worker.async_flush()
+    await _change(hass, setup_entry, record_values=True, reverse_dns=False)
+    assert "values" in (await _stored(hass, setup_entry))["a"]
+
+    # Already off (nothing recorded under it): a save changes nothing stored.
+    await _change(hass, setup_entry, record_values=False)
+    runtime.worker.submit(_valued_change("b"))
+    await runtime.worker.async_flush()
+    await _change(hass, setup_entry, record_values=False, reverse_dns=True)
+    assert "values" in (await _stored(hass, setup_entry))["b"]
