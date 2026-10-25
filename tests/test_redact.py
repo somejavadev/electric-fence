@@ -43,6 +43,18 @@ from custom_components.electric_fence.redact import (
         "lon",
         "lng",
         "pass",
+        "Authorization",
+        "proxy_authorization",
+        "passcode",
+        "alarmPasscode",
+        "pincode",
+        "code",
+        "alarm_code",
+        "otp",
+        "otp_value",
+        "PINCode",
+        "PSKValue",
+        "country_code",
     ],
 )
 def test_sensitive_names(name: str) -> None:
@@ -67,6 +79,11 @@ def test_sensitive_names(name: str) -> None:
         "scan_interval",
         "name",
         "radiusless",
+        "barcode",
+        "codec",
+        "encoding",
+        "hotplug",
+        "HTTPSPort",
     ],
 )
 def test_harmless_names(name: str) -> None:
@@ -128,6 +145,19 @@ def test_harmless_names(name: str) -> None:
             id="url-path-param",
         ),
         pytest.param("http://[bad/x", HIDDEN, id="url-unparseable"),
+        pytest.param("Bearer eyJhbGciOiJIUzI1NiJ9.abc.def", HIDDEN, id="bearer"),
+        pytest.param("Basic dXNlcjpwYXNzd29yZA==", HIDDEN, id="basic"),
+        pytest.param("token abc", HIDDEN, id="token-scheme-lower"),
+        pytest.param("DIGEST username=x", HIDDEN, id="digest-upper"),
+        pytest.param(" Bearer x ", HIDDEN, id="bearer-spaces"),
+        pytest.param("Bearer", "Bearer", id="scheme-word-alone"),
+        pytest.param("Basic setup", HIDDEN, id="scheme-then-word"),
+        pytest.param("user:pass@host:1883", "•••@host:1883", id="creds-no-scheme"),
+        pytest.param(
+            "mqtt:s3cr3t:x@broker.local", "•••@broker.local", id="creds-colon-pass"
+        ),
+        pytest.param("me@example.com", "me@example.com", id="email"),
+        pytest.param("a: b@c", "a: b@c", id="colon-space-not-creds"),
         pytest.param(b"secret-bytes", HIDDEN, id="bytes"),
         pytest.param(bytearray(b"secret"), HIDDEN, id="bytearray"),
     ],
@@ -208,3 +238,63 @@ def test_diff_enum_key_does_not_raise() -> None:
     d = diff_details({"x": {Mode.A: 1}}, {"x": {Mode.A: 2}}, include_values=True)
     assert d["changed"] == ["x"]
     assert isinstance(d["values"]["x"]["after"], dict)
+
+
+def test_diff_scrape_headers_hidden() -> None:
+    """Scrape keeps request headers in its options (Core shape)."""
+    before = {
+        "resource": "https://example.com",
+        "method": "GET",
+        "auth": {},
+        "additional": {
+            "headers": {"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"},
+            "verify_ssl": True,
+            "timeout": 10,
+            "encoding": "UTF-8",
+        },
+    }
+    after = {
+        **before,
+        "additional": {
+            **before["additional"],
+            "headers": {
+                "Authorization": "Basic dXNlcjpwYXNzd29yZA==",
+                "X-Api": "Token abc",
+                "Accept": "text/html",
+            },
+        },
+    }
+
+    details = diff_details(before, after, include_values=True)
+
+    assert details["changed"] == ["additional"]
+    value = details["values"]["additional"]
+    assert value["before"]["headers"] == {"Authorization": HIDDEN}
+    assert value["after"]["headers"] == {
+        "Authorization": HIDDEN,
+        "X-Api": HIDDEN,
+        "Accept": "text/html",
+    }
+    assert "dXNlcjpwYXNzd29yZA" not in repr(details)
+    assert "eyJhbGci" not in repr(details)
+
+
+def test_diff_flat_scrape_headers_hidden() -> None:
+    """Headers as a top-level option are hidden too."""
+    details = diff_details(
+        {"headers": {"Authorization": "Bearer abc"}},
+        {"headers": {"Authorization": "Bearer xyz"}},
+        include_values=True,
+    )
+
+    assert details["values"]["headers"] == {
+        "before": {"Authorization": HIDDEN},
+        "after": {"Authorization": HIDDEN},
+    }
+
+
+def test_diff_alarm_code_hidden() -> None:
+    """Satel Integra and SimpliSafe keep the alarm code under `code` (CONF_CODE)."""
+    details = diff_details({"code": "1234"}, {"code": "5678"}, include_values=True)
+
+    assert details == {"changed": ["code"], "values": {"code": HIDDEN}}

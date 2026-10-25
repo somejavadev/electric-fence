@@ -19,18 +19,39 @@ _STRONG: Final = (
     "apikey",
     "credential",
     "cookie",
+    "authorization",
+    "passcode",
+    "pincode",
     "latitude",
     "longitude",
     "elevation",
 )
 _SHORT: Final = frozenset(
-    {"pass", "pwd", "pin", "key", "auth", "radius", "lat", "lon", "lng", "psk"}
+    {
+        "pass",
+        "pwd",
+        "pin",
+        "key",
+        "auth",
+        "code",
+        "otp",
+        "radius",
+        "lat",
+        "lon",
+        "lng",
+        "psk",
+    }
 )
-_CAMEL: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# camelCase, and an acronym before a word: PINCode -> PIN_Code.
+_CAMEL: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SPLIT: Final = re.compile(r"[_\-. ]+")
 _OPAQUE: Final = re.compile(r"[A-Za-z0-9\-_+/=.~]{20,}")
 _URL: Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 _PATH_SPLIT: Final = re.compile(r"[:=,]")
+# An HTTP Authorization value: "Bearer <token>", "Basic <base64>", ...
+_AUTH_SCHEME: Final = re.compile(r"^(Bearer|Basic|Token|Digest)\s+\S+", re.IGNORECASE)
+# Credentials without a scheme: user:pass@host[:port].
+_USERINFO: Final = re.compile(r"^[^\s/@:]+:[^\s@]+@\S+$")
 
 
 def is_sensitive_name(name: str) -> bool:
@@ -86,9 +107,12 @@ def _scrub(value: Any, *, by_name: bool) -> Any:
     if isinstance(value, (bytes, bytearray)):
         return dict(HIDDEN)
     if isinstance(value, str):
-        if _URL.match(value.strip()):
-            return _redact_url(value.strip())
-        if "-----BEGIN" in value or _is_opaque(value):
+        text = value.strip()
+        if _URL.match(text):
+            return _redact_url(text)
+        if _USERINFO.match(text):
+            return f"{_MASK}@{text.rpartition('@')[2]}"
+        if _AUTH_SCHEME.match(text) or "-----BEGIN" in value or _is_opaque(value):
             return dict(HIDDEN)
         return value
     if isinstance(value, Mapping):
