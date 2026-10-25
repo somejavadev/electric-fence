@@ -534,7 +534,7 @@ async def test_status_redacts_license_key(
     assert res["settings"]["maxmind_license_key_set"] is True
     assert res["settings"]["maxmind_account_id"] == "123456"
     assert res["settings"]["retention_days"] == 90
-    assert res["version"] == "0.1.1"
+    assert res["version"] == "0.2.0"
     assert set(res["geo"]) == {"provider", "db_date", "last_error", "attribution"}
     names = [c["name"] for c in res["collectors"]]
     assert names == [c.name for c in runtime.collectors]

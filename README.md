@@ -13,9 +13,10 @@
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
 
 Electric Fence is a Home Assistant integration that records failed and
-successful logins, and who changed settings. It never affects logins: if
-something goes wrong inside Electric Fence, Home Assistant carries on as if it
-weren't installed.
+successful logins, and who changed settings. It bans addresses that keep
+failing to log in, slows down guessing of one username, and tells you about
+logins from a new country. If something goes wrong inside Electric Fence, Home
+Assistant carries on as if it weren't installed.
 
 Screenshots are coming.
 
@@ -34,10 +35,16 @@ Screenshots are coming.
   (disable, enable, purge, and purge entities). A change without a person
   behind it, such as an automation, shows as **System**. Log level and recorder
   actions are recorded only when they succeed.
+- Bans an IP address after repeated failed logins, through Home Assistant's own
+  IP ban list (see [Protection](#protection)).
+- Slows down logins to a username that is being guessed from many addresses.
+- Alerts you when a user logs in from a country they haven't logged in from
+  before.
 - Shows everything in an admin-only panel with Overview, Activity, Users,
-  Audit, and Settings tabs.
-- Creates a persistent notification, fires events, and provides a sensor, so
-  you can build your own automations.
+  Bans, Audit, and Settings tabs. The panel shows country flags, which are
+  bundled with it and loaded from your own Home Assistant.
+- Creates persistent notifications, sends messages to your phone, fires events,
+  and provides sensors, so you can build your own automations.
 
 ## Install
 
@@ -62,26 +69,62 @@ The minimum supported version is Home Assistant 2026.11.0.
 ## Settings
 
 Select **Configure** on the integration to change these. All of them apply
-immediately, without a restart.
+immediately, without a restart. The dialog has the general settings below, and
+the **Bans**, **Username protection**, and **Notifications** sections.
 
-| Setting                                     | What it does                                                                                                                                                                                                                                                     |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Notify on failed login**                  | Creates a persistent notification when a login fails.                                                                                                                                                                                                            |
-| **Home Assistant's own login notification** | **Replace** dismisses Home Assistant's own login notification while notifications are on. **Keep** leaves it in place.                                                                                                                                           |
-| **History retention**                       | Days of history to keep, from 1 to 3650. The default is 90.                                                                                                                                                                                                      |
-| **GeoIP provider**                          | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. Choosing MaxMind opens a second step for the credentials, which are checked before saving.                                     |
-| **Reverse DNS lookups**                     | Looks up host names for IP addresses. On by default.                                                                                                                                                                                                             |
-| **Record before and after values**          | Stores what each setting was and what it became, with sensitive values hidden (see [Privacy](#privacy)). Turning this off also removes the values already stored. Turning it on doesn't fill in earlier changes. Changing it is itself recorded. Off by default. |
+| Setting                            | What it does                                                                                                                                                                                                                                                     |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **History retention**              | Days of history to keep, from 1 to 3650. The default is 90.                                                                                                                                                                                                      |
+| **GeoIP provider**                 | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. Choosing MaxMind opens a second step for the credentials, which are checked before saving.                                     |
+| **Reverse DNS lookups**            | Looks up host names for IP addresses. On by default.                                                                                                                                                                                                             |
+| **Record before and after values** | Stores what each setting was and what it became, with sensitive values hidden (see [Privacy](#privacy)). Turning this off also removes the values already stored. Turning it on doesn't fill in earlier changes. Changing it is itself recorded. Off by default. |
+
+**Bans**
+
+| Setting                                | What it does                                                                                                      |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Ban automatically**                  | Bans an IP address that fails too many logins. On by default.                                                     |
+| **Failed attempts**                    | Failed logins from one address before it's banned, from 1 to 100. The default is 5.                               |
+| **Within**                             | The period in which they're counted, from 1 to 1440 minutes. The default is 15.                                   |
+| **Ban length**                         | Hours a ban lasts, from 0 to 8760. 0 means it never expires. The default is 24.                                   |
+| **Lengthen bans for repeat offenders** | Doubles the ban for each further ban of the same address within 30 days. The fourth is permanent. Off by default. |
+
+**Username protection**
+
+| Setting               | What it does                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| **Protect usernames** | Treats many failures against one username from several addresses as an attack. On by default. |
+| **Failed attempts**   | Failed logins against one username, from 2 to 1000. The default is 10.                        |
+| **From at least**     | Different addresses the failures must come from, from 1 to 100. The default is 3.             |
+| **Within**            | The period in which they're counted, from 1 to 1440 minutes. The default is 15.               |
+
+**Notifications**
+
+Turning a notification off stops only the message. Events, the panel, the
+audit log, and the entities are unaffected.
+
+| Setting                                     | What it does                                                                                                                        |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **Failed login**                            | Creates a persistent notification when a login fails. On by default.                                                                |
+| **Home Assistant's own login notification** | **Replace** dismisses Home Assistant's own login notification while failed login notifications are on. **Keep** leaves it in place. |
+| **IP address banned**                       | A message when an address is banned. On by default.                                                                                 |
+| **Username under attack**                   | A message when a username is being guessed from many addresses. On by default.                                                      |
+| **Login from a new country**                | A message when someone logs in from a country not seen before. On by default.                                                       |
+| **Ban ended**                               | A message when a ban expires or is lifted. Off by default.                                                                          |
+| **Phone notifications**                     | Notify entities, such as phones, that also receive these messages.                                                                  |
 
 ## Events
 
 Electric Fence fires these events on the Home Assistant event bus.
 
-| Event                             | Fired when                               |
-| --------------------------------- | ---------------------------------------- |
-| `electric_fence_login_failed`     | A login fails.                           |
-| `electric_fence_login_succeeded`  | A login succeeds.                        |
-| `electric_fence_settings_changed` | A setting is changed (see `kind` below). |
+| Event                              | Fired when                               |
+| ---------------------------------- | ---------------------------------------- |
+| `electric_fence_login_failed`      | A login fails.                           |
+| `electric_fence_login_succeeded`   | A login succeeds.                        |
+| `electric_fence_settings_changed`  | A setting is changed (see `kind` below). |
+| `electric_fence_ip_banned`         | Electric Fence bans an IP address.       |
+| `electric_fence_username_attack`   | A username attack starts or ends.        |
+| `electric_fence_new_country_login` | A user logs in from a new country.       |
 
 A failed login event has these fields: `username`, `username_masked`,
 `user_exists`, `user_id`, `reason`, `ip`, `country`, `hostname`, `source`,
@@ -92,6 +135,17 @@ is `null` otherwise.
 A successful login event has these fields: `user_id`, `username` (the user's
 name, never the typed text), `ip`, `country`, `source`, `client`, and
 `mfa_used`.
+
+An IP ban event has these fields: `ip`, `country`, `hostname`, `failures`,
+`expires_at` (`null` for a permanent ban), and `ban_number` (how many times
+Electric Fence has banned this address within 30 days).
+
+A username attack event has these fields: `username`, `ips` (up to 20),
+`ip_count`, `countries`, `started_at`, and `state`, which is `started` or
+`ended`.
+
+A new country login event has these fields: `user_id`, `username` (the user's
+name), `ip`, `country`, `hostname`, and `previous_countries_count`.
 
 A settings change event has these fields: `kind`, `action`, `target`,
 `target_name`, `changed`, `changed_by_user_id`, `changed_by_name`, and `ip`. A
@@ -114,9 +168,100 @@ failed and blocked login attempts in the last 24 hours. Its attributes describe
 the most recent one: `last_username`, `last_ip`, `last_country`, and
 `last_reason`. The reason is one of `no_such_user`, `wrong_password`,
 `invalid_credentials`, `wrong_2fa_code`, `invalid_token`,
-`blocked_inactive_user`, or `blocked_local_only`.
+`blocked_inactive_user`, `blocked_local_only`, or `throttled`.
+
+## Entities
+
+All entities belong to the **Electric Fence** device. Their states are counts,
+timestamps, or on and off. The few attributes that hold an IP address, a
+country, or a name are kept out of the recorder.
+
+| Entity                                            | State                                                                           |
+| ------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `sensor.electric_fence_failed_logins`             | Failed and blocked logins in the last 24 hours.                                 |
+| `sensor.electric_fence_active_bans`               | Active IP bans. Attributes: `last_ip`, `last_country`.                          |
+| `sensor.electric_fence_bans_in_the_last_24_hours` | Bans in the last 24 hours.                                                      |
+| `sensor.electric_fence_attacked_usernames`        | Usernames under attack now.                                                     |
+| `sensor.electric_fence_last_failed_login`         | When the last failed or blocked login happened.                                 |
+| `sensor.electric_fence_last_ban`                  | When the last ban happened.                                                     |
+| `sensor.electric_fence_last_new_country_login`    | When the last login from a new country happened. Attributes: `user`, `country`. |
+| `sensor.electric_fence_admins_without_mfa`        | Active administrators without two-factor authentication.                        |
+| `sensor.electric_fence_geoip_updated`             | The date of the GeoIP database. A diagnostic entity.                            |
+| `binary_sensor.electric_fence_login_attack`       | On while a username is under attack.                                            |
+| `binary_sensor.electric_fence_security_warnings`  | On while any security check on the Overview tab warns.                          |
+| `binary_sensor.electric_fence_auto_ban_available` | On while Electric Fence can ban addresses. A diagnostic entity.                 |
 
 The admin panel is in the sidebar and at `/electric-fence`.
+
+## Protection
+
+### IP bans
+
+When an address fails to log in too many times within the window (5 in 15
+minutes by default), Electric Fence adds it to Home Assistant's own ban list
+(`ip_bans.yaml`). Home Assistant then refuses every request from it. Bans last
+24 hours by default, and expire by themselves. Failures that count are an
+unknown username, a wrong password, wrong credentials, a wrong two-factor
+code, and a throttled attempt. Invalid tokens and blocked users don't count.
+
+- **Unban.** Open the **Bans** tab to see who is banned, and why, and to lift a
+  ban. This works on bans Home Assistant added itself, too. Lifting a ban also
+  resets Home Assistant's own failure counter for that address, so one more
+  typo doesn't ban it again at once.
+- **Never banned.** Local network addresses (loopback, private ranges,
+  100.64.0.0/10, link-local, and IPv6 unique-local), the Supervisor, and your
+  `trusted_proxies`.
+- **Trusted after success.** An address with a successful login within the ban
+  length (24 hours if bans never expire) isn't banned automatically. A
+  successful login resets that address's count.
+- **Repeat offenders.** With **Lengthen bans for repeat offenders** on, each
+  further ban of the same address within 30 days doubles the length. The fourth
+  is permanent. A ban length of 0 is always permanent.
+
+Bans need Home Assistant's IP ban to be switched on. Add this to your
+`configuration.yaml` and restart:
+
+```yaml
+http:
+  ip_ban_enabled: true
+```
+
+It's on unless you turned it off. If it's off, Electric Fence raises a repair
+issue and can't ban anything. The **Auto ban available** entity shows whether
+it can.
+
+> [!IMPORTANT]
+> If Home Assistant runs behind a reverse proxy, set `use_x_forwarded_for` and
+> `trusted_proxies` under `http:`. Without them, every visitor appears to come
+> from the proxy's address. Proxy addresses are never banned, so bans then do
+> nothing. Check the proxy's address is a `trusted_proxies` entry, and not a
+> public address you'd lock yourself out of.
+
+### Username protection
+
+When one username fails 10 times from at least 3 addresses within 15 minutes,
+Electric Fence treats it as an attack and slows down logins to that username
+until it stops. Attempts are handled one at a time. Each failed attempt makes
+the next wait longer, starting at 2 seconds, doubling, and capped at 30
+seconds. At most 3 attempts wait. Any more are refused with "Too many login
+attempts. Try again later." Your own addresses on the local network aren't
+slowed down. Attacks show in the panel, in the **Login attack** entity, and in
+the `electric_fence_username_attack` event.
+
+### New country alerts
+
+Electric Fence remembers the countries each user has logged in from. The first
+successful login from a country a user hasn't used before fires
+`electric_fence_new_country_login` and sends a message. The user's first
+country is learned silently. Logins with no country (GeoIP off) and logins from the local network are
+ignored.
+
+### Notifications
+
+Choose which events send a message in the **Notifications** section of the
+settings. Messages appear as persistent notifications. Add notify entities
+(such as the Home Assistant companion app on your phone) to **Phone
+notifications** to get them there too.
 
 > [!WARNING]
 > Sensor attributes and event fields contain text typed by whoever tried to
@@ -150,6 +295,13 @@ resolver your system is configured to use. You can turn it off in the settings.
   change in which only hidden parts differ shows as "changed (hidden)" as a
   whole. An integration's connection `data` is never stored. A secret that
   looks like plain text under an unrecognisable name can still show.
+- **Known countries.** For new country alerts, each user's countries are kept
+  as country codes only (for example `DE`), with no IP addresses. They aren't
+  removed by the retention period. They're deleted with the user, and you can
+  clear all of them with **Clear known countries** on the **Settings** tab.
+- **Entities.** Entity states hold counts, timestamps, or on and off only.
+  Usernames and IP addresses appear only in a few attributes, which are kept
+  out of the recorder.
 - **Retention.** Records older than the retention period are deleted. The
   default is 90 days.
 - **Removal.** Removing the integration deletes `.storage/electric_fence.db`
@@ -166,6 +318,9 @@ resolver your system is configured to use. You can turn it off in the settings.
         - electric_fence_login_failed
         - electric_fence_login_succeeded
         - electric_fence_settings_changed
+        - electric_fence_ip_banned
+        - electric_fence_username_attack
+        - electric_fence_new_country_login
   ```
 
 ### Attribution
@@ -176,7 +331,11 @@ is licensed under
 
 ## Known limits
 
-- Electric Fence doesn't block anything in v0.1. It records and tells you.
+- Bans are per IP address only. There are no ranges or countries in v0.2.
+- A ban that Electric Fence couldn't write to `ip_bans.yaml` lasts until Home
+  Assistant restarts. It then shows as **Other** in the Bans tab.
+- Electric Fence can't ban or slow down an address that Home Assistant sees as
+  a local or proxy address (see [Protection](#protection)).
 - Admin actions that Electric Fence can't tie to a person, and changes an
   integration makes to itself, show as **System**.
 - Adding or removing a login (credentials) for an existing user isn't

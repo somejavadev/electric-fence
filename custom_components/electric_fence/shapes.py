@@ -13,7 +13,7 @@ LoginItem (a stored login attempt)::
      result: "success" | "failed" | "blocked",
      reason: "ok" | "no_such_user" | "wrong_password" | "invalid_credentials"
              | "wrong_2fa_code" | "invalid_token" | "blocked_inactive_user"
-             | "blocked_local_only",
+             | "blocked_local_only" | "throttled",
      username_typed: str | null,  # RAW attacker-controlled text: render as text
      user_exists: "yes" | "no" | "unknown",
      user_id: str | null,
@@ -25,6 +25,7 @@ LoginItem (a stored login attempt)::
      client_id: str | null, client_name: str | null,
      user_agent: str | null, url: str | null, mfa_module: str | null,
      confirmed: bool,             # success confirmed by a token being issued
+     new_country: bool,           # first successful login from this country
      count: int}                  # identical failures merged into this row
 
 ChangeItem (a stored settings change; `actor_user_id` null means System)::
