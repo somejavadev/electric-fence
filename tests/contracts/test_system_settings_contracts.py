@@ -5,12 +5,18 @@ import logging
 from typing import Any
 from unittest.mock import patch
 
+import probatio
 import pytest
 
 from custom_components.electric_fence.collectors.system_settings import (
     SystemSettingsCollector,
 )
-from custom_components.electric_fence.contracts import CONTRACTS, check_contracts
+from custom_components.electric_fence.contracts import (
+    CONTRACTS,
+    _message_keys_reason,
+    _schema_keys,
+    check_contracts,
+)
 from homeassistant.components.analytics import DATA_COMPONENT
 from homeassistant.components.backup.const import DATA_MANAGER
 from homeassistant.components.http import config as http_config
@@ -138,3 +144,82 @@ async def test_contract_fails_without_http_meta_keys(
     """The HTTP config's metadata keys are stripped by name."""
     monkeypatch.delattr(http_config, name)
     assert _check(hass) == f"http: config.{name} is missing"
+
+
+# Message fields the readers use.
+
+_KEYED = [s for s in SystemSettingsCollector.WS_SPECS if s.message_keys]
+
+
+def test_keyed_commands() -> None:
+    """The commands whose readers use message fields declare them."""
+    assert {s.command: s.message_keys for s in _KEYED} == {
+        "backup/delete": ("backup_id",),
+        "backup/restore": (
+            "backup_id",
+            "agent_id",
+            "restore_database",
+            "restore_folders",
+            "restore_homeassistant",
+            "restore_addons",
+        ),
+        "http/config/configure": ("config",),
+        "logger/log_level": ("module",),
+        "logger/integration_log_level": ("integration",),
+    }
+
+
+@pytest.mark.parametrize("spec", _KEYED, ids=lambda s: s.command)
+async def test_message_keys_in_core_schema(
+    hass: HomeAssistant, areas: None, spec: Any
+) -> None:
+    """Core's registered schema has every field the reader uses."""
+    keys = _schema_keys(hass.data[WEBSOCKET_API_DOMAIN][spec.command][1])
+    assert keys is not None
+    assert set(spec.message_keys) <= keys
+    assert (
+        _message_keys_reason(spec, hass.data[WEBSOCKET_API_DOMAIN][spec.command][1])
+        is None
+    )
+    assert _check(hass) is None
+
+
+@pytest.mark.parametrize(
+    ("spec", "key"),
+    [(s, k) for s in _KEYED for k in s.message_keys],
+    ids=lambda v: getattr(v, "command", v),
+)
+async def test_contract_fails_for_renamed_message_field(
+    hass: HomeAssistant, areas: None, spec: Any, key: str
+) -> None:
+    """A field renamed in Core's schema fails the contract with its name."""
+    handlers = hass.data[WEBSOCKET_API_DOMAIN]
+    handler, schema = handlers[spec.command]
+    handlers[spec.command] = (
+        handler,
+        probatio.Schema({k: v for k, v in schema.schema.items() if str(k) != key}),
+    )
+    assert _check(hass) == f"{spec.command}: message fields missing: {key}"
+
+
+async def test_contract_fails_for_schema_without_names(
+    hass: HomeAssistant, areas: None
+) -> None:
+    """A schema whose fields can't be read fails the contract."""
+    handlers = hass.data[WEBSOCKET_API_DOMAIN]
+    handlers["logger/log_level"] = (handlers["logger/log_level"][0], object())
+    assert _check(hass) == "logger/log_level: the message schema has no field names"
+
+
+class _NoValidators:
+    validators: list[Any] = []
+
+
+def test_schema_keys_shapes() -> None:
+    """Core's three schema shapes, and shapes without names."""
+    fields = probatio.Schema({probatio.Required("module"): str})
+    assert _schema_keys(False) == set()
+    assert _schema_keys(fields) == {"module"}
+    assert _schema_keys(probatio.All(fields, lambda v: v)) == {"module"}
+    assert _schema_keys(_NoValidators()) is None
+    assert _schema_keys(object()) is None

@@ -327,9 +327,38 @@ def _check_system_settings_ws(hass: HomeAssistant) -> str | None:
     ]
     if missing:
         return f"WebSocket commands not registered: {', '.join(missing)}"
+    for spec in SystemSettingsCollector.WS_SPECS:
+        if spec.message_keys and spec.command in handlers:
+            if reason := _message_keys_reason(spec, handlers[spec.command][1]):
+                return reason
     for component, check in _AREA_CHECKS.items():
         if component in hass.config.components and (reason := check(hass)):
             return f"{component}: {reason}"
+    return None
+
+
+def _schema_keys(schema: Any) -> set[str] | None:
+    """Return the top-level field names of a registered command schema.
+
+    Core registers `False` for a command without fields, a `Schema` over a
+    dict of markers, or an `All` whose first validator is that `Schema`.
+    """
+    if schema is False:
+        return set()
+    if (validators := getattr(schema, "validators", None)) is not None:
+        schema = validators[0] if validators else None
+    fields = getattr(schema, "schema", None)
+    if not isinstance(fields, dict):
+        return None
+    return {str(key) for key in fields}
+
+
+def _message_keys_reason(spec: Any, schema: Any) -> str | None:
+    """Check a command's schema still has the fields its reader uses."""
+    if (keys := _schema_keys(schema)) is None:
+        return f"{spec.command}: the message schema has no field names"
+    if missing := [key for key in spec.message_keys if key not in keys]:
+        return f"{spec.command}: message fields missing: {', '.join(missing)}"
     return None
 
 

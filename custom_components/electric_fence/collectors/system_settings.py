@@ -84,6 +84,9 @@ class WsSpec:
     # Record the parameters on success, instead of a before/after difference.
     always_record: bool = False
     read_after: Reader | None = None
+    # Message fields the reader or action uses; the contract checks Core's
+    # schema for the command still has them.
+    message_keys: tuple[str, ...] = ()
 
     def action_for(self, msg: dict[str, Any]) -> ChangeAction:
         """Return the action recorded for this message."""
@@ -113,13 +116,19 @@ def _backup_config(
     return manager.config.data.to_dict()
 
 
+_BACKUP_ID = "backup_id"
+_HTTP_CONFIG = "config"
+_LOGGER_MODULE = "module"
+_LOGGER_INTEGRATION = "integration"
+
+
 def _backup_delete(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
     """Return the backup to delete."""
-    return {"backup_id": msg["backup_id"]}
+    return {_BACKUP_ID: msg[_BACKUP_ID]}
 
 
 _RESTORE_PARAMS = (
-    "backup_id",
+    _BACKUP_ID,
     "agent_id",
     "restore_database",
     "restore_folders",
@@ -167,7 +176,7 @@ def _http_configure_before(
         return None
     stable = _http_settings(store.stable)
     pending = store.pending
-    config = msg["config"]
+    config = msg[_HTTP_CONFIG]
     if config is None or _http_settings(config) == stable:
         return None if pending is None else _http_settings(pending)
     if (
@@ -185,12 +194,12 @@ def _http_configure_after(
     """Return the submitted config, or stable when the pending one was dropped."""
     if (store := _http_store(hass)) is None:
         return None
-    config = msg["config"]
+    config = msg[_HTTP_CONFIG]
     return _http_settings(store.stable if config is None else config)
 
 
 def _http_configure_action(msg: dict[str, Any]) -> ChangeAction:
-    return ChangeAction.WITHDRAWN if msg["config"] is None else ChangeAction.UPDATED
+    return ChangeAction.WITHDRAWN if msg[_HTTP_CONFIG] is None else ChangeAction.UPDATED
 
 
 def _http_stable(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any] | None:
@@ -231,12 +240,12 @@ def _level(name: str) -> str:
 
 def _logger_module(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
     """Return the module logger's level name."""
-    return {msg["module"]: _level(msg["module"])}
+    return {msg[_LOGGER_MODULE]: _level(msg[_LOGGER_MODULE])}
 
 
 def _logger_integration(hass: HomeAssistant, msg: dict[str, Any]) -> Mapping[str, Any]:
     """Return the integration logger's level name, keyed by its domain."""
-    domain = msg["integration"]
+    domain = msg[_LOGGER_INTEGRATION]
     return {domain: _level(f"homeassistant.components.{domain}")}
 
 
@@ -257,6 +266,7 @@ AREA_SPECS: tuple[WsSpec, ...] = (
         "Backup",
         _backup_delete,
         always_record=True,
+        message_keys=(_BACKUP_ID,),
     ),
     WsSpec(
         "backup/restore",
@@ -265,6 +275,7 @@ AREA_SPECS: tuple[WsSpec, ...] = (
         ChangeAction.RESTORE_REQUESTED,
         "Backup",
         _backup_restore,
+        message_keys=_RESTORE_PARAMS,
         # A successful restore restarts Home Assistant before any result.
         record_before=True,
     ),
@@ -276,6 +287,7 @@ AREA_SPECS: tuple[WsSpec, ...] = (
         "HTTP",
         _http_configure_before,
         read_after=_http_configure_after,
+        message_keys=(_HTTP_CONFIG,),
     ),
     WsSpec(
         "http/config/promote",
@@ -308,6 +320,7 @@ AREA_SPECS: tuple[WsSpec, ...] = (
         ChangeAction.UPDATED,
         "Logging",
         _logger_module,
+        message_keys=(_LOGGER_MODULE,),
     ),
     WsSpec(
         "logger/integration_log_level",
@@ -316,6 +329,7 @@ AREA_SPECS: tuple[WsSpec, ...] = (
         ChangeAction.UPDATED,
         "Logging",
         _logger_integration,
+        message_keys=(_LOGGER_INTEGRATION,),
     ),
 )
 
