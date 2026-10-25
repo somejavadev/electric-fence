@@ -144,6 +144,8 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+frontend/coverage/
+ruff-report.json
 *.cover
 *.py,cover
 .hypothesis/

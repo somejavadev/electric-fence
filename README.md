@@ -5,6 +5,13 @@
 
 # Electric Fence
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=coverage)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=somejavadev-github_electric-fence&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=somejavadev-github_electric-fence)
+
 Electric Fence is a Home Assistant integration that records failed and
 successful logins, and who changed settings. It never affects logins: if
 something goes wrong inside Electric Fence, Home Assistant carries on as if it

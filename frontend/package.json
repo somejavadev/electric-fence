@@ -9,6 +9,7 @@
     "watch": "vite build --watch",
     "lint": "eslint . && prettier --check .",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "typecheck": "tsc"
   },
   "dependencies": {
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@vitest/coverage-v8": "5.0.5",
     "eslint": "10.13.0",
     "eslint-plugin-lit": "2.3.1",
     "eslint-plugin-wc": "3.1.0",

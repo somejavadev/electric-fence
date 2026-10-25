@@ -27,7 +27,7 @@ const litSinkBinding = String.raw`/\.(innerHTML|outerHTML|srcdoc|setHTMLUnsafe)\
 const bannedModulePattern = "/unsafe-html|unsafe-svg|lit-html|static-html/";
 
 export default tseslint.config(
-  { ignores: ["node_modules/**"] },
+  { ignores: ["node_modules/**", "coverage/**"] },
   js.configs.recommended,
   tseslint.configs.strict,
   lit.configs["flat/recommended"],
