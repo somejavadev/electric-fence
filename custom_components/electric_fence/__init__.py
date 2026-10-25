@@ -22,6 +22,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
+from .alerts import Alerter
 from .attribution import AttributionCollector
 from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
@@ -178,6 +179,8 @@ async def async_setup_entry(
     entry.async_on_unload(notifier.async_stop)
     entry.async_on_unload(worker.add_listener(notifier.on_record))
     entry.async_on_unload(lambda: async_end_subscriptions(hass, entry.entry_id))
+
+    runtime.alerts = Alerter(hass, runtime)
 
     bans = BanManager(hass, runtime, CoreBanBackend(hass))
     runtime.bans = bans

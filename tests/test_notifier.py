@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.electric_fence import notifier as notifier_module
+from custom_components.electric_fence.alerts import Alerter
 from custom_components.electric_fence.models import (
     ChangeAction,
     ChangeKind,
@@ -78,7 +79,9 @@ def store(tmp_path: Path) -> Iterator[FenceStore]:
 async def notifier(hass: HomeAssistant, store: FenceStore) -> Notifier:
     """Return a notifier on a real store, with notifications set up."""
     assert await async_setup_component(hass, "persistent_notification", {})
-    return Notifier(hass, make_runtime(hass, store))
+    runtime = make_runtime(hass, store)
+    runtime.alerts = Alerter(hass, runtime)
+    return Notifier(hass, runtime)
 
 
 def notification(hass: HomeAssistant) -> str | None:
@@ -382,6 +385,7 @@ async def test_notification_off_creates_nothing(
     """With notifications off, events still fire and no notification exists."""
     assert await async_setup_component(hass, "persistent_notification", {})
     runtime = make_runtime(hass, store)
+    runtime.alerts = Alerter(hass, runtime)
     runtime.settings = Settings(notify_failed_login=False)
     notifier = Notifier(hass, runtime)
     events = async_capture_events(hass, "electric_fence_login_failed")

@@ -5,7 +5,6 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
@@ -293,9 +292,8 @@ class Notifier:
         message = self._notify_guard.call(build_message, record, total, tokens)
         if message is None:
             return
-        persistent_notification.async_create(
-            self._hass, message, NOTIFICATION_TITLE, NOTIFICATION_ID
-        )
+        if (alerts := self._runtime.alerts) is not None:
+            alerts.failed_login(message)
 
 
 def build_message(record: LoginAttempt, total: int | None, tokens: int | None) -> str:
