@@ -533,6 +533,27 @@ async def test_non_admin_unauthorized_records_nothing(
     assert await _rows(hass) == []
 
 
+async def test_record_before_non_admin_records_nothing(
+    hass: HomeAssistant,
+    fence: SystemSettingsCollector,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """A non-admin's rejected record-before command is not recorded."""
+    response = await _call(
+        hass,
+        hass_ws_client,
+        CMD_ACTION_BEFORE,
+        hass_read_only_access_token,
+        target="b1",
+    )
+
+    assert response["success"] is False
+    assert response["error"]["code"] == "unauthorized"
+    assert f"{DATA}_seen_records" not in hass.data
+    assert await _rows(hass) == []
+
+
 async def test_action_spec_records_params_on_success(
     hass: HomeAssistant,
     fence: SystemSettingsCollector,

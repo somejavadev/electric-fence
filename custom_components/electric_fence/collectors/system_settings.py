@@ -12,7 +12,8 @@ records the change itself. For each command in `WS_SPECS`:
 - Action-style specs (`always_record`) record the parameters the reader
   returned before the call instead of a difference, on success.
   `record_before` records them before Core's handler runs, whatever the
-  outcome (for commands that restart Home Assistant before answering).
+  outcome (for commands that restart Home Assistant before answering), but
+  only for an admin, since the wrapper runs before Core's admin check.
 - A reader returning None means the area is not available (or, for some
   readers, that Core will change nothing): nothing is recorded.
 - The before snapshot is a deep copy, so a setting Core changes in place
@@ -833,7 +834,10 @@ class SystemSettingsCollector(BaseCollector):
         before = copy.deepcopy(dict(found))
         actor = _actor(connection)
         if spec.record_before:
-            self._submit_ws(spec, actor, msg, self._params_details(before))
+            # Before Core's `require_admin`: a non-admin is about to be refused.
+            user = connection.user
+            if user is not None and user.is_admin:
+                self._submit_ws(spec, actor, msg, self._params_details(before))
             return None
 
         def on_success() -> None:
