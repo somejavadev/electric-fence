@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/somejavadev/electric-fence/main/custom_components/electric_fence/brand/dark_logo.png">
+  <img alt="Electric Fence" src="https://raw.githubusercontent.com/somejavadev/electric-fence/main/custom_components/electric_fence/brand/logo.png" height="64">
+</picture>
+
 # Electric Fence
 
 Electric Fence is a Home Assistant integration that records failed and
@@ -184,6 +189,7 @@ without Supervisor nothing starts Home Assistant again.
 | `scripts/frontend-watch` | Rebuilds the panel when files change.                           |
 | `scripts/test`           | Runs the Python and frontend tests.                             |
 | `scripts/lint`           | Runs ruff, mypy, ESLint, and Prettier.                          |
+| `scripts/build_brand`    | Renders the brand images from the SVG sources in `brand-src`.   |
 
 Build the panel before Home Assistant starts. The static path is registered
 once, with the folder as it exists at startup, so a panel built afterward only

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Render the brand images in custom_components/electric_fence/brand from the
+# SVG sources in brand-src, with ImageMagick (`magick`).
+#
+# ImageMagick's built-in SVG renderer draws fills well but gets strokes wrong,
+# so the sources are fill-only. The wordmark uses the font copy in brand-src,
+# so the result does not depend on the fonts installed on this machine.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+SRC=brand-src
+OUT=custom_components/electric_fence/brand
+FONT="$SRC/NotoSans-Bold.ttf"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# render <svg> <size> <png>: a square icon on a transparent background.
+render() {
+  magick -background none -density 576 "$1" -resize "${2}x${2}" "$3"
+}
+
+# logo <icon svg> <text colour> <height> <png>: the icon with the wordmark
+# beside it, vertically centred, trimmed, then scaled to the height.
+logo() {
+  render "$1" 1024 "$WORK/mark.png"
+  magick -background none -fill "$2" -font "$FONT" -pointsize 400 \
+    label:"Electric Fence" -trim +repage "$WORK/text.png"
+  magick "$WORK/mark.png" -trim +repage -bordercolor none -border 0x0 \
+    \( -size 140x1 xc:none \) "$WORK/text.png" \
+    -background none -gravity center +append -trim +repage \
+    -resize "x$3" "$4"
+}
+
+render "$SRC/icon.svg" 256 "$OUT/icon.png"
+render "$SRC/icon.svg" 512 "$OUT/icon@2x.png"
+render "$SRC/dark_icon.svg" 256 "$OUT/dark_icon.png"
+render "$SRC/dark_icon.svg" 512 "$OUT/dark_icon@2x.png"
+logo "$SRC/icon.svg" "#37474F" 128 "$OUT/logo.png"
+logo "$SRC/icon.svg" "#37474F" 256 "$OUT/logo@2x.png"
+logo "$SRC/dark_icon.svg" "#B0BEC5" 128 "$OUT/dark_logo.png"
+logo "$SRC/dark_icon.svg" "#B0BEC5" 256 "$OUT/dark_logo@2x.png"
+
+# 8-bit RGBA PNGs, without timestamps, so rebuilding gives the same files.
+for png in "$OUT"/*.png; do
+  magick "$png" -depth 8 -define png:color-type=6 -strip "$png"
+done
