@@ -125,6 +125,10 @@ async def async_setup_entry(
     )
     enricher.runtime = runtime
     entry.runtime_data = runtime
+    if not settings.record_values:
+        # Retries a strip that failed or was interrupted when the option went
+        # off. Idempotent, and cheap when there is nothing to remove.
+        await _async_strip_values(hass, runtime)
     # Registered first, so it runs last (on_unload runs in reverse). HA runs
     # on_unload both on unload and when setup fails partway, so this is the
     # only teardown path.
@@ -223,6 +227,20 @@ async def async_purge(hass: HomeAssistant, runtime: Runtime) -> None:
     _LOGGER.debug("Electric Fence purged %d rows", deleted)
 
 
+async def _async_strip_values(
+    hass: HomeAssistant, runtime: Runtime, *, flush: bool = False
+) -> None:
+    """Remove recorded values from stored changes; log, never raise."""
+    try:
+        if flush:
+            await runtime.worker.async_flush()
+        await hass.async_add_executor_job(runtime.store.strip_change_values)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not remove stored values: %s", type(err).__name__
+        )
+
+
 async def async_apply_settings(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> None:
@@ -245,15 +263,8 @@ async def async_apply_settings(
                 type(err).__name__,
             )
     if old.record_values and not settings.record_values:
-        try:
-            # Flush first so rows still queued with values are covered too.
-            await runtime.worker.async_flush()
-            await hass.async_add_executor_job(runtime.store.strip_change_values)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning(
-                "Electric Fence could not remove stored values: %s",
-                type(err).__name__,
-            )
+        # Flush first so rows still queued with values are covered too.
+        await _async_strip_values(hass, runtime, flush=True)
     if settings.retention_days < old.retention_days:
         try:
             await async_purge(hass, runtime)

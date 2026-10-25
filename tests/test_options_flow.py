@@ -522,3 +522,55 @@ async def test_values_kept_when_not_turned_off(
     await runtime.worker.async_flush()
     await _change(hass, setup_entry, record_values=False, reverse_dns=True)
     assert "values" in (await _stored(hass, setup_entry))["b"]
+
+
+async def test_setup_strips_values_left_by_a_failed_strip(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """With record_values off, setup strips values a failed strip left behind."""
+    runtime = setup_entry.runtime_data
+    await _change(hass, setup_entry, record_values=True)
+    runtime.worker.submit(_valued_change("a"))
+    await runtime.worker.async_flush()
+    with patch.object(
+        type(runtime.store), "strip_change_values", side_effect=OSError("disk")
+    ):
+        await _change(hass, setup_entry, record_values=False)
+    assert "values" in (await _stored(hass, setup_entry))["a"]
+
+    assert await hass.config_entries.async_reload(setup_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (await _stored(hass, setup_entry))["a"] == {"changed": ["a"]}
+
+
+async def test_setup_keeps_values_when_on(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """With record_values on, setup strips nothing."""
+    runtime = setup_entry.runtime_data
+    await _change(hass, setup_entry, record_values=True)
+    runtime.worker.submit(_valued_change("a"))
+    await runtime.worker.async_flush()
+
+    assert await hass.config_entries.async_reload(setup_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert "values" in (await _stored(hass, setup_entry))["a"]
+
+
+async def test_setup_strip_failure_does_not_block_setup(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A strip failing at setup is logged; setup still succeeds."""
+    with patch(
+        "custom_components.electric_fence.storage.FenceStore.strip_change_values",
+        side_effect=OSError("disk"),
+    ):
+        assert await hass.config_entries.async_reload(setup_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert setup_entry.state.name == "LOADED"
+    assert "could not remove stored values: OSError" in caplog.text
