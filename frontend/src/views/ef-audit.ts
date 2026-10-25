@@ -11,12 +11,23 @@ import type {
   ChangeFilter,
   ChangeItem,
   ChangeKind,
+  KnownChangeKind,
   LoginItem,
   UserItem,
 } from "../types.ts";
 import { LIVE_CAP, LiveView } from "./live-view.ts";
 
-const KINDS: readonly ChangeKind[] = ["config_entry", "user", "core_config"];
+const KINDS = [
+  "config_entry",
+  "user",
+  "core_config",
+  "backup",
+  "http",
+  "network",
+  "analytics",
+  "logger",
+  "recorder",
+] as const satisfies readonly KnownChangeKind[];
 
 export interface AuditFilters {
   kind: ChangeKind | "";
@@ -94,6 +105,96 @@ export function detailGroups(details: Record<string, unknown>): DetailGroup[] {
     { label: a.field, values: names(details["field"]) },
     { label: a.keys, values: names(details["keys"]) },
   ].filter((group) => group.values.length > 0);
+}
+
+export interface ValueLine {
+  name: string;
+  before?: string;
+  after?: string;
+  hidden: boolean;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** "location_name" becomes "Location name"; "options.x_y" "Option: X y". */
+function humanise(name: string): string {
+  const prefix = "options.";
+  const bare = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  const text = bare.replaceAll("_", " ");
+  const words = text.charAt(0).toUpperCase() + text.slice(1);
+  return name.startsWith(prefix)
+    ? `${strings.audit.optionPrefix}: ${words}`
+    : words;
+}
+
+/** A value in a short form: lists and objects as compact text. */
+function formatValue(value: unknown): string {
+  if (value === undefined || value === null) {
+    return strings.audit.noValue;
+  }
+  if (typeof value === "string") {
+    return value === "" ? strings.audit.noValue : value;
+  }
+  if (Array.isArray(value)) {
+    return value.length === 0
+      ? strings.audit.noValue
+      : value.map(formatValue).join(", ");
+  }
+  if (isRecord(value)) {
+    const label = value["name"];
+    if (typeof label === "string" && label !== "") {
+      return label;
+    }
+    const parts = Object.entries(value).map(
+      ([key, v]) => `${key}: ${formatValue(v)}`,
+    );
+    return parts.length === 0 ? strings.audit.noValue : parts.join(", ");
+  }
+  return String(value);
+}
+
+/**
+ * One line per changed setting. A name without a `values` entry (changed by
+ * hash only) has no before or after and is shown as a plain name.
+ */
+export function valueLines(details: Record<string, unknown>): ValueLine[] {
+  const values = isRecord(details["values"]) ? details["values"] : {};
+  const order = [...names(details["changed"])];
+  for (const key of Object.keys(values)) {
+    if (!order.includes(key)) {
+      order.push(key);
+    }
+  }
+  return order.map((key): ValueLine => {
+    const name = humanise(key);
+    const entry = Object.hasOwn(values, key) ? values[key] : undefined;
+    if (!isRecord(entry)) {
+      return { name, hidden: false };
+    }
+    if (entry["hidden"] === true) {
+      return { name, hidden: true };
+    }
+    return {
+      name,
+      before: formatValue(entry["before"]),
+      after: formatValue(entry["after"]),
+      hidden: false,
+    };
+  });
+}
+
+const NEW_KINDS: readonly string[] = KINDS.slice(3);
+
+/** Rows written by the system settings audit, not by v0.1 collectors. */
+function isModern(item: ChangeItem): boolean {
+  const d = item.details;
+  return (
+    NEW_KINDS.includes(item.kind) ||
+    isRecord(d["values"]) ||
+    names(d["changed"]).some((n) => n.startsWith("options.")) ||
+    (item.kind === "core_config" && Array.isArray(d["changed"]))
+  );
 }
 
 /** Audit tab: who changed which settings, with live additions. */
@@ -255,7 +356,64 @@ export class EfAudit extends LiveView {
     ];
   }
 
+  private _line(line: ValueLine) {
+    const name = truncate(line.name, 64);
+    const shown = line.hidden
+      ? { short: strings.audit.hiddenValue, full: strings.audit.hiddenValue }
+      : undefined;
+    if (shown !== undefined) {
+      const full = `${name.full}: ${shown.full}`;
+      return html`<div class="line">
+        <bdi title=${full}>${name.short}: ${shown.short}</bdi>
+      </div>`;
+    }
+    if (line.before === undefined || line.after === undefined) {
+      return html`<div class="line">
+        <bdi title=${name.full}>${name.short}</bdi>
+      </div>`;
+    }
+    const before = truncate(line.before, 64);
+    const after = truncate(line.after, 64);
+    const full = `${name.full}: ${before.full} → ${after.full}`;
+    return html`<div class="line">
+      <bdi title=${full}>${name.short}: ${before.short} → ${after.short}</bdi>
+    </div>`;
+  }
+
+  private _modernDetails(item: ChangeItem) {
+    const a = strings.audit;
+    const d = item.details;
+    const lines = valueLines(d);
+    const hasValues = isRecord(d["values"]) && lines.length > 0;
+    const dataKeys = names(d["data_keys_changed"]);
+    if (lines.length === 0 && dataKeys.length === 0) {
+      return nothing;
+    }
+    const group = (label: string, list: string[]) => {
+      const text = truncate(list.join(", "), 128);
+      return html`<div class="line">
+        ${label}: <bdi title=${text.full}>${text.short}</bdi>
+      </div>`;
+    };
+    return html`<div class="details">
+      ${
+        hasValues
+          ? lines.map((line) => this._line(line))
+          : lines.length > 0
+            ? group(
+                a.changedLabel,
+                lines.map((line) => line.name),
+              )
+            : nothing
+      }
+      ${dataKeys.length > 0 ? group(a.dataKeysLabel, dataKeys) : nothing}
+    </div>`;
+  }
+
   private _details(item: ChangeItem) {
+    if (isModern(item)) {
+      return this._modernDetails(item);
+    }
     const groups = detailGroups(item.details);
     if (groups.length === 0) {
       return nothing;

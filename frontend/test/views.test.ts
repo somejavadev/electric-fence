@@ -451,6 +451,30 @@ describe("audit details use the real backend shapes", () => {
     expect(squash(await render({ keys: ["latitude"] }))).toBe("keys: latitude");
   });
 
+  it("lists the new kinds in the filter", async () => {
+    const fake = fakeApi({
+      changes: { items: [], next_before_id: null },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", fake);
+    const bar = el.shadowRoot?.querySelector("ef-filter-bar") as unknown as {
+      fields: { name: string; options: { label: string }[] }[];
+    };
+    const kind = bar.fields.find((f) => f.name === "kind");
+    expect(kind?.options.map((o) => o.label)).toEqual([
+      "Any kind",
+      "Integrations",
+      "Users",
+      "Core settings",
+      "Backups",
+      "HTTP",
+      "Network",
+      "Analytics",
+      "Logging",
+      "Recorder",
+    ]);
+  });
+
   it("shows nothing for empty or unknown details", async () => {
     expect(await render({})).toBeNull();
     expect(await render({ changed: [], domain: "tuya" })).toBeNull();

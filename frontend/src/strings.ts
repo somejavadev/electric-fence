@@ -84,6 +84,12 @@ export const strings = {
       config_entry: "Integrations",
       user: "Users",
       core_config: "Core settings",
+      backup: "Backups",
+      http: "HTTP",
+      network: "Network",
+      analytics: "Analytics",
+      logger: "Logging",
+      recorder: "Recorder",
     },
     actor: "Actor",
     anyActor: "Anyone",
@@ -105,6 +111,11 @@ export const strings = {
     optionKeys: "option keys",
     field: "field",
     keys: "keys",
+    changedLabel: "Changed",
+    dataKeysLabel: "Data keys",
+    optionPrefix: "Option",
+    hiddenValue: "changed (hidden)",
+    noValue: "—",
   },
   loadMore: "Load more",
   users: {
@@ -170,10 +181,51 @@ export const strings = {
   },
 } as const;
 
+const SYSTEM_SENTENCES: Record<string, Record<string, string>> = {
+  backup: {
+    "": "changed backup settings",
+    removed: "deleted a backup",
+    restore_requested: "requested a backup restore",
+  },
+  http: {
+    "": "changed HTTP settings",
+    withdrawn: "withdrew pending HTTP settings",
+    confirmed: "confirmed HTTP settings",
+  },
+  network: { "": "changed network settings" },
+  analytics: { "": "changed analytics settings" },
+  logger: { "": "changed log levels" },
+  recorder: {
+    "": "changed recorder settings",
+    disabled: "disabled the recorder",
+    enabled: "enabled the recorder",
+    purged: "purged the recorder",
+  },
+};
+
+/** Sentence for the system settings kinds; unknown kinds read "changed x". */
+function systemSentence(item: ChangeItem): string | undefined {
+  const known = ["config_entry", "user", "core_config"];
+  if (known.includes(item.kind)) {
+    return undefined;
+  }
+  const own = Object.hasOwn(SYSTEM_SENTENCES, item.kind)
+    ? SYSTEM_SENTENCES[item.kind]
+    : undefined;
+  if (own === undefined) {
+    return `changed ${cut(item.kind)}`;
+  }
+  return (Object.hasOwn(own, item.action) ? own[item.action] : own[""]) ?? "";
+}
+
 /** Sentence for a settings change, such as "added integration Tuya". */
 export function changeSentence(item: ChangeItem): string {
+  const fixed = systemSentence(item);
+  if (fixed !== undefined) {
+    return fixed;
+  }
   if (item.kind === "core_config") {
-    const keys = item.details["keys"];
+    const keys = item.details["keys"] ?? item.details["changed"];
     const list = Array.isArray(keys)
       ? keys.filter((key): key is string => typeof key === "string")
       : [];

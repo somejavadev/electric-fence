@@ -62,7 +62,19 @@ export interface LoginItem {
   count: number;
 }
 
-export type ChangeKind = "config_entry" | "user" | "core_config";
+export type KnownChangeKind =
+  | "config_entry"
+  | "user"
+  | "core_config"
+  | "backup"
+  | "http"
+  | "network"
+  | "analytics"
+  | "logger"
+  | "recorder";
+
+/** A kind from a newer or older database may be any string. */
+export type ChangeKind = KnownChangeKind | (string & Record<never, never>);
 
 export type ChangeAction =
   | "added"
@@ -72,7 +84,12 @@ export type ChangeAction =
   | "options_changed"
   | "enabled"
   | "disabled"
-  | "password_changed";
+  | "password_changed"
+  | "restore_requested"
+  | "confirmed"
+  | "purged"
+  | "withdrawn"
+  | (string & Record<never, never>);
 
 /** A stored settings change. A null `actor_user_id` means System. */
 export interface ChangeItem {
