@@ -510,3 +510,17 @@ def test_newer_schema_refused_and_left_alone(tmp_path: Path) -> None:
         assert tables == {"future"}
     finally:
         con.close()
+
+
+def test_strip_change_values(store: FenceStore) -> None:
+    """Only the values key is removed, and only from rows that have it."""
+    with_values = replace(
+        change(NOW),
+        details={"changed": ["a"], "values": {"a": {"before": 1, "after": 2}}},
+    )
+    plain = replace(change(NOW - timedelta(minutes=1)), details={"changed": ["b"]})
+    store.insert([with_values, plain])
+    assert store.strip_change_values() == 1
+    rows = store.query_changes(ChangeFilter())
+    assert [r.details for r in rows] == [{"changed": ["a"]}, {"changed": ["b"]}]
+    assert store.strip_change_values() == 0

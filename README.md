@@ -57,6 +57,7 @@ immediately, without a restart.
 | **History retention**                       | Days of history to keep, from 1 to 3650. The default is 90.                                                                                                                                                                  |
 | **GeoIP provider**                          | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. Choosing MaxMind opens a second step for the credentials, which are checked before saving. |
 | **Reverse DNS lookups**                     | Looks up host names for IP addresses. On by default.                                                                                                                                                                         |
+| **Record before and after values**          | Stores what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored. Off by default.                                |
 
 ## Events
 

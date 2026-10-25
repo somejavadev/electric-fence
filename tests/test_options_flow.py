@@ -11,7 +11,13 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.electric_fence.geo.maxmind import DOWNLOAD_URL
+from custom_components.electric_fence.models import (
+    ChangeAction,
+    ChangeKind,
+    SettingsChange,
+)
 from custom_components.electric_fence.settings import Settings
+from custom_components.electric_fence.storage import ChangeFilter
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
@@ -25,6 +31,7 @@ GENERAL = {
     "retention_days": 90,
     "geoip_provider": "dbip_lite",
     "reverse_dns": True,
+    "record_values": False,
 }
 
 
@@ -412,3 +419,51 @@ async def test_retention_stored_as_int(
 def test_from_options_non_finite_retention(value: float) -> None:
     """Inf and NaN fall back to the default."""
     assert Settings.from_options({"retention_days": value}).retention_days == 90
+
+
+def test_record_values_defaults_off() -> None:
+    """Recording values is off unless turned on."""
+    assert Settings.from_options({}).record_values is False
+    assert Settings().to_options()["record_values"] is False
+    assert Settings.from_options({"record_values": "yes"}).record_values is False
+
+
+async def test_options_flow_shows_record_values(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The form offers record_values (default off) and stores True."""
+    result = await _init(hass, setup_entry)
+    keys = {str(k): k for k in result["data_schema"].schema}
+    assert keys["record_values"].default() is False
+    await _change(hass, setup_entry, record_values=True)
+    assert setup_entry.options["record_values"] is True
+    assert setup_entry.runtime_data.settings.record_values is True
+
+
+async def test_turning_off_strips_values(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Switching record_values off removes stored values, queued rows included."""
+    runtime = setup_entry.runtime_data
+    await _change(hass, setup_entry, record_values=True)
+    runtime.worker.submit(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.CORE_CONFIG,
+            action=ChangeAction.UPDATED,
+            target_id=None,
+            target_name=None,
+            details={"changed": ["a"], "values": {"a": {"before": 1, "after": 2}}},
+            actor_user_id=None,
+            actor_name=None,
+            actor_ip=None,
+        )
+    )
+    await _change(hass, setup_entry, record_values=False)
+    await runtime.worker.async_flush()
+    rows = await hass.async_add_executor_job(
+        lambda: runtime.store.query_changes(ChangeFilter(include_system=True))
+    )
+    assert rows
+    assert all("values" not in r.details for r in rows)
+    assert any(r.details == {"changed": ["a"]} for r in rows)

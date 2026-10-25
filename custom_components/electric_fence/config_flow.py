@@ -114,6 +114,7 @@ class OptionsFlowHandler(OptionsFlow):
                     )
                 ),
                 probatio.Required("reverse_dns", default=current.reverse_dns): bool,
+                probatio.Required("record_values", default=current.record_values): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

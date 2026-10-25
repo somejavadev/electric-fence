@@ -223,6 +223,16 @@ async def async_apply_settings(
                 "Electric Fence could not switch GeoIP provider: %s",
                 type(err).__name__,
             )
+    if old.record_values and not settings.record_values:
+        try:
+            # Flush first so rows still queued with values are covered too.
+            await runtime.worker.async_flush()
+            await hass.async_add_executor_job(runtime.store.strip_change_values)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not remove stored values: %s",
+                type(err).__name__,
+            )
     if settings.retention_days < old.retention_days:
         try:
             await async_purge(hass, runtime)

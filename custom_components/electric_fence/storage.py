@@ -513,6 +513,38 @@ class FenceStore:
                 result[row.user_id] = row
         return result
 
+    def strip_change_values(self) -> int:
+        """Remove the `values` key from every stored change; return rows updated."""
+        with self._lock:
+            db = self._conn()
+            rows = db.execute(
+                "SELECT id, details_json FROM settings_changes "
+                "WHERE details_json LIKE '%\"values\"%'"
+            ).fetchall()
+            updates: list[tuple[str, int]] = []
+            for row_id, raw in rows:
+                try:
+                    details = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(details, dict) and "values" in details:
+                    del details["values"]
+                    updates.append((json.dumps(details, sort_keys=True), row_id))
+            if not updates:
+                return 0
+            db.execute("BEGIN")
+            try:
+                db.executemany(
+                    "UPDATE settings_changes SET details_json = ? WHERE id = ?",
+                    updates,
+                )
+                db.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
+                raise
+            return len(updates)
+
     def purge_older_than(self, cutoff: datetime) -> int:
         """Delete rows older than the cutoff; VACUUM if over 20% were removed."""
         text = _to_text(cutoff)

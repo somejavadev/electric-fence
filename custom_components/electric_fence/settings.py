@@ -17,6 +17,7 @@ class Settings:
     maxmind_account_id: str | None = None
     maxmind_license_key: str | None = None
     reverse_dns: bool = True
+    record_values: bool = False
 
     @classmethod
     def from_options(cls, options: Mapping[str, Any]) -> Settings:
@@ -56,6 +57,7 @@ class Settings:
             maxmind_account_id=text("maxmind_account_id"),
             maxmind_license_key=text("maxmind_license_key"),
             reverse_dns=flag("reverse_dns"),
+            record_values=flag("record_values"),
         )
 
     def to_options(self) -> dict[str, Any]:

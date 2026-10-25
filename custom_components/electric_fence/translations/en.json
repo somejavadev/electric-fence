@@ -41,14 +41,16 @@
           "ha_login_notification": "Home Assistant's own login notification",
           "retention_days": "History retention",
           "geoip_provider": "GeoIP provider",
-          "reverse_dns": "Reverse DNS lookups"
+          "reverse_dns": "Reverse DNS lookups",
+          "record_values": "Record before and after values"
         },
         "data_description": {
           "notify_failed_login": "Create a persistent notification when a login fails.",
           "ha_login_notification": "Replace dismisses Home Assistant's own login notification, but only while notifications above are on.",
           "retention_days": "Days of history to keep, from 1 to 3650.",
           "geoip_provider": "Where country lookups come from. DB-IP Lite needs no account. MaxMind GeoLite2 needs an account ID and license key.",
-          "reverse_dns": "Look up host names for IP addresses."
+          "reverse_dns": "Look up host names for IP addresses.",
+          "record_values": "Store what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored."
         }
       },
       "maxmind": {
