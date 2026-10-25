@@ -249,6 +249,8 @@ async def test_reconcile_after_core_load(
     assert row.ip == IP
     [ended] = store.query_bans(active=False)
     assert (ended.ip, ended.end_reason) == (gone, "removed")
+    [removed] = _changes(runtime, ChangeAction.REMOVED)
+    assert (removed.target_id, removed.actor_user_id) == (gone, None)
     assert ADDR in _core(hass).ip_bans_lookup
     assert [v.ip for v in manager.active()] == [ADDR]
     manager.async_stop()
@@ -500,15 +502,28 @@ async def test_store_errors_fail_open(
     runtime: Runtime,
     store: FenceStore,
     monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Store failures still leave the address banned and never raise."""
+    """A ban that could not be stored still applies, and still ends on time."""
+    runtime.settings = replace(runtime.settings, ban_hours=1)
     manager = await _manager(hass, runtime)
     monkeypatch.setattr(store, "add_ban", Mock(side_effect=OSError))
     monkeypatch.setattr(store, "count_ip_bans_since", Mock(side_effect=OSError))
+    end_ban = Mock()
+    monkeypatch.setattr(store, "end_ban", end_ban)
     assert await manager.async_ban(IP, 5, None, None) is True
     assert ADDR in _core(hass).ip_bans_lookup
     [view] = manager.active()
-    assert view.source == "other"
+    assert view.source == "electric_fence"
+    assert view.ban_id is None
+    assert view.expires_at == view.banned_at + timedelta(hours=1)
+    freezer.tick(timedelta(minutes=61))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert ADDR not in _core(hass).ip_bans_lookup
+    assert manager.active() == []
+    end_ban.assert_not_called()
+    assert len(_changes(runtime, ChangeAction.EXPIRED)) == 1
     manager.async_stop()
 
 
@@ -659,3 +674,111 @@ async def test_no_timer_after_stop(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert len(store.active_bans()) == 1
+
+
+async def test_concurrent_bans_do_not_wait_for_each_other(
+    hass: HomeAssistant, runtime: Runtime
+) -> None:
+    """Two bans with a slow enricher both apply before either enrichment ends."""
+    release = asyncio.Event()
+    started = 0
+
+    async def slow(record: LoginAttempt) -> None:
+        nonlocal started
+        started += 1
+        await release.wait()
+
+    runtime.enricher = Mock(async_enrich=slow)
+    manager = await _manager(hass, runtime)
+    other = "198.51.100.7"
+    tasks = [
+        hass.async_create_task(manager.async_ban(IP, 5, None, None)),
+        hass.async_create_task(manager.async_ban(other, 5, None, None)),
+    ]
+    for _ in range(50):
+        if started == 2:
+            break
+        await asyncio.sleep(0)
+    assert started == 2
+    lookup = _core(hass).ip_bans_lookup
+    assert ADDR in lookup
+    assert ip_address(other) in lookup
+    release.set()
+    assert await asyncio.gather(*tasks) == [True, True]
+    manager.async_stop()
+
+
+async def test_reconcile_keeps_rows_when_backend_unreadable(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    store: FenceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the backend can't list its bans, reconcile ends nothing as removed."""
+    hass.set_state(CoreState.not_running)
+    now = dt_util.utcnow()
+    store.add_ban(IP, now, now + timedelta(hours=10), 5, 1, None, None)
+    manager = await _manager(hass, runtime)
+    monkeypatch.setattr(manager.backend, "list_ips", Mock(side_effect=RuntimeError))
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert len(store.active_bans()) == 1
+    assert _changes(runtime, ChangeAction.REMOVED) == []
+    manager.async_stop()
+
+
+async def test_rebans_after_outside_removal(
+    hass: HomeAssistant, runtime: Runtime, store: FenceStore
+) -> None:
+    """A ban lifted outside Electric Fence ends as removed; a new ban applies."""
+    manager = await _manager(hass, runtime)
+    assert await manager.async_ban(IP, 5, None, None)
+    _core(hass).ip_bans_lookup.clear()
+    assert await manager.async_ban(IP, 6, None, None) is True
+    assert ADDR in _core(hass).ip_bans_lookup
+    [ended] = store.query_bans(active=False)
+    assert ended.end_reason == "removed"
+    [row] = store.active_bans()
+    assert (row.failures, row.ban_number) == (6, 2)
+    [removed] = _changes(runtime, ChangeAction.REMOVED)
+    assert removed.target_id == IP
+    assert len(_changes(runtime, ChangeAction.BANNED)) == 2
+    manager.async_stop()
+
+
+async def test_does_not_take_over_other_ban(
+    hass: HomeAssistant, runtime: Runtime, store: FenceStore
+) -> None:
+    """An address another ban already holds is not banned again."""
+    await _http(hass)
+    await _core(hass).async_add_ban(ADDR)
+    manager = BanManager(hass, runtime, CoreBanBackend(hass))
+    await manager.async_start()
+    assert await manager.async_ban(IP, 5, None, None) is False
+    assert store.active_bans() == []
+    manager.async_stop()
+
+
+async def test_expiry_leaves_later_bans(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    store: FenceStore,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Only the bans that are due end; the timer re-arms for the next one."""
+    runtime.settings = replace(runtime.settings, ban_hours=1)
+    manager = await _manager(hass, runtime)
+    assert await manager.async_ban(IP, 5, None, None)
+    runtime.settings = replace(runtime.settings, ban_hours=2)
+    later = "198.51.100.7"
+    assert await manager.async_ban(later, 5, None, None)
+    freezer.tick(timedelta(minutes=61))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert [r.ip for r in store.active_bans()] == [later]
+    freezer.tick(timedelta(minutes=60))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert store.active_bans() == []
+    manager.async_stop()

@@ -1,8 +1,9 @@
 """Electric Fence's IP bans: banning, expiry, unban and reconcile."""
 
 import asyncio
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -100,6 +101,10 @@ def _other_view(addr: IpAddress, banned_at: datetime) -> BanView:
     )
 
 
+def _is_due(view: BanView, now: datetime) -> bool:
+    return view.expires_at is not None and view.expires_at <= now
+
+
 def ban_length(ban_hours: int, repeat: bool, ban_number: int) -> timedelta | None:
     """Return how long a ban lasts; None means permanent."""
     if ban_hours == 0:
@@ -137,6 +142,12 @@ def _load(store: FenceStore, since: datetime) -> _Loaded:
     )
 
 
+@dataclass(slots=True)
+class _IpLock:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 class BanManager:
     """Owns Electric Fence's bans. Every public method fails open."""
 
@@ -148,10 +159,13 @@ class BanManager:
         self._runtime = runtime
         self.backend = backend
         self.last_ban_at: datetime | None = None
-        self._rows: dict[IpAddress, BanRow] = {}
+        # Electric Fence's active bans. `ban_id` is None when storing failed:
+        # the ban still expires on time, it just has no row.
+        self._rows: dict[IpAddress, BanView] = {}
         self._recent: list[datetime] = []
         self._contract_reasons: list[str] = []
-        self._lock = asyncio.Lock()
+        # Per address, so a slow ban of one address never delays another.
+        self._locks: dict[IpAddress, _IpLock] = {}
         self._listeners: list[Callable[[], None]] = []
         self._unsub_expiry: CALLBACK_TYPE | None = None
         self._unsub_started: CALLBACK_TYPE | None = None
@@ -191,8 +205,9 @@ class BanManager:
             _LOGGER.warning("Could not load the bans: %s", type(err).__name__)
         else:
             for row in loaded.active:
-                if (addr := normalise_ip(row.ip)) is not None:
-                    self._rows[addr] = row
+                if normalise_ip(row.ip) is not None:
+                    view = _view(row)
+                    self._rows[view.ip] = view
             self._recent = loaded.recent
             self.last_ban_at = loaded.last_ban_at
         # Core replaces its lookup when the HTTP server starts, so the lookup
@@ -223,10 +238,10 @@ class BanManager:
 
     def active(self) -> list[BanView]:
         """Return the active bans, Electric Fence's first, without I/O."""
-        views = [_view(row) for row in self._rows.values()]
+        views = list(self._rows.values())
         views.extend(
             _other_view(addr, banned_at)
-            for addr, banned_at in self._backend_ips().items()
+            for addr, banned_at in (self._backend_ips() or {}).items()
             if addr not in self._rows
         )
         return views
@@ -263,8 +278,14 @@ class BanManager:
         addr = normalise_ip(ip)
         if addr is None or is_exempt(self._hass, addr):
             return False
-        async with self._lock:
-            if addr in self._rows or addr in self._backend_ips():
+        async with self._locked(addr):
+            present = self._backend_ips()
+            if (existing := self._rows.get(addr)) is not None:
+                if present is None or addr in present:
+                    return False
+                # Lifted outside Electric Fence while running.
+                await self._async_end_removed(existing)
+            elif present is not None and addr in present:
                 return False
             try:
                 await self.backend.async_add(addr)
@@ -272,6 +293,8 @@ class BanManager:
                 _LOGGER.warning("Could not ban an address: %s", type(err).__name__)
                 return False
             now = dt_util.utcnow()
+            self._recent.append(now)
+            self.last_ban_at = now
             settings = self._runtime.settings
             ban_number = await self._async_ban_number(addr, now)
             length = ban_length(
@@ -282,22 +305,26 @@ class BanManager:
                 found_country, found_host = await self._async_enrich(addr)
                 country_code = country_code or found_country
                 hostname = hostname or found_host
-            row = await self._async_store_ban(
-                addr, now, expires_at, failures, ban_number, country_code, hostname
+            view = BanView(
+                ip=addr,
+                source="electric_fence",
+                banned_at=now,
+                expires_at=expires_at,
+                failures=failures,
+                ban_number=ban_number,
+                country_code=country_code,
+                hostname=hostname,
+                ban_id=None,
             )
-            self._recent.append(now)
-            self.last_ban_at = now
-            view = (
-                _view(row)
-                if row is not None
-                else _other_view(addr, self._backend_ips().get(addr, now))
-            )
+            view = replace(view, ban_id=await self._async_store_ban(view))
+            self._rows[addr] = view
+            expires_iso = expires_at.isoformat() if expires_at else None
             self._submit(
                 ChangeAction.BANNED,
                 addr,
                 {
                     "failures": failures,
-                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "expires_at": expires_iso,
                     "ban_number": ban_number,
                 },
             )
@@ -308,7 +335,7 @@ class BanManager:
                     "country": country_code,
                     "hostname": hostname,
                     "failures": failures,
-                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "expires_at": expires_iso,
                     "ban_number": ban_number,
                 },
             )
@@ -331,18 +358,17 @@ class BanManager:
     ) -> bool:
         if not self.available or (addr := normalise_ip(ip)) is None:
             return False
-        async with self._lock:
-            row = self._rows.get(addr)
-            if row is not None:
-                view = _view(row)
-            elif (banned_at := self._backend_ips().get(addr)) is not None:
+        async with self._locked(addr):
+            view = self._rows.get(addr)
+            if view is None:
+                banned_at = (self._backend_ips() or {}).get(addr)
+                if banned_at is None:
+                    return False
                 view = _other_view(addr, banned_at)
-            else:
-                return False
             if not await self._async_backend_remove(addr):
                 return False
-            if row is not None:
-                await self._async_end_row(row, "unbanned", by_user_id, by_name)
+            if view.source == "electric_fence":
+                await self._async_end(view, "unbanned", by_user_id, by_name)
             self._submit(
                 ChangeAction.UNBANNED,
                 addr,
@@ -357,35 +383,51 @@ class BanManager:
     async def _async_reconcile(self, _hass: HomeAssistant) -> None:
         """End bans that expired while off or were removed from the file."""
         self._unsub_started = None
-        async with self._lock:
-            if self.available:
-                now = dt_util.utcnow()
-                present = self._backend_ips()
-                for row in list(self._rows.values()):
-                    if row.expires_at is not None and row.expires_at <= now:
-                        await self._async_expire(row)
-                    elif normalise_ip(row.ip) not in present:
-                        await self._async_end_row(row, "removed", None, None)
-            self._changed()
+        if self.available:
+            # None when the backend can't be read: then nothing counts as removed.
+            present = self._backend_ips()
+            for view in list(self._rows.values()):
+                async with self._locked(view.ip):
+                    if self._rows.get(view.ip) is not view:
+                        continue
+                    if _is_due(view, dt_util.utcnow()):
+                        await self._async_expire(view)
+                    elif present is not None and view.ip not in present:
+                        await self._async_end_removed(view)
+        self._changed()
 
     async def _async_expire_due(self, _now: datetime) -> None:
         self._unsub_expiry = None
-        async with self._lock:
-            now = dt_util.utcnow()
-            for row in list(self._rows.values()):
-                if row.expires_at is not None and row.expires_at <= now:
-                    await self._async_expire(row)
-            self._changed()
+        for view in list(self._rows.values()):
+            if not _is_due(view, dt_util.utcnow()):
+                continue
+            async with self._locked(view.ip):
+                if self._rows.get(view.ip) is view:
+                    await self._async_expire(view)
+        self._changed()
 
-    async def _async_expire(self, row: BanRow) -> None:
-        addr = normalise_ip(row.ip)
-        assert addr is not None
-        if not await self._async_backend_remove(addr):
+    async def _async_expire(self, view: BanView) -> None:
+        if not await self._async_backend_remove(view.ip):
             return
-        view = _view(row)
-        await self._async_end_row(row, "expired", None, None)
-        self._submit(ChangeAction.EXPIRED, addr, {"ban_number": row.ban_number})
+        await self._async_end(view, "expired", None, None)
+        self._submit(ChangeAction.EXPIRED, view.ip, {"ban_number": view.ban_number})
         self._alert(lambda alerts: alerts.ban_ended(view, "expired"))
+
+    async def _async_end_removed(self, view: BanView) -> None:
+        await self._async_end(view, "removed", None, None)
+        self._submit(ChangeAction.REMOVED, view.ip, {"ban_number": view.ban_number})
+
+    @asynccontextmanager
+    async def _locked(self, addr: IpAddress) -> AsyncIterator[None]:
+        entry = self._locks.setdefault(addr, _IpLock())
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0:
+                self._locks.pop(addr, None)
 
     def _schedule(self) -> None:
         """Arm one timer for the earliest expiry."""
@@ -394,7 +436,7 @@ class BanManager:
             self._unsub_expiry = None
         if self._stopped:
             return
-        expiries = [r.expires_at for r in self._rows.values() if r.expires_at]
+        expiries = [v.expires_at for v in self._rows.values() if v.expires_at]
         if not expiries:
             return
         when = min(expiries)
@@ -413,12 +455,13 @@ class BanManager:
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning("Ban listener failed: %s", type(err).__name__)
 
-    def _backend_ips(self) -> dict[IpAddress, datetime]:
+    def _backend_ips(self) -> dict[IpAddress, datetime] | None:
+        """Return the backend's bans, or None when they can't be read."""
         try:
             return self.backend.list_ips()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not list the bans: %s", type(err).__name__)
-            return {}
+            return None
 
     async def _async_backend_remove(self, addr: IpAddress) -> bool:
         try:
@@ -460,61 +503,39 @@ class BanManager:
             return None, None
         return probe.country_code, probe.hostname
 
-    async def _async_store_ban(
-        self,
-        addr: IpAddress,
-        now: datetime,
-        expires_at: datetime | None,
-        failures: int,
-        ban_number: int,
-        country_code: str | None,
-        hostname: str | None,
-    ) -> BanRow | None:
+    async def _async_store_ban(self, view: BanView) -> int | None:
+        assert view.failures is not None
+        assert view.ban_number is not None
         try:
-            ban_id = await self._hass.async_add_executor_job(
+            return await self._hass.async_add_executor_job(
                 self._runtime.store.add_ban,
-                str(addr),
-                now,
-                expires_at,
-                failures,
-                ban_number,
-                country_code,
-                hostname,
+                str(view.ip),
+                view.banned_at,
+                view.expires_at,
+                view.failures,
+                view.ban_number,
+                view.country_code,
+                view.hostname,
             )
         except Exception as err:  # noqa: BLE001
-            # The address stays banned; it shows as another ban, with no expiry.
             _LOGGER.warning("Could not store a ban: %s", type(err).__name__)
             return None
-        row = BanRow(
-            id=ban_id,
-            ip=str(addr),
-            banned_at=now,
-            expires_at=expires_at,
-            failures=failures,
-            ban_number=ban_number,
-            country_code=country_code,
-            hostname=hostname,
-            ended_at=None,
-            end_reason=None,
-            ended_by_user_id=None,
-            ended_by_name=None,
-        )
-        self._rows[addr] = row
-        return row
 
-    async def _async_end_row(
+    async def _async_end(
         self,
-        row: BanRow,
+        view: BanView,
         reason: EndReason,
         by_user_id: str | None,
         by_name: str | None,
     ) -> None:
-        if (addr := normalise_ip(row.ip)) is not None:
-            self._rows.pop(addr, None)
+        if self._rows.get(view.ip) is view:
+            del self._rows[view.ip]
+        if view.ban_id is None:
+            return
         try:
             await self._hass.async_add_executor_job(
                 self._runtime.store.end_ban,
-                row.id,
+                view.ban_id,
                 dt_util.utcnow(),
                 reason,
                 by_user_id,

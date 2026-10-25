@@ -82,3 +82,60 @@ async def test_ban_manager_contract_fails_when_add_ban_is_sync(
     assert CONTRACTS["ban_manager"].check(hass) == (
         "IpBanManager.async_add_ban is not a coroutine function"
     )
+
+
+async def test_ban_manager_contract_fails_without_add_ban(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manager without `async_add_ban` fails the contract."""
+    monkeypatch.delattr(ban.IpBanManager, "async_add_ban")
+    assert CONTRACTS["ban_manager"].check(hass) == (
+        "IpBanManager.async_add_ban is missing"
+    )
+
+
+async def test_ban_manager_contract_fails_without_ip_ban(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing `IpBan` class fails the contract."""
+    monkeypatch.delattr(ban, "IpBan")
+    assert CONTRACTS["ban_manager"].check(hass) == "IpBan is missing"
+
+
+async def test_ban_manager_contract_fails_when_lookup_not_dict(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that is no longer a dict fails the contract."""
+    original = ban.IpBanManager.__init__
+
+    def init(self: ban.IpBanManager, hass: HomeAssistant) -> None:
+        original(self, hass)
+        self.ip_bans_lookup = []  # type: ignore[assignment]
+
+    monkeypatch.setattr(ban.IpBanManager, "__init__", init)
+    assert CONTRACTS["ban_manager"].check(hass) == (
+        "IpBanManager.ip_bans_lookup is not a dict"
+    )
+
+
+async def test_ban_middleware_contract_fails_when_missing(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A removed middleware fails the contract."""
+    monkeypatch.delattr(ban, "ban_middleware")
+    assert CONTRACTS["ban_middleware_lookup"].check(hass) == (
+        "http.ban.ban_middleware is missing"
+    )
+
+
+async def test_ban_middleware_contract_fails_without_source(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A middleware whose source can't be read fails the contract."""
+    monkeypatch.setattr(
+        "custom_components.electric_fence.contracts.inspect.getsource",
+        lambda fn: (_ for _ in ()).throw(OSError()),
+    )
+    assert CONTRACTS["ban_middleware_lookup"].check(hass) == (
+        "the ban_middleware source is unavailable"
+    )
