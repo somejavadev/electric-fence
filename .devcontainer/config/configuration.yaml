@@ -1,6 +1,4 @@
 default_config:
-http:
-  login_attempts_threshold: 5
 logger:
   default: info
   logs:

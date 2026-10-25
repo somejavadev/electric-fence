@@ -165,8 +165,15 @@ is licensed under
 5. Create a second user in **Settings** > **People**.
 6. Sign out, and try to log in with a username that doesn't exist.
 7. Sign back in, and open **Electric Fence** in the sidebar to watch the
-   Overview. The dev configuration sets `login_attempts_threshold: 5`, so
-   repeated failures also show Home Assistant's own IP ban.
+   Overview.
+8. Optional: to see Home Assistant's own IP ban as well, set a login attempts
+   threshold in **Settings** > **System** > **Network**, and confirm the new
+   configuration after the restart.
+
+The dev configuration has no `http:` block on purpose. Since 2026.11, Home
+Assistant imports a YAML `http:` block as a pending configuration that has to
+be confirmed within 5 minutes. Unconfirmed, it reverts and restarts, and
+without Supervisor nothing starts Home Assistant again.
 
 ### Scripts
 
