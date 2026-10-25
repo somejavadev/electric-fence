@@ -954,3 +954,47 @@ async def test_new_country_failure_contained(
         (LoginResult.SUCCESS, False)
     ]
     assert SECRET not in caplog.text
+
+
+async def test_unconfirmed_success_never_noted(
+    hass: HomeAssistant, store: FenceStore
+) -> None:
+    """A success that expires or is released on stop adds no country."""
+    w = FenceWorker(
+        hass, store, NullEnricher(), confirm_timeout=0.1, flush_interval=0.05
+    )
+    await w.async_start()
+    _, user = await _credential_success(hass)
+    try:
+        rec = success(user_id=user.id)
+        rec.confirmed = False
+        rec.source = Source.REMOTE
+        rec.country_code = "DE"
+        w.submit(rec)
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if logins(store):
+                break
+    finally:
+        await w.async_stop()
+    assert [(r.confirmed, r.new_country) for r in logins(store)] == [(False, False)]
+    assert store.known_countries(user.id) == []
+
+
+async def test_held_success_detected_when_confirmed(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A held success is checked at confirmation, before it is stored."""
+    _, user = await _credential_success(hass)
+    await _login_from(worker, store, user, "DE")
+    rec = success(user_id="unused")
+    rec.user_id, rec.source, rec.country_code = None, Source.REMOTE, "FR"
+    rec.credentials = user.credentials[0]
+    worker.submit(rec)
+    await worker.async_flush()
+    assert rec.new_country is False
+    assert logins(store)[-1].country_code == "DE"
+    worker.confirm_success(user.id, None, None)
+    await worker.async_flush()
+    assert rec.new_country is True
+    assert [r.new_country for r in logins(store)] == [False, True]

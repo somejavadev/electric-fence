@@ -615,9 +615,7 @@ async def test_new_country_event(hass: HomeAssistant, notifier: Notifier) -> Non
     ]
 
 
-async def test_new_country_calls_alerts(
-    hass: HomeAssistant, notifier: Notifier
-) -> None:
+async def test_new_country_calls_alerts(hass: HomeAssistant, store: FenceStore) -> None:
     """The alerts sender is called when present; its errors are contained."""
     alerts = Mock()
     alerts.new_country.side_effect = RuntimeError("boom")

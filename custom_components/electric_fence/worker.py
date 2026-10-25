@@ -13,7 +13,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .attribution import hass_user_id
-from .failopen import FailOpen
+from .failopen import FailOpen, reraise
 from .models import (
     LoginAttempt,
     LoginReason,
@@ -254,7 +254,7 @@ class FenceWorker:
                         return
             except Exception as err:  # noqa: BLE001
                 # Never let a bug end the worker. Rate-limited, message-free log.
-                self._loop_guard.call(_reraise, err)
+                self._loop_guard.call(reraise, err)
                 if isinstance(current, (LoginAttempt, SettingsChange)):
                     self.dropped += 1
                 if self._stopping:
@@ -289,7 +289,7 @@ class FenceWorker:
 
     async def _process(self, item: Record | _Confirm) -> None:
         if isinstance(item, _Confirm):
-            self._confirm(item)
+            await self._confirm(item)
             return
         if isinstance(item, LoginAttempt):
             before = (item.source, item.country_code, item.hostname)
@@ -299,12 +299,11 @@ class FenceWorker:
             except Exception as err:  # noqa: BLE001
                 # Includes the timeout: store the record un-enriched.
                 item.source, item.country_code, item.hostname = before
-                self._enrich_guard.call(_reraise, err)
+                self._enrich_guard.call(reraise, err)
             if (credentials := item.credentials) is not None:
                 # Never kept past this point, whatever the result.
                 item.credentials = None
                 await self._resolve_success(item, credentials)
-            await self._detect_new_country(item)
             if item.result is LoginResult.FAILED:
                 self._resolve_guard.call(self._resolve_failure, item)
                 self._merge_or_add(item)
@@ -316,6 +315,8 @@ class FenceWorker:
             ):
                 self._hold(item)
                 return
+            if item.confirmed:
+                await self._detect_new_country(item)
         self._add(item)
 
     async def _resolve_success(
@@ -330,7 +331,7 @@ class FenceWorker:
         try:
             user = await self._hass.auth.async_get_user_by_credentials(credentials)
         except Exception as err:  # noqa: BLE001
-            self._resolve_guard.call(_reraise, err)
+            self._resolve_guard.call(reraise, err)
             return
         if user is None:
             # Credentials not linked to a user yet: nothing to confirm against.
@@ -356,7 +357,7 @@ class FenceWorker:
                 self._note_country, rec.user_id, rec.country_code
             )
         except Exception as err:  # noqa: BLE001
-            self._country_guard.call(_reraise, err)
+            self._country_guard.call(reraise, err)
             return
         rec.new_country = is_new
         rec.known_countries_before = known - 1
@@ -400,7 +401,7 @@ class FenceWorker:
             _Held(deadline=self._hass.loop.time() + self._confirm_timeout, record=rec)
         )
 
-    def _confirm(self, conf: _Confirm) -> None:
+    async def _confirm(self, conf: _Confirm) -> None:
         for i, held in enumerate(self._held):
             rec = held.record
             if rec.user_id == conf.user_id:
@@ -410,6 +411,7 @@ class FenceWorker:
                     rec.client_id = conf.client_id
                 if conf.client_name is not None:
                     rec.client_name = conf.client_name
+                await self._detect_new_country(rec)
                 self._add(rec)
                 return
 
@@ -467,8 +469,3 @@ class FenceWorker:
         for rec in batch:
             for cb, guard in listeners:
                 guard.call(cb, rec)
-
-
-def _reraise(err: Exception) -> None:
-    """Re-raise `err` inside a FailOpen guard so it is counted and logged."""
-    raise err

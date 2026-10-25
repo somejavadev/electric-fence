@@ -23,6 +23,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .. import attribution
+from ..failopen import reraise
 from ..hooks import wrap_async_method
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..privacy import sanitise_text
@@ -76,11 +77,6 @@ def _credential_username(credential: Any) -> Any:
     """Return the username a credential holds, else None."""
     data = getattr(credential, "data", None)
     return data.get("username") if isinstance(data, Mapping) else None
-
-
-def _reraise(err: Exception) -> None:
-    """Re-raise `err` inside the guard so it is counted and logged."""
-    raise err
 
 
 class UserCollector(BaseCollector):
@@ -180,7 +176,7 @@ class UserCollector(BaseCollector):
                 self.runtime.store.forget_user_countries, user_id
             )
         except Exception as err:  # noqa: BLE001
-            self.guard.call(_reraise, err)
+            self.guard.call(reraise, err)
 
     # Provider wrappers.
 
