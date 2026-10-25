@@ -1,0 +1,36 @@
+# Weekly dependency updates. Each pull request runs the full CI, which also
+# fails early when an update breaks against Home Assistant.
+#
+# Not covered here: maxminddb in custom_components/electric_fence/manifest.json
+# (Dependabot does not read Home Assistant manifests), and Home Assistant
+# itself (CI installs it from a Core ref, see scripts/ci_install_ha.sh).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-tooling:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        update-types: [minor, patch]
+
+  - package-ecosystem: devcontainers
+    directory: /
+    schedule:
+      interval: weekly
