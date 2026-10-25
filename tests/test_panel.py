@@ -5,7 +5,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, DATA_PANELS
 from homeassistant.core import HomeAssistant
 
-ICONS_URL = "/electric_fence_static/electric-fence-icons.js?v=0.1.0"
+ICONS_URL = "/electric_fence_static/electric-fence-icons.js?v=0.1.1"
 
 
 async def test_panel_registered_admin_only(
@@ -16,7 +16,7 @@ async def test_panel_registered_admin_only(
     assert panel.require_admin is True
     assert panel.sidebar_title == "Electric Fence"
     assert panel.sidebar_icon == "electric-fence:logo"
-    assert panel.config["_panel_custom"]["module_url"].endswith("?v=0.1.0")
+    assert panel.config["_panel_custom"]["module_url"].endswith("?v=0.1.1")
     assert panel.config["_panel_custom"]["module_url"].startswith(
         "/electric_fence_static/electric-fence-panel.js"
     )
