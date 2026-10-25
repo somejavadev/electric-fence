@@ -64,6 +64,92 @@ describe("valueLines", () => {
     expect(line?.after).toBe("length: mi, mass: lb");
   });
 
+  it("shows only the nested fields that changed when the name is the same", () => {
+    const backup = {
+      name: "MyName",
+      agent_ids: ["hassio.local", "cloud"],
+      include_database: true,
+      include_folders: null,
+      password: { hidden: true },
+    };
+    const [off] = valueLines({
+      changed: ["create_backup"],
+      values: {
+        create_backup: {
+          before: backup,
+          after: { ...backup, include_database: false },
+        },
+      },
+    });
+    expect(off).toEqual({
+      name: "Create backup",
+      before: "include_database: true",
+      after: "include_database: false",
+      hidden: false,
+    });
+    const [agents] = valueLines({
+      changed: ["create_backup"],
+      values: {
+        create_backup: {
+          before: backup,
+          after: { ...backup, agent_ids: [], include_database: false },
+        },
+      },
+    });
+    expect(agents?.before).toBe(
+      "agent_ids: hassio.local, cloud, include_database: true",
+    );
+    expect(agents?.after).toBe("agent_ids: —, include_database: false");
+  });
+
+  it("shows a nested field added or removed", () => {
+    const [line] = valueLines({
+      changed: ["create_backup"],
+      values: {
+        create_backup: {
+          before: { name: "N", schedule: "daily" },
+          after: { name: "N" },
+        },
+      },
+    });
+    expect(line?.before).toBe("schedule: daily");
+    expect(line?.after).toBe("schedule: —");
+  });
+
+  it("uses the name when it is the only field or it changed", () => {
+    const [only] = valueLines({
+      changed: ["area"],
+      values: { area: { before: { name: "A" }, after: { name: "B" } } },
+    });
+    expect(only?.before).toBe("A");
+    expect(only?.after).toBe("B");
+    const [renamed] = valueLines({
+      changed: ["create_backup"],
+      values: {
+        create_backup: {
+          before: { name: "Old", include_database: true },
+          after: { name: "New", include_database: false },
+        },
+      },
+    });
+    expect(renamed?.before).toBe("Old");
+    expect(renamed?.after).toBe("New");
+  });
+
+  it("compares nested objects by content, not identity", () => {
+    const [line] = valueLines({
+      changed: ["create_backup"],
+      values: {
+        create_backup: {
+          before: { name: "N", retention: { copies: 3, days: null }, x: 1 },
+          after: { name: "N", retention: { days: null, copies: 3 }, x: 2 },
+        },
+      },
+    });
+    expect(line?.before).toBe("x: 1");
+    expect(line?.after).toBe("x: 2");
+  });
+
   it("shows lists as comma lists", () => {
     const [line] = valueLines({
       changed: ["allowed"],

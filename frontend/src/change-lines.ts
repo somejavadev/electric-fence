@@ -82,6 +82,50 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+/** Deep equality of JSON values (object key order does not matter). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => sameValue(v, b[i]));
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const keys = Object.keys(a);
+    return (
+      keys.length === Object.keys(b).length &&
+      keys.every((k) => Object.hasOwn(b, k) && sameValue(a[k], b[k]))
+    );
+  }
+  return false;
+}
+
+/**
+ * Before and after of a setting. Two objects with the same name (a backup
+ * schedule's `create_backup`, say) show only the nested fields that differ,
+ * so a change is not hidden behind "MyName → MyName". The name stands for
+ * the object only when it is the only field or it changed.
+ */
+function beforeAfter(before: unknown, after: unknown): [string, string] {
+  if (isRecord(before) && isRecord(after)) {
+    const keys = [...Object.keys(before)];
+    for (const key of Object.keys(after)) {
+      if (!keys.includes(key)) {
+        keys.push(key);
+      }
+    }
+    const differ = keys.filter((k) => !sameValue(before[k], after[k]));
+    const onlyName = keys.length === 1 && keys[0] === "name";
+    const sameName = sameValue(before["name"], after["name"]);
+    if (!onlyName && sameName && differ.length > 0) {
+      const side = (value: Record<string, unknown>): string =>
+        differ.map((k) => `${k}: ${formatValue(value[k])}`).join(", ");
+      return [side(before), side(after)];
+    }
+  }
+  return [formatValue(before), formatValue(after)];
+}
+
 /**
  * One line per changed setting. A name without a `values` entry (changed by
  * hash only) has no before or after and is shown as a plain name.
@@ -103,12 +147,8 @@ export function valueLines(details: Record<string, unknown>): ValueLine[] {
     if (entry["hidden"] === true) {
       return { name, hidden: true };
     }
-    return {
-      name,
-      before: formatValue(entry["before"]),
-      after: formatValue(entry["after"]),
-      hidden: false,
-    };
+    const [before, after] = beforeAfter(entry["before"], entry["after"]);
+    return { name, before, after, hidden: false };
   });
 }
 
