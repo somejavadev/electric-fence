@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .notifier import Notifier
     from .protection.bans import BanManager
     from .protection.policy import IpPolicy
+    from .protection.throttle import UsernameGuard
 
 
 @dataclass
@@ -31,6 +32,6 @@ class Runtime:
     geo_updater: GeoUpdater | None = None
     bans: BanManager | None = None
     ip_policy: IpPolicy | None = None
-    # Typed by the tasks that add them (UsernameGuard, Alerter).
-    username_guard: Any = None
+    username_guard: UsernameGuard | None = None
+    # Typed by the task that adds it (Alerter).
     alerts: Any = None

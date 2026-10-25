@@ -39,6 +39,7 @@ from .panel import async_register_panel, async_unregister_panel
 from .protection.backend import CoreBanBackend
 from .protection.bans import BanManager
 from .protection.policy import IpPolicy
+from .protection.throttle import UsernameGuard
 from .repairs import async_clear_schema_too_new, async_report_schema_too_new
 from .runtime import Runtime
 from .settings import Settings
@@ -197,6 +198,10 @@ async def async_setup_entry(
     else:
         ip_policy.seed_trusted(trusted)
 
+    username_guard = UsernameGuard(hass, runtime)
+    runtime.username_guard = username_guard
+    entry.async_on_unload(worker.add_listener(username_guard.on_record))
+
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)
         runtime.collectors.append(collector)
@@ -311,6 +316,10 @@ async def async_unload_entry(
 
 async def _async_stop_recording(runtime: Runtime) -> None:
     """Uninstall collectors in reverse, then stop (flush) the worker."""
+    # First, so attempts waiting in the slow-down go on to Core through the
+    # login hook while it is still installed.
+    if runtime.username_guard is not None:
+        runtime.username_guard.async_stop()
     for collector in reversed(runtime.collectors):
         collector.uninstall()
     runtime.collectors.clear()
