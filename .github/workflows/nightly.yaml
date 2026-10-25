@@ -43,16 +43,28 @@ jobs:
         env:
           CORE_REF: ${{ steps.ref.outputs.ref }}
         run: scripts/ci_install_ha.sh "$CORE_REF"
+      # Before a new minimum ships, some cells still resolve to an older Core
+      # (for example `rc` is 2026.10 until the 2026.11 betas): skip, don't fail.
+      - name: Check the Core is supported
+        id: supported
+        run: |
+          ok="$(scripts/ci_supported_core.sh "$CORE_VERSION")"
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          if [[ "$ok" != true ]]; then
+            echo "::notice::Skipped: Home Assistant $CORE_VERSION is older than Electric Fence's minimum $(scripts/ci_supported_core.sh --print-minimum)."
+          fi
       - name: Contract and safety tests
+        if: steps.supported.outputs.ok == 'true'
         run: pytest tests/contracts tests/safety -m "not benchmark" --junitxml=junit-contracts.xml
       - name: Full suite
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.supported.outputs.ok == 'true' }}
         run: pytest -m "not benchmark" --junitxml=junit-full.xml
       - name: Benchmark
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.supported.outputs.ok == 'true' }}
         run: pytest -m benchmark -s --junitxml=junit-benchmark.xml
       - name: Report the upstream break
-        if: ${{ failure() && (matrix.ha == 'beta' || matrix.ha == 'dev') }}
+        # An install failure still reports (ok is unset); only a known older Core skips.
+        if: ${{ failure() && steps.supported.outputs.ok != 'false' && (matrix.ha == 'beta' || matrix.ha == 'dev') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CELL: ${{ matrix.ha }}

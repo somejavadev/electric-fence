@@ -282,3 +282,29 @@ def test_watch_neutralises_backticks_in_file_names(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "a`b.py" not in result.stdout
     assert "auth/a" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("core_version", "supported"),
+    [
+        pytest.param("2026.10.4", False, id="older-release"),
+        pytest.param("2025.12.1", False, id="older-year"),
+        pytest.param("2026.11.0", True, id="minimum"),
+        pytest.param("2026.11.0b3", True, id="minimum-beta"),
+        pytest.param("2026.11.0.dev0", True, id="minimum-dev"),
+        pytest.param("2026.12.1", True, id="newer"),
+    ],
+)
+def test_supported_core(core_version: str, supported: bool) -> None:
+    """A Core older than the integration's minimum is skipped, not failed."""
+    result = run("ci_supported_core.sh", core_version)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ("true" if supported else "false")
+
+
+def test_supported_core_reads_the_integration_minimum() -> None:
+    """The minimum comes from const.py, so it is never duplicated."""
+    const = (ROOT / "custom_components/electric_fence/const.py").read_text()
+    result = run("ci_supported_core.sh", "--print-minimum")
+    assert result.returncode == 0, result.stderr
+    assert f'MIN_HA_VERSION = "{result.stdout.strip()}"' in const
