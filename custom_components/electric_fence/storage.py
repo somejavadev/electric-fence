@@ -7,6 +7,7 @@ from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 import json
 import logging
 from pathlib import Path
@@ -179,8 +180,8 @@ class ChangeRow:
 
     id: int
     ts: datetime
-    kind: ChangeKind
-    action: ChangeAction
+    kind: ChangeKind | str
+    action: ChangeAction | str
     target_id: str | None
     target_name: str | None
     details: dict[str, Any]
@@ -222,12 +223,20 @@ def _login_row(r: Sequence[Any]) -> LoginRow:
     )
 
 
+def _tolerant[E: StrEnum](enum: type[E], raw: str) -> E | str:
+    """Return the enum member, or the raw text for a name this version lacks."""
+    try:
+        return enum(raw)
+    except ValueError:
+        return raw
+
+
 def _change_row(r: Sequence[Any]) -> ChangeRow:
     return ChangeRow(
         id=r[0],
         ts=_from_text(r[1]),
-        kind=ChangeKind(r[2]),
-        action=ChangeAction(r[3]),
+        kind=_tolerant(ChangeKind, r[2]),
+        action=_tolerant(ChangeAction, r[3]),
         target_id=r[4],
         target_name=r[5],
         details=json.loads(r[6]),

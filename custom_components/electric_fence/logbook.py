@@ -33,6 +33,31 @@ def _reason(value: object) -> str:
         return _text(value)
 
 
+# Sentence for a (kind, action) pair; `{names}` is " (a, b)" or "".
+_CHANGE_TEXT: dict[tuple[str, str], str] = {
+    ("backup", "updated"): "changed backup settings{names}",
+    ("backup", "removed"): "deleted a backup",
+    ("backup", "restore_requested"): "requested a backup restore",
+    ("http", "updated"): "changed HTTP settings{names}",
+    ("http", "withdrawn"): "withdrew pending HTTP settings",
+    ("http", "confirmed"): "confirmed HTTP settings",
+    ("network", "updated"): "changed network settings{names}",
+    ("analytics", "updated"): "changed analytics settings{names}",
+    ("logger", "updated"): "changed log levels{names}",
+    ("recorder", "disabled"): "disabled the recorder",
+    ("recorder", "enabled"): "enabled the recorder",
+    ("recorder", "purged"): "purged the recorder",
+}
+
+
+def _names(value: object) -> str:
+    """Return the changed setting names as " (a, b)": names only, no values."""
+    if not isinstance(value, list):
+        return ""
+    names = [_text(n) for n in value if n not in (None, "")]
+    return f" ({', '.join(names)})" if names else ""
+
+
 @callback
 def async_describe_events(
     hass: HomeAssistant,
@@ -76,9 +101,14 @@ def async_describe_events(
         data = event.data
         target = _text(data.get("target_name") or data.get("target"))
         by = _text(data.get("changed_by_name"), "System")
-        message = (
-            f"{_text(data.get('kind'))} {target} {_text(data.get('action'))} by {by}"
-        )
+        template = _CHANGE_TEXT.get((str(data.get("kind")), str(data.get("action"))))
+        if template is not None:
+            message = f"{template.format(names=_names(data.get('changed')))} by {by}"
+        else:
+            message = (
+                f"{_text(data.get('kind'))} {target} "
+                f"{_text(data.get('action'))} by {by}"
+            )
         return {
             LOGBOOK_ENTRY_NAME: NAME,
             LOGBOOK_ENTRY_MESSAGE: message,

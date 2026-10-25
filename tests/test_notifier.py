@@ -266,6 +266,7 @@ async def test_settings_changed_event_system_has_null_actor(
         "changed_by_user_id": None,
         "changed_by_name": None,
         "ip": None,
+        "changed": [],
     }
     assert events[1].data["changed_by_name"] == "Admin"
     assert events[1].data["ip"] == "192.168.1.5"
@@ -519,3 +520,46 @@ def test_wrong_code_reason_text() -> None:
     )
     assert "(wrong two-factor code)" in message
     assert "2FA" not in message
+
+
+async def test_event_has_changed_names_never_values(
+    hass: HomeAssistant, notifier: Notifier
+) -> None:
+    """The event lists the setting names, never a value or before/after."""
+    events = async_capture_events(hass, "electric_fence_settings_changed")
+    notifier.on_record(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.CORE_CONFIG,
+            action=ChangeAction.UPDATED,
+            target_id="core",
+            target_name="Core",
+            details={
+                "changed": ["location_name"],
+                "values": {"location_name": {"before": "OldHome", "after": "NewHome"}},
+            },
+            actor_user_id="u1",
+            actor_name="Admin",
+            actor_ip=None,
+        )
+    )
+    notifier.on_record(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.USER,
+            action=ChangeAction.ADDED,
+            target_id="u2",
+            target_name="Bob",
+            details={},
+            actor_user_id=None,
+            actor_name=None,
+            actor_ip=None,
+        )
+    )
+    await hass.async_block_till_done()
+    assert events[0].data["changed"] == ["location_name"]
+    assert "values" not in events[0].data
+    text = repr(events[0].data)
+    for word in ("OldHome", "NewHome", "before", "after"):
+        assert word not in text
+    assert events[1].data["changed"] == []

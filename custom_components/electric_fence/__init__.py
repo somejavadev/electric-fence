@@ -8,8 +8,12 @@ import shutil
 from awesomeversion import AwesomeVersion
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform, __version__ as HA_VERSION
-from homeassistant.core import HassJob, HomeAssistant
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+    __version__ as HA_VERSION,
+)
+from homeassistant.core import Event, HassJob, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
@@ -134,6 +138,21 @@ async def async_setup_entry(
         await hass.async_add_executor_job(store.close)
 
     entry.async_on_unload(hass.async_add_shutdown_job(HassJob(_async_shutdown)))
+
+    async def _async_flush_on_stop(_event: Event) -> None:
+        # Core does not unload entries on stop, and the restart commands stop
+        # Core right after a change: write what is queued while the loop and
+        # the executor still run.
+        try:
+            await worker.async_flush()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence flush on stop failed: %s", type(err).__name__
+            )
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_flush_on_stop)
+    )
 
     # Registered after the worker's shutdown job, so it stops first.
     entry.async_on_unload(geo_updater.async_stop)

@@ -30,9 +30,12 @@ LoginItem (a stored login attempt)::
 ChangeItem (a stored settings change; `actor_user_id` null means System)::
 
     {id: int | null, ts: str,
-     kind: "config_entry" | "user" | "core_config",
+     kind: "config_entry" | "user" | "core_config" | "backup" | "http" | "network"
+           | "analytics" | "logger" | "recorder" | <any text from a newer version>,
      action: "added" | "removed" | "updated" | "reconfigured"
-             | "options_changed" | "enabled" | "disabled" | "password_changed",
+             | "options_changed" | "enabled" | "disabled" | "password_changed"
+             | "restore_requested" | "confirmed" | "purged" | "withdrawn"
+             | <any text from a newer version>,
      target_id: str | null, target_name: str | null, details: object,
      actor_user_id: str | null, actor_name: str | null, actor_ip: str | null}
 

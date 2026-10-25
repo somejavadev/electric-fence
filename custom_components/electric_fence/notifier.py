@@ -187,6 +187,8 @@ class Notifier:
                     "changed_by_user_id": record.actor_user_id,
                     "changed_by_name": record.actor_name,
                     "ip": record.actor_ip,
+                    # Names only: never `values`.
+                    "changed": list(record.details.get("changed") or []),
                 },
             )
         elif record.result is LoginResult.SUCCESS:

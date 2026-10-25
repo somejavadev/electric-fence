@@ -18,6 +18,7 @@ from custom_components.electric_fence.models import (
     Source,
     UserExists,
 )
+from custom_components.electric_fence.shapes import change_item
 from custom_components.electric_fence.storage import (
     SCHEMA_VERSION,
     ChangeFilter,
@@ -524,3 +525,18 @@ def test_strip_change_values(store: FenceStore) -> None:
     rows = store.query_changes(ChangeFilter())
     assert [r.details for r in rows] == [{"changed": ["a"]}, {"changed": ["b"]}]
     assert store.strip_change_values() == 0
+
+
+def test_storage_reads_unknown_kind(store: FenceStore) -> None:
+    """A row with a kind or action this version doesn't know loads as text."""
+    store._conn().execute(
+        "INSERT INTO settings_changes (ts, kind, action, details_json) "
+        "VALUES (?, 'future_kind', 'future_action', '{}')",
+        (NOW.isoformat(),),
+    )
+    rows = store.query_changes(ChangeFilter(include_system=True))
+    assert [(r.kind, r.action) for r in rows] == [("future_kind", "future_action")]
+    assert type(rows[0].kind) is str
+    item = change_item(rows[0])
+    assert item["kind"] == "future_kind"
+    assert item["action"] == "future_action"

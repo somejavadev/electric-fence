@@ -2,6 +2,8 @@
 
 from collections.abc import Callable
 
+import pytest
+
 from custom_components.electric_fence.logbook import async_describe_events
 from homeassistant.components.logbook import (
     LOGBOOK_ENTRY_ICON,
@@ -106,3 +108,88 @@ async def test_logbook_handles_sparse_and_odd_data(hass: HomeAssistant) -> None:
         Event("electric_fence_login_succeeded", {})
     )
     assert succeeded[LOGBOOK_ENTRY_MESSAGE] == "a user logged in"
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "target", "changed", "expected"),
+    [
+        (
+            "backup",
+            "updated",
+            "Backup",
+            ["schedule"],
+            "changed backup settings (schedule)",
+        ),
+        ("backup", "removed", "abc", [], "deleted a backup"),
+        ("backup", "restore_requested", "abc", [], "requested a backup restore"),
+        (
+            "http",
+            "updated",
+            "HTTP",
+            ["login_attempts_threshold"],
+            "changed HTTP settings (login_attempts_threshold)",
+        ),
+        ("http", "withdrawn", "HTTP", [], "withdrew pending HTTP settings"),
+        ("http", "confirmed", "HTTP", [], "confirmed HTTP settings"),
+        ("network", "updated", "Network", [], "changed network settings"),
+        (
+            "analytics",
+            "updated",
+            "Analytics",
+            ["base"],
+            "changed analytics settings (base)",
+        ),
+        (
+            "logger",
+            "updated",
+            "Logger",
+            ["homeassistant.components.http"],
+            "changed log levels (homeassistant.components.http)",
+        ),
+        ("recorder", "disabled", "Recorder", [], "disabled the recorder"),
+        ("recorder", "enabled", "Recorder", [], "enabled the recorder"),
+        ("recorder", "purged", "Recorder", [], "purged the recorder"),
+    ],
+)
+async def test_logbook_new_kinds(
+    hass: HomeAssistant,
+    kind: str,
+    action: str,
+    target: str,
+    changed: list[str],
+    expected: str,
+) -> None:
+    """New kinds read as short sentences, with names and no values."""
+    describe = describers(hass)["electric_fence_settings_changed"]
+    out = describe(
+        Event(
+            "electric_fence_settings_changed",
+            {
+                "kind": kind,
+                "action": action,
+                "target_name": target,
+                "changed": changed,
+                "changed_by_name": "Admin",
+            },
+        )
+    )
+    assert out[LOGBOOK_ENTRY_MESSAGE] == f"{expected} by Admin"
+
+
+async def test_logbook_unknown_kind_and_odd_changed(hass: HomeAssistant) -> None:
+    """Unknown kinds fall back to raw names; a bad `changed` is ignored."""
+    describe = describers(hass)["electric_fence_settings_changed"]
+    out = describe(
+        Event(
+            "electric_fence_settings_changed",
+            {"kind": "future", "action": "zap", "target_name": "T", "changed": "x"},
+        )
+    )
+    assert out[LOGBOOK_ENTRY_MESSAGE] == "future T zap by System"
+    out = describe(
+        Event(
+            "electric_fence_settings_changed",
+            {"kind": "http", "action": "updated", "changed": [None, "a\nb"]},
+        )
+    )
+    assert out[LOGBOOK_ENTRY_MESSAGE] == "changed HTTP settings (a b) by System"

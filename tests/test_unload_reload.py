@@ -1,6 +1,7 @@
 """Unload restores Core exactly; reload works without a restart (§4.6, §11.12)."""
 
 import inspect
+import sqlite3
 from typing import Any
 
 import pytest
@@ -15,6 +16,11 @@ from custom_components import electric_fence as fence
 from custom_components.electric_fence import attribution
 from custom_components.electric_fence.attribution import ADMIN_WS_COMMANDS
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
+from custom_components.electric_fence.models import (
+    ChangeAction,
+    ChangeKind,
+    SettingsChange,
+)
 from custom_components.electric_fence.notifier import (
     EVENT_LOGIN_FAILED,
     NOTIFICATION_ID,
@@ -25,7 +31,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_API_DOMAIN
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import EVENT_COMPONENT_LOADED
+from homeassistant.const import EVENT_COMPONENT_LOADED, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER
 from homeassistant.setup import ATTR_COMPONENT, async_setup_component
@@ -293,3 +299,46 @@ async def test_unload_flushes_records_to_listeners(
     assert NOTIFICATION_ID in notifications
     # The sensor counted it (its throttled write is moot: it is unavailable).
     assert counted == [1]
+
+
+async def test_flush_on_stop(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A change queued just before Home Assistant stops is in SQLite.
+
+    Core's stop handler (`ConfigEntries._async_shutdown`) only cancels retry
+    timers and initializing flows; it does not unload entries. The listener is
+    what writes the queue (restart commands stop Core right after the change).
+    """
+    entry = await _setup(hass, monkeypatch)
+    assert (
+        inspect.getsource(type(hass.config_entries)._async_shutdown).count(  # noqa: SLF001
+            "unload"
+        )
+        == 0
+    )
+    runtime = entry.runtime_data
+    runtime.worker.submit(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.HTTP,
+            action=ChangeAction.CONFIRMED,
+            target_id="http",
+            target_name="HTTP",
+            details={"changed": ["login_attempts_threshold"]},
+            actor_user_id="u1",
+            actor_name="Admin",
+            actor_ip=None,
+        )
+    )
+    path = runtime.store._path  # noqa: SLF001
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    con = sqlite3.connect(path)
+    try:
+        assert con.execute("SELECT kind, action FROM settings_changes").fetchall() == [
+            ("http", "confirmed")
+        ]
+    finally:
+        con.close()
