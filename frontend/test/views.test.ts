@@ -313,7 +313,7 @@ describe("ef-users", () => {
     const rows = [...root.querySelectorAll<HTMLButtonElement>("button.user")];
     expect(rows).toHaveLength(2);
     expect(root.querySelectorAll("button")).toHaveLength(2);
-    expect(root.textContent).toContain("no two-factor");
+    expect(root.textContent).toContain("No two-factor");
     rows[0]?.click();
     await settle(el);
     const dialog = root.querySelector("dialog") as HTMLDialogElement;
@@ -896,8 +896,8 @@ describe("ef-login-row", () => {
           await row({ result: "success", confirmed }, "success")
         ).querySelectorAll(".tag"),
       ].map((t) => t.textContent.trim());
-    expect(await tags(false)).toContain("unconfirmed");
-    expect(await tags(true)).not.toContain("unconfirmed");
+    expect(await tags(false)).toContain("Unconfirmed");
+    expect(await tags(true)).not.toContain("Unconfirmed");
   });
 
   it("shows the URL of an invalid token, truncated", async () => {

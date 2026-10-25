@@ -292,7 +292,7 @@ describe("rows", () => {
     const rows = cards(el)[2]?.querySelectorAll("ef-login-row") ?? [];
     expect(
       [...rows].map((r) => r.shadowRoot?.querySelector(".tag")?.textContent),
-    ).toEqual(["two-factor", "no two-factor"]);
+    ).toEqual(["Two-factor", "No two-factor"]);
   });
 });
 

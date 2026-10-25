@@ -61,8 +61,8 @@ describe("formatTime", () => {
 
 describe("reasonLabel", () => {
   it("maps known reasons and passes unknown ones through", () => {
-    expect(reasonLabel("wrong_2fa_code")).toBe("wrong two-factor code");
-    expect(reasonLabel("blocked_local_only")).toBe("blocked: local only");
+    expect(reasonLabel("wrong_2fa_code")).toBe("Wrong two-factor code");
+    expect(reasonLabel("blocked_local_only")).toBe("Blocked: local only");
     expect(reasonLabel("something_new")).toBe("something_new");
   });
 });

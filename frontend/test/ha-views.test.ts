@@ -213,3 +213,89 @@ describe("tab names are not repeated as page headings", () => {
     },
   );
 });
+
+describe("tags use sentence case", () => {
+  const REASONS = [
+    "ok",
+    "no_such_user",
+    "wrong_password",
+    "invalid_credentials",
+    "wrong_2fa_code",
+    "invalid_token",
+    "blocked_inactive_user",
+    "blocked_local_only",
+  ] as const;
+
+  function tagTexts(node: ShadowRoot): string[] {
+    const out: string[] = [];
+    const walk = (r: ShadowRoot) => {
+      r.querySelectorAll(".tag").forEach((t) =>
+        out.push((t.textContent ?? "").trim()),
+      );
+      r.querySelectorAll("*").forEach(
+        (e) => e.shadowRoot && walk(e.shadowRoot),
+      );
+    };
+    walk(node);
+    return out;
+  }
+
+  const startsCapital = (t: string) => /^(\p{Lu}|×)/u.test(t);
+
+  it.each(REASONS)("names reason %s in sentence case", async (reason) => {
+    const { reasonLabel } = await import("../src/format.ts");
+    expect(startsCapital(reasonLabel(reason))).toBe(true);
+  });
+
+  it("Activity rows", async () => {
+    const root = await mount(
+      "ef-activity",
+      fakeApi({
+        logins: {
+          items: [
+            login({ id: 1, result: "failed", reason: "wrong_password" }),
+            login({
+              id: 2,
+              result: "success",
+              reason: "ok",
+              confirmed: false,
+              mfa_module: null,
+            }),
+            login({
+              id: 3,
+              result: "success",
+              reason: "ok",
+              mfa_module: "totp",
+            }),
+          ],
+          next_before_id: null,
+        },
+        users: { items: [user] },
+      }),
+    );
+    const tags = tagTexts(root);
+    expect(tags.length).toBeGreaterThan(2);
+    for (const t of tags) {
+      expect(startsCapital(t), t).toBe(true);
+    }
+  });
+
+  it("Users rows", async () => {
+    const root = await mount(
+      "ef-users",
+      fakeApi({
+        users: {
+          items: [
+            { ...user, is_owner: true, local_only: true },
+            { ...user, id: "u2", is_active: false, mfa_modules: ["totp"] },
+          ],
+        },
+      }),
+    );
+    const tags = tagTexts(root);
+    expect(tags.length).toBeGreaterThan(5);
+    for (const t of tags) {
+      expect(startsCapital(t), t).toBe(true);
+    }
+  });
+});

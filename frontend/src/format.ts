@@ -1,14 +1,14 @@
 import type { HomeAssistant, LoginReason } from "./types.ts";
 
 const REASON_LABELS: Record<LoginReason, string> = {
-  ok: "ok",
-  no_such_user: "no such user",
-  wrong_password: "wrong password",
-  invalid_credentials: "invalid credentials",
-  wrong_2fa_code: "wrong two-factor code",
-  invalid_token: "invalid token",
-  blocked_inactive_user: "blocked: inactive user",
-  blocked_local_only: "blocked: local only",
+  ok: "OK",
+  no_such_user: "No such user",
+  wrong_password: "Wrong password",
+  invalid_credentials: "Invalid credentials",
+  wrong_2fa_code: "Wrong two-factor code",
+  invalid_token: "Invalid token",
+  blocked_inactive_user: "Blocked: inactive user",
+  blocked_local_only: "Blocked: local only",
 };
 
 /** Format an ISO timestamp in the user's language and the server time zone. */
