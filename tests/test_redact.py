@@ -1,5 +1,6 @@
 """Tests for settings change redaction and diffing."""
 
+import enum
 from typing import Any
 
 import pytest
@@ -113,6 +114,22 @@ def test_harmless_names(name: str) -> None:
             {"a": "sk_live_4eC39HqLyjWDarjtT1zdp7dc"}, {"a": HIDDEN}, id="dict"
         ),
         pytest.param(5, 5, id="non-string"),
+        pytest.param(
+            "https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage",
+            "https://api.telegram.org/•••/sendMessage",
+            id="url-colon-token-segment",
+        ),
+        pytest.param(
+            " https://u:p@host/x", "https://•••@host/x", id="url-leading-space"
+        ),
+        pytest.param(
+            "https://host/x;sess=abc123def456ghi789jkl",
+            "https://host/x;sess=•••",
+            id="url-path-param",
+        ),
+        pytest.param("http://[bad/x", HIDDEN, id="url-unparseable"),
+        pytest.param(b"secret-bytes", HIDDEN, id="bytes"),
+        pytest.param(bytearray(b"secret"), HIDDEN, id="bytearray"),
     ],
 )
 def test_redact_value_shapes(value: Any, expected: Any) -> None:
@@ -180,3 +197,14 @@ def test_cap_value_short_and_unserialisable() -> None:
     """Short values pass through; odd types become text."""
     assert cap_value({"a": [1, "b"]}) == {"a": [1, "b"]}
     assert cap_value({1, 2}) in ("{1, 2}", "{2, 1}")
+
+
+def test_diff_enum_key_does_not_raise() -> None:
+    """Non-JSON dict keys are converted to text."""
+
+    class Mode(enum.Enum):
+        A = 1
+
+    d = diff_details({"x": {Mode.A: 1}}, {"x": {Mode.A: 2}}, include_values=True)
+    assert d["changed"] == ["x"]
+    assert isinstance(d["values"]["x"]["after"], dict)

@@ -30,6 +30,7 @@ _CAMEL: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SPLIT: Final = re.compile(r"[_\-. ]+")
 _OPAQUE: Final = re.compile(r"[A-Za-z0-9\-_+/=.~]{20,}")
 _URL: Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+_PATH_SPLIT: Final = re.compile(r"[:=,]")
 
 
 def is_sensitive_name(name: str) -> bool:
@@ -50,13 +51,27 @@ def _is_opaque(text: str) -> bool:
     )
 
 
-def _redact_url(text: str) -> str:
+def _redact_segment(segment: str) -> str:
+    """Mask an opaque path segment and the values of its ;name=value params."""
+    base, *params = segment.split(";")
+    if any(_is_opaque(p) for p in _PATH_SPLIT.split(base)):
+        base = _MASK
+    masked = [
+        f"{k}={_MASK}" if eq else k for k, eq, _ in (p.partition("=") for p in params)
+    ]
+    return ";".join([base, *masked])
+
+
+def _redact_url(text: str) -> Any:
     """Mask credentials, query values, fragment and opaque path segments."""
-    parts = urlsplit(text)
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return dict(HIDDEN)
     host = parts.netloc
     if "@" in host:
         host = f"{_MASK}@{host.rpartition('@')[2]}"
-    path = "/".join(_MASK if _is_opaque(s) else s for s in parts.path.split("/"))
+    path = "/".join(_redact_segment(s) for s in parts.path.split("/"))
     out = f"{parts.scheme}://{host}{path}"
     if parts.query:
         pairs = (p.partition("=") for p in parts.query.split("&"))
@@ -68,15 +83,17 @@ def _redact_url(text: str) -> str:
 
 def _scrub(value: Any, *, by_name: bool) -> Any:
     """Redact by shape, and by key name too when by_name is set."""
+    if isinstance(value, (bytes, bytearray)):
+        return dict(HIDDEN)
     if isinstance(value, str):
-        if _URL.match(value):
-            return _redact_url(value)
+        if _URL.match(value.strip()):
+            return _redact_url(value.strip())
         if "-----BEGIN" in value or _is_opaque(value):
             return dict(HIDDEN)
         return value
     if isinstance(value, Mapping):
         return {
-            k: dict(HIDDEN)
+            str(k): dict(HIDDEN)
             if by_name and is_sensitive_name(str(k))
             else _scrub(v, by_name=by_name)
             for k, v in value.items()
