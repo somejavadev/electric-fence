@@ -9,6 +9,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.electric_fence import posture
+from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.models import (
     LoginAttempt,
     LoginReason,
@@ -18,6 +19,7 @@ from custom_components.electric_fence.models import (
 )
 from homeassistant.components.http.ban import KEY_LOGIN_THRESHOLD
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from tests.helpers import create_hass_user
 
@@ -214,22 +216,28 @@ async def test_posture_auto_ban_off_default(
     setup_entry: MockConfigEntry,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Auto-ban is off by default (threshold -1); a threshold of 1+ is ok."""
+    """Without Electric Fence's auto-ban, Core's threshold decides."""
+    runtime = setup_entry.runtime_data
+    runtime.settings = replace(runtime.settings, auto_ban=False)
     item = by_id(await check(hass, setup_entry), "auto_ban_off")
     assert item == {
         "id": "auto_ban_off",
         "level": "warning",
-        "params": {"threshold": -1},
+        "params": {"threshold": -1, "electric_fence": False},
     }
 
     monkeypatch.setattr(hass, "http", SimpleNamespace(app={KEY_LOGIN_THRESHOLD: 0}))
     item = by_id(await check(hass, setup_entry), "auto_ban_off")
     assert item["level"] == "warning"
-    assert item["params"] == {"threshold": 0}
+    assert item["params"] == {"threshold": 0, "electric_fence": False}
 
     monkeypatch.setattr(hass, "http", SimpleNamespace(app={KEY_LOGIN_THRESHOLD: 5}))
     item = by_id(await check(hass, setup_entry), "auto_ban_off")
-    assert item == {"id": "auto_ban_off", "level": "ok", "params": {"threshold": 5}}
+    assert item == {
+        "id": "auto_ban_off",
+        "level": "ok",
+        "params": {"threshold": 5, "electric_fence": False},
+    }
 
     # Ban middleware not set up (ip_ban_enabled off), or no HTTP at all.
     monkeypatch.setattr(hass, "http", SimpleNamespace(app={}))
@@ -237,7 +245,7 @@ async def test_posture_auto_ban_off_default(
     assert item == {
         "id": "auto_ban_off",
         "level": "warning",
-        "params": {"threshold": None},
+        "params": {"threshold": None, "electric_fence": False},
     }
     monkeypatch.setattr(hass, "http", None)
     assert by_id(await check(hass, setup_entry), "auto_ban_off")["level"] == "warning"
@@ -351,3 +359,77 @@ async def test_posture_check_failure_is_contained(
         "params": {"check_failed": "RuntimeError"},
     }
     assert by_id(items, "storage_error")["level"] == "ok"
+
+
+async def test_posture_auto_ban_ok_with_electric_fence(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Electric Fence's own auto-ban satisfies the check, Core's threshold or not."""
+    runtime = setup_entry.runtime_data
+    assert runtime.bans is not None
+    monkeypatch.setattr(runtime.bans.backend, "health", lambda: None)
+    monkeypatch.setattr(hass, "http", SimpleNamespace(app={KEY_LOGIN_THRESHOLD: -1}))
+    item = by_id(await check(hass, setup_entry), "auto_ban_off")
+    assert item == {
+        "id": "auto_ban_off",
+        "level": "ok",
+        "params": {"threshold": -1, "electric_fence": True},
+    }
+
+    runtime.settings = replace(runtime.settings, auto_ban=False)
+    item = by_id(await check(hass, setup_entry), "auto_ban_off")
+    assert item["level"] == "warning"
+    assert item["params"]["electric_fence"] is False
+
+    runtime.settings = replace(runtime.settings, auto_ban=True)
+    monkeypatch.setattr(runtime.bans.backend, "health", lambda: "ip_ban_disabled")
+    item = by_id(await check(hass, setup_entry), "auto_ban_off")
+    assert item["level"] == "warning"
+    assert item["params"]["electric_fence"] is False
+
+    runtime.bans = None
+    item = by_id(await check(hass, setup_entry), "auto_ban_off")
+    assert item["params"]["electric_fence"] is False
+
+
+async def test_ip_ban_disabled_posture(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A warning only while Core's IP ban is switched off."""
+    runtime = setup_entry.runtime_data
+    assert runtime.bans is not None
+    monkeypatch.setattr(runtime.bans.backend, "health", lambda: "ip_ban_disabled")
+    assert by_id(await check(hass, setup_entry), "ip_ban_disabled") == {
+        "id": "ip_ban_disabled",
+        "level": "warning",
+        "params": {},
+    }
+    monkeypatch.setattr(runtime.bans.backend, "health", lambda: None)
+    assert by_id(await check(hass, setup_entry), "ip_ban_disabled")["level"] == "ok"
+    runtime.bans = None
+    assert by_id(await check(hass, setup_entry), "ip_ban_disabled")["level"] == "ok"
+
+
+async def test_ip_ban_disabled_repair(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The repair issue exists while Core's IP ban is off and clears after."""
+    registry = ir.async_get(hass)
+    runtime = setup_entry.runtime_data
+    assert runtime.bans is not None
+    monkeypatch.setattr(runtime.bans.backend, "health", lambda: "ip_ban_disabled")
+    await runtime.bans.async_start()
+    issue = registry.async_get_issue(DOMAIN, "ip_ban_disabled")
+    assert issue is not None
+    assert issue.is_fixable is False
+    assert issue.translation_key == "ip_ban_disabled"
+
+    monkeypatch.setattr(runtime.bans.backend, "health", lambda: None)
+    await runtime.bans.async_start()
+    assert registry.async_get_issue(DOMAIN, "ip_ban_disabled") is None

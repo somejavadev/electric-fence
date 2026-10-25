@@ -51,3 +51,23 @@ def async_report_schema_too_new(
 def async_clear_schema_too_new(hass: HomeAssistant) -> None:
     """Remove the repair issue for a newer database."""
     ir.async_delete_issue(hass, DOMAIN, SCHEMA_TOO_NEW)
+
+
+IP_BAN_DISABLED = "ip_ban_disabled"
+
+
+def async_report_ip_ban_disabled(hass: HomeAssistant) -> None:
+    """Raise a repair issue: Core's IP ban is off, so bans can't be enforced."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        IP_BAN_DISABLED,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=IP_BAN_DISABLED,
+    )
+
+
+def async_clear_ip_ban_disabled(hass: HomeAssistant) -> None:
+    """Remove the repair issue for Core's IP ban being off."""
+    ir.async_delete_issue(hass, DOMAIN, IP_BAN_DISABLED)

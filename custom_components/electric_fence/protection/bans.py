@@ -24,9 +24,13 @@ from ..models import (
     UserExists,
 )
 from ..notifier import EVENT_IP_BANNED
-from ..repairs import async_report_disabled_collector
+from ..repairs import (
+    async_clear_ip_ban_disabled,
+    async_report_disabled_collector,
+    async_report_ip_ban_disabled,
+)
 from ..storage import BanRow, FenceStore
-from .backend import BlockingBackend
+from .backend import HEALTH_IP_BAN_DISABLED, BlockingBackend
 from .network import IpAddress, is_exempt, normalise_ip
 
 if TYPE_CHECKING:
@@ -197,6 +201,7 @@ class BanManager:
             async_report_disabled_collector(
                 self._hass, "protection", self._contract_reasons
             )
+        self._sync_ip_ban_issue()
         try:
             loaded = await self._hass.async_add_executor_job(
                 _load, self._runtime.store, dt_util.utcnow() - RECENT_WINDOW
@@ -213,6 +218,15 @@ class BanManager:
         # Core replaces its lookup when the HTTP server starts, so the lookup
         # is only meaningful once Home Assistant has started.
         self._unsub_started = async_at_started(self._hass, self._async_reconcile)
+
+    def _sync_ip_ban_issue(self) -> None:
+        try:
+            if self.backend.health() == HEALTH_IP_BAN_DISABLED:
+                async_report_ip_ban_disabled(self._hass)
+            else:
+                async_clear_ip_ban_disabled(self._hass)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Could not sync the IP ban repair: %s", type(err).__name__)
 
     @callback
     def async_stop(self) -> None:

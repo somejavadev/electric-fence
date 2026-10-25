@@ -89,8 +89,16 @@ async def test_diagnostics_redacts_and_has_no_personal_data(
         "worker",
         "store",
         "geo",
+        "protection",
         "ha_version",
     }
+    assert set(diag["protection"]) == {
+        "available",
+        "unavailable_reason",
+        "active_bans",
+        "active_attacks",
+    }
+    assert diag["protection"]["active_bans"] == 0
     names = [c["name"] for c in diag["collectors"]]
     assert names == [
         "login",
