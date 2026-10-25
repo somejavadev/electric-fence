@@ -36,6 +36,8 @@ from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
 from .notifier import Notifier
 from .panel import async_register_panel, async_unregister_panel
+from .protection.backend import CoreBanBackend
+from .protection.bans import BanManager
 from .repairs import async_clear_schema_too_new, async_report_schema_too_new
 from .runtime import Runtime
 from .settings import Settings
@@ -174,6 +176,11 @@ async def async_setup_entry(
     entry.async_on_unload(notifier.async_stop)
     entry.async_on_unload(worker.add_listener(notifier.on_record))
     entry.async_on_unload(lambda: async_end_subscriptions(hass, entry.entry_id))
+
+    bans = BanManager(hass, runtime, CoreBanBackend(hass))
+    runtime.bans = bans
+    entry.async_on_unload(bans.async_stop)
+    await bans.async_start()
 
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)

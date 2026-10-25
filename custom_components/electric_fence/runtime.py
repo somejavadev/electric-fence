@@ -1,7 +1,7 @@
 """Runtime data for Electric Fence."""
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .collectors.base import BaseCollector
 from .settings import Settings
@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .geo.base import GeoStatus
     from .geo.updater import GeoUpdater
     from .notifier import Notifier
+    from .protection.bans import BanManager
 
 
 @dataclass
@@ -27,3 +28,8 @@ class Runtime:
     notifier: Notifier | None = None
     geo_status: GeoStatus | None = None
     geo_updater: GeoUpdater | None = None
+    bans: BanManager | None = None
+    # Typed by the tasks that add them (IpPolicy, UsernameGuard, Alerter).
+    ip_policy: Any = None
+    username_guard: Any = None
+    alerts: Any = None

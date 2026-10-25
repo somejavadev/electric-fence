@@ -29,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 EVENT_LOGIN_FAILED = f"{DOMAIN}_login_failed"
 EVENT_LOGIN_SUCCEEDED = f"{DOMAIN}_login_succeeded"
 EVENT_SETTINGS_CHANGED = f"{DOMAIN}_settings_changed"
+EVENT_IP_BANNED = f"{DOMAIN}_ip_banned"
 NOTIFICATION_ID = f"{DOMAIN}_login_failed"
 NOTIFICATION_TITLE = "Electric Fence: failed login"
 PANEL_LINK = "[Open Electric Fence](/electric-fence)"
