@@ -1,4 +1,4 @@
-import { cpSync } from "node:fs";
+import { cpSync, copyFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
@@ -9,10 +9,15 @@ export default defineConfig({
     {
       name: "copy-flags",
       writeBundle() {
-        cpSync(
-          resolve("node_modules/flag-icons/flags/4x3"),
-          resolve(outDir, "flags"),
-          { recursive: true },
+        const flags = resolve(outDir, "flags");
+        cpSync(resolve("node_modules/flag-icons/flags/4x3"), flags, {
+          recursive: true,
+          filter: (src) => src.endsWith("4x3") || /\/[a-z]{2}\.svg$/.test(src),
+        });
+        // MIT: the permission notice travels with the copies.
+        copyFileSync(
+          resolve("node_modules/flag-icons/LICENSE"),
+          resolve(flags, "LICENSE"),
         );
       },
     },

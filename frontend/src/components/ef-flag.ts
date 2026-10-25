@@ -1,6 +1,7 @@
 import { LitElement, css, html, nothing } from "lit";
 
 const CODE = /^[A-Za-z]{2}$/;
+// Kept in a variable: Vite rewrites a static `new URL("./x", import.meta.url)`.
 const FLAGS_DIR = "flags/";
 
 /**
@@ -13,7 +14,7 @@ export class EfFlag extends LitElement {
     code: { attribute: false },
   };
 
-  declare code: string | null | undefined;
+  declare code: string | null;
 
   static override styles = css`
     :host([hidden]) {
