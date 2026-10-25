@@ -18,8 +18,14 @@ Screenshots are coming.
   two-factor codes, and invalid tokens, with the IP address, country, and host
   name.
 - Records successful logins.
-- Records who added, changed, or removed users, integrations, and core
-  settings.
+- Records who changed settings, when, and from which IP address: integrations,
+  users, core settings, backups (settings changes, a deleted backup, and a
+  requested restore, which is recorded as "requested" before it runs), HTTP and
+  IP ban settings (submitted, withdrawn, and confirmed after the restart),
+  network adapters, analytics preferences, log levels, and the recorder
+  (disable, enable, purge, and purge entities). A change without a person
+  behind it, such as an automation, shows as **System**. Log level and recorder
+  actions are recorded only when they succeed.
 - Shows everything in an admin-only panel with Overview, Activity, Users,
   Audit, and Settings tabs.
 - Creates a persistent notification, fires events, and provides a sensor, so
@@ -50,24 +56,24 @@ The minimum supported version is Home Assistant 2026.11.0.
 Select **Configure** on the integration to change these. All of them apply
 immediately, without a restart.
 
-| Setting                                     | What it does                                                                                                                                                                                                                 |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Notify on failed login**                  | Creates a persistent notification when a login fails.                                                                                                                                                                        |
-| **Home Assistant's own login notification** | **Replace** dismisses Home Assistant's own login notification while notifications are on. **Keep** leaves it in place.                                                                                                       |
-| **History retention**                       | Days of history to keep, from 1 to 3650. The default is 90.                                                                                                                                                                  |
-| **GeoIP provider**                          | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. Choosing MaxMind opens a second step for the credentials, which are checked before saving. |
-| **Reverse DNS lookups**                     | Looks up host names for IP addresses. On by default.                                                                                                                                                                         |
-| **Record before and after values**          | Stores what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored. Off by default.                                |
+| Setting                                     | What it does                                                                                                                                                                                                                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Notify on failed login**                  | Creates a persistent notification when a login fails.                                                                                                                                                                                                            |
+| **Home Assistant's own login notification** | **Replace** dismisses Home Assistant's own login notification while notifications are on. **Keep** leaves it in place.                                                                                                                                           |
+| **History retention**                       | Days of history to keep, from 1 to 3650. The default is 90.                                                                                                                                                                                                      |
+| **GeoIP provider**                          | Where country lookups come from: DB-IP Lite (no account needed), MaxMind GeoLite2 (needs an account ID and license key), or none. Choosing MaxMind opens a second step for the credentials, which are checked before saving.                                     |
+| **Reverse DNS lookups**                     | Looks up host names for IP addresses. On by default.                                                                                                                                                                                                             |
+| **Record before and after values**          | Stores what each setting was and what it became, with sensitive values hidden (see [Privacy](#privacy)). Turning this off also removes the values already stored. Turning it on doesn't fill in earlier changes. Changing it is itself recorded. Off by default. |
 
 ## Events
 
 Electric Fence fires these events on the Home Assistant event bus.
 
-| Event                             | Fired when                                       |
-| --------------------------------- | ------------------------------------------------ |
-| `electric_fence_login_failed`     | A login fails.                                   |
-| `electric_fence_login_succeeded`  | A login succeeds.                                |
-| `electric_fence_settings_changed` | A user, integration, or core setting is changed. |
+| Event                             | Fired when                               |
+| --------------------------------- | ---------------------------------------- |
+| `electric_fence_login_failed`     | A login fails.                           |
+| `electric_fence_login_succeeded`  | A login succeeds.                        |
+| `electric_fence_settings_changed` | A setting is changed (see `kind` below). |
 
 A failed login event has these fields: `username`, `username_masked`,
 `user_exists`, `user_id`, `reason`, `ip`, `country`, `hostname`, `source`,
@@ -80,12 +86,18 @@ name, never the typed text), `ip`, `country`, `source`, `client`, and
 `mfa_used`.
 
 A settings change event has these fields: `kind`, `action`, `target`,
-`target_name`, `changed_by_user_id`, `changed_by_name`, and `ip`. A change
-without a person behind it has no user and shows as **System** in the panel.
+`target_name`, `changed`, `changed_by_user_id`, `changed_by_name`, and `ip`. A
+change without a person behind it has no user and shows as **System** in the
+panel.
 
-- `kind` is one of `config_entry`, `user`, or `core_config`.
+- `kind` is one of `config_entry`, `user`, `core_config`, `backup`, `http`,
+  `network`, `analytics`, `logger`, or `recorder`.
 - `action` is one of `added`, `removed`, `updated`, `reconfigured`,
-  `options_changed`, `enabled`, `disabled`, or `password_changed`.
+  `options_changed`, `enabled`, `disabled`, `password_changed`,
+  `restore_requested`, `confirmed`, `purged`, or `withdrawn`.
+- `changed` lists the names of the settings that changed, never their values.
+  Integration options are namespaced as `options.<key>`, and the panel shows
+  them as "Option: ...".
 
 ## Sensor
 
@@ -117,6 +129,14 @@ resolver your system is configured to use. You can turn it off in the settings.
   masked, for example `ad•••`.
 - **Network details.** IP addresses, host names (from reverse DNS), URLs, and
   user agents are stored.
+- **Setting values.** With **Record before and after values** on, values are
+  redacted before they are stored, and a redacted value shows as "changed
+  (hidden)". Hidden by name: passwords, secrets, tokens, keys, credentials,
+  cookies, and coordinates (latitude, longitude, elevation, radius). Hidden by
+  shape: credentials and query values in URLs, opaque path segments such as
+  webhook IDs, long random-looking strings of letters and digits, and keys and
+  certificates. An integration's connection `data` is never stored. A secret
+  that looks like plain text under an unrecognisable name can still show.
 - **Retention.** Records older than the retention period are deleted. The
   default is 90 days.
 - **Removal.** Removing the integration deletes `.storage/electric_fence.db`
