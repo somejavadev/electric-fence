@@ -1,5 +1,6 @@
 import { html, nothing } from "lit";
-import { fetchStatus } from "../api.ts";
+import { clearCountries, fetchStatus } from "../api.ts";
+import "../components/ef-confirm-dialog.ts";
 import { MAX_TEXT } from "../components/ef-login-row.ts";
 import { navigate } from "../fire-event.ts";
 import { formatDate, truncate } from "../format.ts";
@@ -20,11 +21,27 @@ export class EfSettings extends LiveView {
   static override properties = {
     ...LiveView.properties,
     _status: { state: true },
+    _clearing: { state: true },
+    _busy: { state: true },
+    _error: { state: true },
+    _cleared: { state: true },
   };
 
   declare _status: Status | undefined;
+  declare _clearing: boolean;
+  declare _busy: boolean;
+  declare _error: string;
+  declare _cleared: boolean;
 
   static override styles = viewStyles;
+
+  constructor() {
+    super();
+    this._clearing = false;
+    this._busy = false;
+    this._error = "";
+    this._cleared = false;
+  }
 
   protected override async _fetch(): Promise<() => void> {
     const status = await fetchStatus(this.hass);
@@ -72,6 +89,124 @@ export class EfSettings extends LiveView {
     `;
   }
 
+  private _askClear = (): void => {
+    this._error = "";
+    this._busy = false;
+    this._cleared = false;
+    this._clearing = true;
+  };
+
+  private _onClearClosed = (): void => {
+    this._clearing = false;
+  };
+
+  private _onClear = async (): Promise<void> => {
+    this._busy = true;
+    this._error = "";
+    try {
+      await clearCountries(this.hass);
+    } catch {
+      this._busy = false;
+      this._error = strings.settings.clearError;
+      return;
+    }
+    this._busy = false;
+    this._clearing = false;
+    this._cleared = true;
+  };
+
+  /** Read-only label/value rows. */
+  private _table(rows: [string, unknown][]) {
+    return html`<table>
+      <tbody>
+        ${rows.map(
+          ([label, value]) =>
+            html`<tr>
+              <th scope="row">${label}</th>
+              <td>${value}</td>
+            </tr>`,
+        )}
+      </tbody>
+    </table>`;
+  }
+
+  private _protection(status: Status) {
+    const s = strings.settings;
+    const v = status.settings;
+    const onOff = (on: boolean) => (on ? s.on : s.off);
+    const targets = v.notify_targets;
+    return html`
+      <section class="card">
+        <h2>${s.bans}</h2>
+        ${this._table([
+          [s.autoBan, onOff(v.auto_ban)],
+          [s.banAfter, s.banRule(v.ban_threshold, v.ban_window_minutes)],
+          [s.banLength, v.ban_hours === 0 ? s.permanent : s.hours(v.ban_hours)],
+          [s.repeatOffenders, onOff(v.ban_repeat_offenders)],
+        ])}
+      </section>
+      <section class="card">
+        <h2>${s.usernameProtection}</h2>
+        ${this._table([
+          [s.protectUsernames, onOff(v.username_protection)],
+          [
+            s.slowDownAfter,
+            s.attackRule(
+              v.attack_threshold,
+              v.attack_min_ips,
+              v.attack_window_minutes,
+            ),
+          ],
+        ])}
+      </section>
+      <section class="card">
+        <h2>${s.notifications}</h2>
+        ${this._table([
+          [s.notifyFailedLogin, onOff(v.notify_failed_login)],
+          [s.notifyIpBanned, onOff(v.notify_ip_banned)],
+          [s.notifyUsernameAttack, onOff(v.notify_username_attack)],
+          [s.notifyNewCountry, onOff(v.notify_new_country)],
+          [s.notifyBanEnded, onOff(v.notify_ban_ended)],
+          [
+            s.notifyTargets,
+            targets.length === 0
+              ? s.none
+              : targets.map(
+                  (t, i) => html`${i > 0 ? ", " : nothing}${text(t)}`,
+                ),
+          ],
+        ])}
+      </section>
+      <section class="card">
+        <h2>${s.knownCountries}</h2>
+        <p class="hint">${s.knownCountriesHint}</p>
+        <div class="more">
+          <button type="button" aria-haspopup="dialog" @click=${this._askClear}>
+            ${s.clearCountries}
+          </button>
+        </div>
+        ${
+          this._cleared
+            ? html`<p class="hint" role="status">${s.cleared}</p>`
+            : nothing
+        }
+        ${
+          this._clearing
+            ? html`<ef-confirm-dialog
+                .heading=${s.clearTitle}
+                text=${s.clearText}
+                action=${s.clearAction}
+                error=${this._error}
+                ?busy=${this._busy}
+                @confirm-action=${this._onClear}
+                @confirm-closed=${this._onClearClosed}
+              ></ef-confirm-dialog>`
+            : nothing
+        }
+      </section>
+    `;
+  }
+
   private _collectors(status: Status) {
     const s = strings.settings;
     return html`<table>
@@ -115,6 +250,7 @@ export class EfSettings extends LiveView {
             ? nothing
             : html`<p class="loading">${strings.loading}</p>`
           : html`
+              ${this._protection(status)}
               <section class="card">
                 <h2>${s.geoip}</h2>
                 ${this._geo(status)}

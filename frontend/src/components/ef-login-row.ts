@@ -110,6 +110,7 @@ export class EfLoginRow extends LitElement {
         }
         <ef-flag .code=${item.country_code}></ef-flag>
         <span class="where">${where}</span>
+        ${this._newCountry(item)}
         ${
           this.detailed
             ? html`<button
@@ -126,6 +127,12 @@ export class EfLoginRow extends LitElement {
       </div>
       ${this.detailed && this._open ? this._details(item) : nothing}
     `;
+  }
+
+  private _newCountry(item: LoginItem) {
+    return item.new_country
+      ? html`<span class="tag warn">${strings.newCountry}</span>`
+      : nothing;
   }
 
   private _toggle = (): void => {
@@ -174,6 +181,17 @@ export class EfLoginRow extends LitElement {
     ];
     return html`
       <dl class="details" id="details">
+        <dt>${strings.country}</dt>
+        <dd>
+          <ef-flag .code=${item.country_code}></ef-flag>
+          ${
+            item.country_code ??
+            (item.source === "local"
+              ? strings.countryLocal
+              : strings.countryUnknown)
+          }
+          ${this._newCountry(item)}
+        </dd>
         ${rows.map(
           ([label, value]) =>
             html`<dt>${label}</dt>

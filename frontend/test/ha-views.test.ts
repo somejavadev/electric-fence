@@ -5,9 +5,11 @@ import "../src/views/ef-audit.ts";
 import type { EfSettings } from "../src/views/ef-settings.ts";
 import "../src/views/ef-settings.ts";
 import "../src/views/ef-users.ts";
-import { viewStyles } from "../src/styles.ts";
+import { EfBans } from "../src/views/ef-bans.ts";
+import { EfConfirmDialog } from "../src/components/ef-confirm-dialog.ts";
+import { dialogStyles, viewStyles } from "../src/styles.ts";
 import type { UserItem } from "../src/types.ts";
-import { change, fakeApi, login, status } from "./helpers.ts";
+import { ban, change, fakeApi, login, status } from "./helpers.ts";
 import type { FakeApi } from "./helpers.ts";
 
 // Home Assistant's look for the Activity, Users, Audit and Settings tabs:
@@ -200,6 +202,17 @@ describe("tab names are not repeated as page headings", () => {
     ["ef-audit", { changes: { items: [], next_before_id: null } }],
     ["ef-users", {}],
     ["ef-settings", { status: status() }],
+    [
+      "ef-bans",
+      {
+        bans: {
+          available: true,
+          reason: null,
+          items: [],
+          next_before_id: null,
+        },
+      },
+    ],
   ] as const)(
     "%s keeps its heading for screen readers only",
     async (tag, extra) => {
@@ -297,5 +310,110 @@ describe("tags use sentence case", () => {
     for (const t of tags) {
       expect(startsCapital(t), t).toBe(true);
     }
+  });
+});
+
+const sheet = (styles: unknown): string =>
+  ([styles] as unknown[])
+    .flat(Infinity)
+    .map((s) =>
+      s && typeof s === "object" && "cssText" in s ? String(s.cssText) : "",
+    )
+    .join("\n");
+
+describe("phone width", () => {
+  const PHONE = 360;
+  // 16px of panel padding on each side.
+  const room = PHONE - 32;
+
+  it.each([
+    ["ef-bans", sheet(EfBans.styles)],
+    ["ef-confirm-dialog", sheet(EfConfirmDialog.styles)],
+  ])("phone width: %s sets no fixed width wider than a phone", (_n, css) => {
+    const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const m of bare.matchAll(
+      /(?:^|[;{\s])(min-width|width)\s*:\s*([^;}]+)/g,
+    )) {
+      const value = (m[2] ?? "").trim();
+      if (/^min\(/.test(value)) {
+        // min(560px, calc(100vw - 32px)) never exceeds the viewport.
+        expect(value).toMatch(/100vw/);
+        continue;
+      }
+      for (const px of value.matchAll(/(\d+)px/g)) {
+        expect(Number(px[1]), `${m[1]}: ${value}`).toBeLessThanOrEqual(room);
+      }
+    }
+    for (const m of bare.matchAll(/grid-template-columns\s*:\s*([^;}]+)/g)) {
+      // Flexible tracks must be able to shrink below their content.
+      expect((m[1] ?? "").replace(/minmax\(0,\s*1fr\)/g, "")).not.toMatch(
+        /fr\b/,
+      );
+    }
+  });
+
+  it("phone width: bans view has no horizontal overflow at 360px", async () => {
+    const css = sheet(EfBans.styles);
+    // The list row: a shrinkable text column, and a stacked layout on phones.
+    expect(rule(css, /^button\.ban$/)).toMatch(/minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*600px\)/);
+    // Long IPv6 addresses and host names wrap instead of widening the page.
+    expect(rule(css, /^\.primary$/)).toMatch(
+      /overflow-wrap\s*:\s*(anywhere|break-word)/,
+    );
+    expect(rule(css, /^\.secondary$/)).toMatch(
+      /overflow-wrap\s*:\s*(anywhere|break-word)/,
+    );
+    expect(rule(css, /\.facts dd/)).toMatch(
+      /overflow-wrap\s*:\s*(anywhere|break-word)/,
+    );
+    // Dialogs stay inside the viewport, like ha-dialog.
+    expect(rule(dialogStyles.cssText, /^dialog$/)).toMatch(
+      /width\s*:\s*min\([^;]*100vw/,
+    );
+    // The filters wrap onto more lines.
+    expect(rule(filterCss, /^form$/)).toMatch(/flex-wrap\s*:\s*wrap/);
+    const root = await mount(
+      "ef-bans",
+      fakeApi({
+        bans: {
+          available: true,
+          reason: null,
+          items: [ban({ ip: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff" })],
+          next_before_id: null,
+        },
+      }),
+    );
+    expect(root.querySelector("table")).toBeNull();
+    expect(root.querySelector(".card ul button.ban")).not.toBeNull();
+  });
+
+  it("Bans rows use sentence-case tags and a chevron", async () => {
+    const root = await mount(
+      "ef-bans",
+      fakeApi({
+        bans: {
+          available: true,
+          reason: null,
+          items: [ban(), ban({ ip: "198.51.100.4", source: "other" })],
+          next_before_id: null,
+        },
+      }),
+    );
+    const tags = [...root.querySelectorAll(".tag")].map((t) =>
+      (t.textContent ?? "").trim(),
+    );
+    expect(tags).toEqual(["Electric Fence", "Other"]);
+    expect(root.querySelector("button.ban ha-icon")?.getAttribute("icon")).toBe(
+      "mdi:chevron-right",
+    );
+  });
+
+  it("the confirmation looks like Home Assistant's dialog", () => {
+    const css = sheet(EfConfirmDialog.styles);
+    expect(rule(css, /^dialog$/)).toMatch(
+      /border-radius\s*:\s*var\(--ha-border-radius-3xl/,
+    );
+    expect(rule(css, /\.actions$/)).toMatch(/justify-content\s*:\s*flex-end/);
   });
 });

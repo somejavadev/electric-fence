@@ -392,8 +392,10 @@ describe("ef-settings", () => {
       once: true,
     });
     const el = await mount<EfSettings>("ef-settings", withStatus(status()));
-    const button = el.shadowRoot?.querySelector("button");
-    expect(button?.textContent.trim()).toBe("Open settings");
+    const button = [...(el.shadowRoot?.querySelectorAll("button") ?? [])].find(
+      (b) => b.textContent.trim() === "Open settings",
+    );
+    expect(button).toBeDefined();
     button?.click();
     expect(location.pathname).toBe(
       "/config/integrations/integration/electric_fence",
@@ -973,6 +975,142 @@ describe("ef-login-row", () => {
     await (unconfirmed.host as EfLoginRow).updateComplete;
     expect(unconfirmed.querySelector(".details")?.textContent).toContain(
       "Unconfirmed",
+    );
+  });
+});
+
+describe("protection in Activity", () => {
+  async function row(item: Partial<LoginItem>): Promise<ShadowRoot> {
+    const el = document.createElement("ef-login-row");
+    el.hass = fakeApi({}).hass;
+    el.variant = item.result === "success" ? "success" : "failed";
+    el.detailed = true;
+    el.item = login(item);
+    document.body.append(el);
+    await el.updateComplete;
+    return el.shadowRoot as ShadowRoot;
+  }
+
+  const tags = (root: ShadowRoot) =>
+    [...root.querySelectorAll(".tag")].map((t) => t.textContent.trim());
+
+  it("activity new country tag", async () => {
+    const root = await row({
+      result: "success",
+      reason: "ok",
+      confirmed: true,
+      new_country: true,
+      country_code: "BR",
+    });
+    expect(tags(root)).toContain("New country");
+    root.querySelector<HTMLButtonElement>("button.toggle")?.click();
+    await (root.host as EfLoginRow).updateComplete;
+    const details = root.querySelector(".details") as HTMLElement;
+    expect(details.textContent).toMatch(/Country\s*BR\s*New country/);
+    expect(details.querySelector("ef-flag")).not.toBeNull();
+    expect(tags(await row({ new_country: false }))).not.toContain(
+      "New country",
+    );
+  });
+
+  it("throttled reason label", async () => {
+    const root = await row({ reason: "throttled" });
+    expect(tags(root)).toContain("Too many attempts");
+  });
+});
+
+describe("Users details show flags", () => {
+  it("puts a flag next to the last login country", async () => {
+    const fake = fakeApi({ users: { items: [user()] } });
+    const el = await mount<EfUsers>("ef-users", fake);
+    el.shadowRoot?.querySelector<HTMLButtonElement>("button.user")?.click();
+    await settle(el);
+    const line = el.shadowRoot?.querySelector("dialog p.last-login");
+    const flag = line?.querySelector("ef-flag") as unknown as {
+      code: string;
+    } | null;
+    expect(flag?.code).toBe("RU");
+  });
+});
+
+describe("protection in Settings", () => {
+  const rows = (root: ShadowRoot) =>
+    Object.fromEntries(
+      [...root.querySelectorAll("tr")].map((tr) => [
+        tr.querySelector("th")?.textContent.trim(),
+        tr.querySelector("td")?.textContent.replace(/\s+/g, " ").trim(),
+      ]),
+    );
+
+  it("shows the ban, username and notification settings read-only", async () => {
+    const s = status();
+    s.settings.notify_targets = ["notify.mobile_app_anna", "notify.bo"];
+    s.settings.ban_hours = 0;
+    const el = await mount<EfSettings>("ef-settings", fakeApi({ status: s }));
+    const root = el.shadowRoot as ShadowRoot;
+    const headings = [...root.querySelectorAll("section h2")].map((h) =>
+      h.textContent.trim(),
+    );
+    expect(headings).toEqual(
+      expect.arrayContaining([
+        "Bans",
+        "Username protection",
+        "Notifications",
+        "Known countries",
+      ]),
+    );
+    const r = rows(root);
+    expect(r["Ban automatically"]).toBe("On");
+    expect(r["Ban after"]).toBe("5 failed attempts within 15 min");
+    expect(r["Ban length"]).toBe("Permanent");
+    expect(r["Lengthen bans for repeat offenders"]).toBe("Off");
+    expect(r["Protect usernames"]).toBe("On");
+    expect(r["Slow down after"]).toBe(
+      "10 failed attempts from at least 3 addresses within 15 min",
+    );
+    expect(r["IP address banned"]).toBe("On");
+    expect(r["Ban ended"]).toBe("Off");
+    expect(r["Login from a new country"]).toBe("On");
+    expect(r["Username under attack"]).toBe("On");
+    expect(r["Phone notifications"]).toBe("notify.mobile_app_anna, notify.bo");
+    expect(root.querySelector("input, select, textarea")).toBeNull();
+  });
+
+  it("shows ban length in hours and no phone targets as None", async () => {
+    const el = await mount<EfSettings>(
+      "ef-settings",
+      fakeApi({ status: status() }),
+    );
+    const r = rows(el.shadowRoot as ShadowRoot);
+    expect(r["Ban length"]).toBe("24 h");
+    expect(r["Phone notifications"]).toBe("None");
+  });
+
+  it("clears known countries only after confirming", async () => {
+    const fake = fakeApi({ status: status(), clear_countries: { cleared: 4 } });
+    const el = await mount<EfSettings>("ef-settings", fake);
+    const root = el.shadowRoot as ShadowRoot;
+    const button = [...root.querySelectorAll("button")].find(
+      (b) => b.textContent.trim() === "Clear known countries",
+    );
+    button?.click();
+    await settle(el);
+    expect(fake.of("clear_countries")).toHaveLength(0);
+    const confirmEl = root.querySelector("ef-confirm-dialog") as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await confirmEl.updateComplete;
+    const confirm = confirmEl.shadowRoot as ShadowRoot;
+    expect(confirm.querySelector("dialog")?.open).toBe(true);
+    confirm.querySelector<HTMLButtonElement>("button.confirm")?.click();
+    await settle(el);
+    await settle(el);
+    expect(fake.of("clear_countries")).toEqual([
+      { type: "electric_fence/clear_countries" },
+    ]);
+    expect(root.querySelector("ef-confirm-dialog")).toBeNull();
+    expect(root.querySelector("[role=status]")?.textContent).toContain(
+      "Known countries cleared",
     );
   });
 });

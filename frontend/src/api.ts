@@ -1,4 +1,7 @@
 import type {
+  AttackItem,
+  BanState,
+  BansPage,
   ChangeFilter,
   ChangeItem,
   HomeAssistant,
@@ -39,6 +42,38 @@ export const fetchChanges = (
 export const fetchUsers = (
   hass: HomeAssistant,
 ): Promise<{ items: UserItem[] }> => call(hass, "users");
+
+/** Active bans (all of them), or a page of ended ones. */
+export const fetchBans = (
+  hass: HomeAssistant,
+  state: BanState,
+  beforeId?: number,
+): Promise<BansPage> =>
+  call(
+    hass,
+    "bans",
+    beforeId === undefined ? { state } : { state, before_id: beforeId },
+  );
+
+export const unban = (
+  hass: HomeAssistant,
+  ip: string,
+): Promise<{ unbanned: boolean }> => call(hass, "unban", { ip });
+
+export const fetchAttacks = (
+  hass: HomeAssistant,
+  state: BanState,
+): Promise<{ items: AttackItem[] }> => call(hass, "attacks", { state });
+
+export const endSlowdown = (
+  hass: HomeAssistant,
+  username: string,
+): Promise<{ ended: boolean }> => call(hass, "end_slowdown", { username });
+
+/** Forget every user's known login countries. */
+export const clearCountries = (
+  hass: HomeAssistant,
+): Promise<{ cleared: number }> => call(hass, "clear_countries");
 
 export const fetchStatus = (hass: HomeAssistant): Promise<Status> =>
   call(hass, "status");

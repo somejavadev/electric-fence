@@ -101,8 +101,16 @@ describe("ef-posture-list icons", () => {
     const el = document.createElement("ef-posture-list");
     const items: PostureItem[] = [
       { id: "admins_without_mfa", level: "ok", params: { users: [] } },
-      { id: "auto_ban_off", level: "warning", params: { threshold: null } },
-      { id: "auto_ban_off", level: "error", params: { threshold: null } },
+      {
+        id: "auto_ban_off",
+        level: "warning",
+        params: { threshold: null, electric_fence: false },
+      },
+      {
+        id: "auto_ban_off",
+        level: "error",
+        params: { threshold: null, electric_fence: false },
+      },
     ];
     el.items = items;
     document.body.append(el);

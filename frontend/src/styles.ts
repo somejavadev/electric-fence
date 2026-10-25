@@ -259,3 +259,79 @@ export const viewStyles = css`
     padding-bottom: 6px;
   }
 `;
+
+/** Styled like Home Assistant's dialogs (ha-dialog). Used with viewStyles. */
+export const dialogStyles = css`
+  dialog {
+    box-sizing: border-box;
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100vh - 64px);
+    padding: 24px;
+    border: 0;
+    border-radius: var(--ha-border-radius-3xl, 24px);
+    background: var(--card-background-color);
+    color: var(--primary-text-color);
+  }
+  dialog::backdrop {
+    background: rgba(0, 0, 0, 0.32);
+  }
+  /* Initial focus lands here, so a mouse user sees no focus ring. */
+  dialog .title {
+    outline: none;
+  }
+  dialog header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  dialog h3 {
+    margin: 0;
+    font-size: var(--ha-font-size-2xl, 24px);
+    font-weight: var(--ha-font-weight-normal, 400);
+    line-height: var(--ha-line-height-condensed, 1.2);
+    overflow-wrap: break-word;
+  }
+  dialog h4 {
+    margin: 24px 0 8px;
+    font-size: var(--ha-font-size-l, 16px);
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  button.close {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--ha-border-radius-circle, 50%);
+    color: var(--secondary-text-color);
+  }
+  button.close:hover {
+    background: color-mix(in srgb, var(--primary-text-color) 8%, transparent);
+  }
+  /* Dialog buttons, end-aligned like ha-dialog's actions. */
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+  }
+  .actions button.plain {
+    border-color: transparent;
+  }
+  /* Home Assistant's filled danger button, for actions that lift a block. */
+  button.danger {
+    border-color: var(--error-color);
+    background: var(--error-color);
+    color: var(--text-primary-color, #fff);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+`;

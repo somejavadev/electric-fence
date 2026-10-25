@@ -9,6 +9,7 @@ const REASON_LABELS: Record<LoginReason, string> = {
   invalid_token: "Invalid token",
   blocked_inactive_user: "Blocked: inactive user",
   blocked_local_only: "Blocked: local only",
+  throttled: "Too many attempts",
 };
 
 /** Format an ISO timestamp in the user's language and the server time zone. */

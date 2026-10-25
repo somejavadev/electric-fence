@@ -1,11 +1,15 @@
 import { LitElement, css, html, nothing } from "lit";
-import { fetchOverview, fetchStatus, subscribe } from "../api.ts";
+import { endSlowdown, fetchOverview, fetchStatus, subscribe } from "../api.ts";
 import "../components/ef-answer-card.ts";
 import "../components/ef-change-row.ts";
+import "../components/ef-confirm-dialog.ts";
+import "../components/ef-flag.ts";
 import "../components/ef-login-row.ts";
 import "../components/ef-posture-list.ts";
 import { strings } from "../strings.ts";
+import { bdiText, fill } from "../text.ts";
 import type {
+  AttackItem,
   HomeAssistant,
   Overview,
   Status,
@@ -20,6 +24,7 @@ export const REFRESH_DELAY_MS = 1000;
 export const FAILED_LINK =
   "/electric-fence/activity?result=failed_or_blocked&range=24h";
 export const SUCCESS_LINK = "/electric-fence/activity?result=success&range=all";
+export const BANS_LINK = "/electric-fence/bans";
 
 type Phase = "loading" | "ready" | "error" | "unloaded";
 
@@ -37,9 +42,16 @@ export class EfOverview extends LitElement {
     _status: { state: true },
     _phase: { state: true },
     _liveFailed: { state: true },
+    _ending: { state: true },
+    _busy: { state: true },
+    _error: { state: true },
   };
 
   declare hass: HomeAssistant;
+  /** The username whose slow-down the confirmation asks to end. */
+  declare _ending: string | undefined;
+  declare _busy: boolean;
+  declare _error: string;
   declare _overview: Overview | undefined;
   declare _status: Status | undefined;
   declare _phase: Phase;
@@ -108,12 +120,71 @@ export class EfOverview extends LitElement {
       font-size: var(--ha-font-size-s, 12px);
       color: var(--secondary-text-color);
     }
+    /* Laid out like the answer cards, without opening a tab on click. */
+    .attacks {
+      margin-bottom: 16px;
+      padding: 16px;
+      background: var(--ha-card-background, var(--card-background-color));
+      border: 1px solid var(--ha-card-border-color, var(--divider-color));
+      border-radius: var(--ha-card-border-radius, 12px);
+      box-shadow: var(--ha-card-box-shadow, none);
+    }
+    .attacks h2 {
+      margin: 0 0 8px;
+      font-size: var(--ha-card-header-font-size, var(--ha-font-size-2xl, 24px));
+      font-weight: var(--ha-font-weight-normal, 400);
+      letter-spacing: -0.012em;
+      line-height: var(--ha-line-height-condensed, 1.2);
+    }
+    .attacks li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 16px;
+      padding: 8px 0;
+    }
+    .attacks .who {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .attacks .name {
+      font-weight: var(--ha-font-weight-medium, 500);
+      overflow-wrap: anywhere;
+    }
+    .attacks .sub {
+      font-size: var(--ha-font-size-s, 12px);
+      color: var(--secondary-text-color);
+      overflow-wrap: anywhere;
+    }
+    .attacks ef-flag {
+      margin-inline-start: 4px;
+    }
+    /* Home Assistant's outlined button (ha-button). */
+    .attacks button {
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid var(--outline-color, var(--divider-color));
+      border-radius: var(--ha-border-radius-pill, 9999px);
+      background: none;
+      color: var(--primary-color);
+      font: inherit;
+      font-weight: var(--ha-font-weight-medium, 500);
+      cursor: pointer;
+    }
+    .attacks button:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 2px;
+    }
   `;
 
   constructor() {
     super();
     this._phase = "loading";
     this._liveFailed = false;
+    this._busy = false;
+    this._error = "";
   }
 
   override connectedCallback(): void {
@@ -265,6 +336,103 @@ export class EfOverview extends LitElement {
     }
   }
 
+  private _askEnd(attack: AttackItem): void {
+    this._error = "";
+    this._busy = false;
+    this._ending = attack.username;
+  }
+
+  private _onConfirmClosed = (): void => {
+    this._ending = undefined;
+  };
+
+  private _onConfirmEnd = async (): Promise<void> => {
+    const username = this._ending;
+    if (username === undefined) {
+      return;
+    }
+    this._busy = true;
+    this._error = "";
+    try {
+      await endSlowdown(this.hass, username);
+    } catch {
+      this._busy = false;
+      this._error = strings.attacks.endError;
+      return;
+    }
+    this._busy = false;
+    this._ending = undefined;
+    await this._refresh(this._generation);
+  };
+
+  /** Hidden while nothing is under attack. */
+  private _attacks(attacks: AttackItem[] | undefined) {
+    const a = strings.attacks;
+    if (attacks === undefined || attacks.length === 0) {
+      return nothing;
+    }
+    return html`<section class="attacks">
+      <h2>${a.heading}</h2>
+      <ul>
+        ${attacks.map(
+          (attack) =>
+            html`<li>
+              <div class="who">
+                <span class="name">${bdiText(attack.username)}</span>
+                <span class="sub"
+                  >${a.failures(attack.failures)} ·
+                  ${a.addresses(attack.ip_count)}${attack.countries.map(
+                    (code) =>
+                      html`<ef-flag .code=${code}></ef-flag> ${bdiText(code)}`,
+                  )}</span
+                >
+              </div>
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                @click=${() => this._askEnd(attack)}
+              >
+                ${a.endSlowdown}
+              </button>
+            </li>`,
+        )}
+      </ul>
+    </section>`;
+  }
+
+  private _bans() {
+    const protection = this._overview?.protection;
+    if (protection === undefined) {
+      return this._phase === "error"
+        ? html`<p class="empty">${strings.loadError}</p>`
+        : html`<p class="loading">${strings.loading}</p>`;
+    }
+    return html`<p class="empty">
+      ${
+        protection.available
+          ? strings.attacks.bans24h(protection.bans_24h)
+          : strings.attacks.unavailable
+      }
+    </p>`;
+  }
+
+  private _confirm() {
+    const username = this._ending;
+    if (username === undefined) {
+      return nothing;
+    }
+    const a = strings.attacks;
+    return html`<ef-confirm-dialog
+      .heading=${fill(a.endTitle, username)}
+      text=${a.endText}
+      action=${a.endSlowdown}
+      error=${this._error}
+      ?busy=${this._busy}
+      @confirm-action=${this._onConfirmEnd}
+      @confirm-closed=${this._onConfirmClosed}
+    ></ef-confirm-dialog>`;
+  }
+
   private _retry = (): void => {
     this._stop();
     this._start();
@@ -315,6 +483,7 @@ export class EfOverview extends LitElement {
             `
           : nothing
       }
+      ${this._attacks(overview?.protection.attacks)}
       <div class="grid">
         <ef-answer-card
           heading=${strings.cards.failed}
@@ -331,6 +500,13 @@ export class EfOverview extends LitElement {
                 variant="failed"
               ></ef-login-row>`,
           )}
+        </ef-answer-card>
+        <ef-answer-card
+          heading=${strings.attacks.activeBans}
+          path=${BANS_LINK}
+          .count=${overview?.protection.active_bans}
+        >
+          ${this._bans()}
         </ef-answer-card>
         <ef-answer-card
           heading=${strings.cards.changes}
@@ -379,6 +555,7 @@ export class EfOverview extends LitElement {
           ? html`<p class="attribution"><bdi>${attribution}</bdi></p>`
           : nothing
       }
+      ${this._confirm()}
     `;
   }
 

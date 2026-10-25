@@ -1,5 +1,5 @@
 import { truncate } from "./format.ts";
-import type { ChangeItem, PostureItem } from "./types.ts";
+import type { BanItem, ChangeItem, PostureItem } from "./types.ts";
 
 /** Limit a value the server or a user supplied before it joins a sentence. */
 const cut = (text: string): string => truncate(text, 64).short;
@@ -147,6 +147,69 @@ export const strings = {
     } as Record<string, string>,
     noSessions: "No sessions",
   },
+  newCountry: "New country",
+  country: "Country",
+  /** For a value on its own line, where "local" would start lowercase. */
+  countryLocal: "Local network",
+  countryUnknown: "Unknown country",
+  confirm: {
+    cancel: "Cancel",
+    close: "Close",
+  },
+  bans: {
+    heading: "Bans",
+    state: "Show",
+    states: { active: "Active", history: "History" },
+    source: "Source",
+    anySource: "All",
+    sources: { electric_fence: "Electric Fence", other: "Other" },
+    empty: "No active bans",
+    emptyHistory: "No ended bans yet",
+    emptyFiltered: "No bans match these filters",
+    unavailable: {
+      ip_ban_disabled:
+        "IP banning is off in Home Assistant's HTTP settings (ip_ban_enabled).",
+      other:
+        "IP banning is unavailable right now. Electric Fence keeps recording logins.",
+    },
+    never: "Never",
+    ended: "Ended",
+    open: "Show details",
+    close: "Close",
+    hostname: "Host name",
+    failures: "Failed attempts",
+    banNumber: "Ban number",
+    bannedAt: "Banned at",
+    expires: "Expires",
+    endedAt: "Ended",
+    how: "How it ended",
+    endReasons: {
+      expired: "Expired",
+      unbanned: "Unbanned",
+      removed: "Removed outside Electric Fence",
+    },
+    /** `{}` marks where a value goes; see `fill` in text.ts. */
+    unbannedBy: "Unbanned by {}",
+    unknown: "Unknown",
+    unban: "Unban",
+    unbanTitle: "Unban {}?",
+    unbanText: "It can log in again straight away.",
+    unbanError: "Could not unban this address. Try again.",
+  },
+  attacks: {
+    heading: "Under attack",
+    activeBans: "Active bans",
+    bans24h: (n: number): string => `${n} in the last 24 hours`,
+    unavailable: "IP banning is unavailable",
+    failures: (n: number): string =>
+      n === 1 ? "1 failed attempt" : `${n} failed attempts`,
+    addresses: (n: number): string =>
+      n === 1 ? "1 address" : `${n} addresses`,
+    endSlowdown: "End slow-down",
+    endTitle: "End the slow-down for {}?",
+    endText: "Logins with this username are no longer delayed.",
+    endError: "Could not end the slow-down. Try again.",
+  },
   settings: {
     heading: "Settings",
     geoip: "Country lookup",
@@ -182,8 +245,69 @@ export const strings = {
     open: "Open settings",
     openHint:
       "Options are changed in Home Assistant's integration settings, not here.",
+    bans: "Bans",
+    autoBan: "Ban automatically",
+    banAfter: "Ban after",
+    banRule: (failures: number, minutes: number): string =>
+      `${failures} failed ${failures === 1 ? "attempt" : "attempts"} within ${minutes} min`,
+    banLength: "Ban length",
+    hours: (n: number): string => `${n} h`,
+    permanent: "Permanent",
+    repeatOffenders: "Lengthen bans for repeat offenders",
+    usernameProtection: "Username protection",
+    protectUsernames: "Protect usernames",
+    slowDownAfter: "Slow down after",
+    attackRule: (failures: number, ips: number, minutes: number): string =>
+      `${failures} failed ${failures === 1 ? "attempt" : "attempts"} from at least ${ips} ${ips === 1 ? "address" : "addresses"} within ${minutes} min`,
+    notifications: "Notifications",
+    notifyFailedLogin: "Failed login",
+    notifyIpBanned: "IP address banned",
+    notifyUsernameAttack: "Username under attack",
+    notifyNewCountry: "Login from a new country",
+    notifyBanEnded: "Ban ended",
+    notifyTargets: "Phone notifications",
+    knownCountries: "Known countries",
+    knownCountriesHint:
+      "Electric Fence remembers the countries each user has logged in from, to spot a login from a new one.",
+    clearCountries: "Clear known countries",
+    clearTitle: "Clear known countries?",
+    clearText:
+      "Electric Fence forgets which countries every user has logged in from.",
+    clearAction: "Clear",
+    clearError: "Could not clear known countries. Try again.",
+    cleared: "Known countries cleared",
   },
 } as const;
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/**
+ * When a ban ends, read at render time: "Expires in 3 h", "Never" or
+ * "Ended". A ban past its end but not yet lifted reads "Expires in 1 min".
+ */
+export function banExpiry(
+  ban: Pick<BanItem, "expires_at" | "ended_at">,
+  now: number = Date.now(),
+): string {
+  if (ban.ended_at !== null) {
+    return strings.bans.ended;
+  }
+  if (ban.expires_at === null) {
+    return strings.bans.never;
+  }
+  const left = Date.parse(ban.expires_at) - now;
+  if (Number.isNaN(left)) {
+    return strings.bans.unknown;
+  }
+  if (left < HOUR) {
+    return `Expires in ${Math.max(1, Math.ceil(left / MINUTE))} min`;
+  }
+  if (left < 48 * HOUR) {
+    return `Expires in ${Math.round(left / HOUR)} h`;
+  }
+  return `Expires in ${Math.round(left / (24 * HOUR))} d`;
+}
 
 const SYSTEM_SENTENCES: Record<string, Record<string, string>> = {
   backup: {
@@ -284,7 +408,14 @@ export function postureText(item: PostureItem): string {
         ? `1 administrator has no two-factor authentication: ${names.join(", ")}.`
         : `${users.length} administrators have no two-factor authentication: ${names.join(", ")}.`;
     }
+    case "ip_ban_disabled":
+      return item.level === "ok"
+        ? "Home Assistant's IP ban is on."
+        : "Home Assistant's IP ban is off, so no address can be banned. Turn on ip_ban_enabled in its HTTP settings.";
     case "auto_ban_off": {
+      if ("electric_fence" in item.params && item.params.electric_fence) {
+        return "Electric Fence bans an address after repeated failed logins.";
+      }
       const threshold =
         "threshold" in item.params ? item.params.threshold : null;
       if (threshold === null || threshold < 1) {

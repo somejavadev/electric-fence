@@ -4,6 +4,7 @@ import { LitElement, html } from "lit";
 import "./electric-fence-icons.ts";
 import "./views/ef-activity.ts";
 import "./views/ef-audit.ts";
+import "./views/ef-bans.ts";
 import "./views/ef-overview.ts";
 import "./views/ef-settings.ts";
 import "./views/ef-users.ts";
@@ -15,6 +16,7 @@ export const TABS = [
   { id: "overview", label: "Overview" },
   { id: "activity", label: "Activity" },
   { id: "users", label: "Users" },
+  { id: "bans", label: "Bans" },
   { id: "audit", label: "Audit" },
   { id: "settings", label: "Settings" },
 ] as const;
@@ -86,6 +88,8 @@ export class ElectricFencePanel extends LitElement {
         return html`<ef-activity .hass=${this.hass}></ef-activity>`;
       case "users":
         return html`<ef-users .hass=${this.hass}></ef-users>`;
+      case "bans":
+        return html`<ef-bans .hass=${this.hass}></ef-bans>`;
       case "audit":
         return html`<ef-audit .hass=${this.hass}></ef-audit>`;
       default:

@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REFRESH_DELAY_MS, EfOverview } from "../src/views/ef-overview.ts";
 import { changeSentence, postureText } from "../src/strings.ts";
-import { change, fakeHass, login, overview } from "./helpers.ts";
+import {
+  attack,
+  change,
+  fakeApi,
+  fakeHass,
+  login,
+  overview,
+  status,
+} from "./helpers.ts";
 import type { FakeHass } from "./helpers.ts";
 
 async function settle(el?: EfOverview): Promise<void> {
@@ -30,16 +38,18 @@ afterEach(() => {
 });
 
 describe("ef-overview", () => {
-  it("renders the four card titles", async () => {
+  it("renders the five card titles", async () => {
     const el = await mount(fakeHass(overview()));
     expect(cards(el).map((c) => cardText(c).trim().split(/\s+/)[0])).toEqual([
       "Failed",
+      "Active",
       "Settings",
       "Recent",
       "Posture",
     ]);
     expect(cards(el).map((c) => c.getAttribute("heading"))).toEqual([
       "Failed logins · 24h",
+      "Active bans",
       "Settings changes · 7d",
       "Recent successful logins",
       "Posture",
@@ -48,7 +58,7 @@ describe("ef-overview", () => {
 
   it("shows counts and rows from the fixture", async () => {
     const el = await mount(fakeHass(overview()));
-    const [failed, changes, success, posture] = cards(el);
+    const [failed, , changes, success, posture] = cards(el);
     expect(cardText(failed as Element)).toContain("17");
     expect(cardText(changes as Element)).toContain("3");
     expect(failed?.querySelectorAll("ef-login-row")).toHaveLength(1);
@@ -71,8 +81,8 @@ describe("ef-overview", () => {
     );
     const text = cards(el).map((c) => c.textContent.trim());
     expect(text[0]).toBe("No failed logins in the last 24 hours");
-    expect(text[1]).toBe("No settings changes in the last 7 days");
-    expect(text[2]).toContain("No successful logins");
+    expect(text[2]).toBe("No settings changes in the last 7 days");
+    expect(text[3]).toContain("No successful logins");
   });
 
   it("shows loading before data arrives", async () => {
@@ -116,6 +126,7 @@ describe("ef-overview", () => {
     window.removeEventListener("location-changed", listener);
     expect(seen).toEqual([
       "/electric-fence/activity?result=failed_or_blocked&range=24h",
+      "/electric-fence/bans",
       "/electric-fence/audit",
       "/electric-fence/activity?result=success&range=all",
       "/electric-fence/settings",
@@ -155,7 +166,7 @@ describe("ef-overview", () => {
     el.shadowRoot?.querySelector("button")?.click();
     await settle(el);
     expect(fake.subscriptions()).toBe(2);
-    expect(cards(el)).toHaveLength(4);
+    expect(cards(el)).toHaveLength(5);
   });
 
   it("subscribes again when the page becomes visible after an unload", async () => {
@@ -193,7 +204,7 @@ describe("ef-overview", () => {
     expect(el.shadowRoot?.textContent).toContain(
       "Live updates are unavailable",
     );
-    expect(cards(el)).toHaveLength(4);
+    expect(cards(el)).toHaveLength(5);
   });
 
   it("stops everything when removed", async () => {
@@ -289,7 +300,7 @@ describe("rows", () => {
         }),
       ),
     );
-    const rows = cards(el)[2]?.querySelectorAll("ef-login-row") ?? [];
+    const rows = cards(el)[3]?.querySelectorAll("ef-login-row") ?? [];
     expect(
       [...rows].map((r) => r.shadowRoot?.querySelector(".tag")?.textContent),
     ).toEqual(["Two-factor", "No two-factor"]);
@@ -349,7 +360,7 @@ describe("sentences", () => {
       const text = postureText({
         id: "auto_ban_off",
         level: "warning",
-        params: { threshold },
+        params: { threshold, electric_fence: false },
       });
       expect(text).toContain("turned off");
       expect(text).not.toMatch(/-?\d/);
@@ -361,7 +372,7 @@ describe("sentences", () => {
       postureText({
         id: "auto_ban_off",
         level: "warning",
-        params: { threshold: null },
+        params: { threshold: null, electric_fence: false },
       }),
       postureText({
         id: "proxy_suspected",
@@ -378,4 +389,155 @@ describe("sentences", () => {
 
 beforeEach(() => {
   history.replaceState(null, "", "/");
+});
+
+describe("protection on the overview", () => {
+  async function mountApi(
+    answers: Parameters<typeof fakeApi>[0],
+  ): Promise<{ el: EfOverview; fake: ReturnType<typeof fakeApi> }> {
+    const fake = fakeApi({ status: status(), ...answers });
+    const el = document.createElement("ef-overview");
+    el.hass = fake.hass;
+    document.body.append(el);
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+      const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog") as
+        { updateComplete: Promise<unknown> } | null | undefined;
+      await confirm?.updateComplete;
+    }
+    return { el, fake };
+  }
+
+  const attackRows = (el: EfOverview) => [
+    ...(el.shadowRoot?.querySelectorAll(".attacks li") ?? []),
+  ];
+
+  it("overview shows active bans and end slow-down", async () => {
+    let attacks = [attack()];
+    const { el, fake } = await mountApi({
+      overview: () =>
+        overview({
+          protection: {
+            available: true,
+            active_bans: 3,
+            bans_24h: 4,
+            attacks,
+          },
+        }),
+      end_slowdown: () => {
+        attacks = [];
+        return { ended: true };
+      },
+    });
+    const bans = cards(el)[1] as Element;
+    expect(bans.getAttribute("heading")).toBe("Active bans");
+    expect(bans.getAttribute("path")).toBe("/electric-fence/bans");
+    expect(cardText(bans)).toContain("3");
+    expect(bans.textContent).toContain("4 in the last 24 hours");
+
+    const section = el.shadowRoot?.querySelector(".attacks");
+    expect(section?.querySelector("h2")?.textContent).toBe("Under attack");
+    const rows = attackRows(el);
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as Element;
+    expect(row.textContent).toContain("admin");
+    expect(row.textContent).toContain("14 failed attempts");
+    expect(row.textContent).toContain("4 addresses");
+
+    row.querySelector<HTMLButtonElement>("button")?.click();
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+    }
+    expect(fake.of("end_slowdown")).toHaveLength(0);
+    const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog")
+      ?.shadowRoot as ShadowRoot;
+    expect(confirm.querySelector("dialog")?.open).toBe(true);
+    expect(confirm.textContent?.replace(/\s+/g, " ")).toContain(
+      "End the slow-down for admin?",
+    );
+    const before = fake.of("overview").length;
+    confirm.querySelector<HTMLButtonElement>("button.confirm")?.click();
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+    }
+    expect(fake.of("end_slowdown")).toEqual([
+      { type: "electric_fence/end_slowdown", username: "admin" },
+    ]);
+    expect(fake.of("overview").length).toBeGreaterThan(before);
+    expect(el.shadowRoot?.querySelector(".attacks")).toBeNull();
+    expect(el.shadowRoot?.querySelector("ef-confirm-dialog")).toBeNull();
+  });
+
+  it("hides Under attack when nothing is under attack", async () => {
+    const { el } = await mountApi({ overview: overview() });
+    expect(el.shadowRoot?.querySelector(".attacks")).toBeNull();
+    expect(el.shadowRoot?.textContent).not.toContain("Under attack");
+  });
+
+  it("keeps the confirmation open with an error when ending fails", async () => {
+    const { el } = await mountApi({
+      overview: overview({
+        protection: {
+          available: true,
+          active_bans: 0,
+          bans_24h: 0,
+          attacks: [attack()],
+        },
+      }),
+    });
+    attackRows(el)[0]?.querySelector<HTMLButtonElement>("button")?.click();
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+    }
+    const confirmEl = el.shadowRoot?.querySelector("ef-confirm-dialog");
+    confirmEl?.shadowRoot
+      ?.querySelector<HTMLButtonElement>("button.confirm")
+      ?.click();
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+      await (confirmEl as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
+    }
+    const confirm = confirmEl?.shadowRoot as ShadowRoot;
+    expect(confirm.querySelector("dialog")?.open).toBe(true);
+    expect(confirm.querySelector("[role=alert]")?.textContent).toContain(
+      "Could not end the slow-down",
+    );
+  });
+
+  it("says when IP banning is unavailable", async () => {
+    const { el } = await mountApi({
+      overview: overview({
+        protection: {
+          available: false,
+          active_bans: 0,
+          bans_24h: 0,
+          attacks: [],
+        },
+      }),
+    });
+    expect(cards(el)[1]?.textContent).toContain("IP banning is unavailable");
+  });
+});
+
+describe("protection posture sentences", () => {
+  it("counts Electric Fence's auto-ban as on", () => {
+    expect(
+      postureText({
+        id: "auto_ban_off",
+        level: "ok",
+        params: { threshold: null, electric_fence: true },
+      }),
+    ).toBe("Electric Fence bans an address after repeated failed logins.");
+  });
+
+  it("explains that Home Assistant's IP ban is off", () => {
+    const text = postureText({
+      id: "ip_ban_disabled",
+      level: "warning",
+      params: {},
+    });
+    expect(text).toContain("ip_ban_enabled");
+    expect(text).not.toContain("not known");
+  });
 });
