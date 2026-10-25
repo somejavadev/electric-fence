@@ -10,9 +10,13 @@
 #     scripts/ci_install_ha.sh, so it always matches the Core under test).
 # Once 2026.11.0 and a matching plugin are on PyPI, this can go back to
 # `pytest-homeassistant-custom-component==<version>` and the script can retire.
+# Equal to the pin in custom_components/electric_fence/manifest.json.
 maxminddb==3.2.0
-pyotp==2.10.0
 mmdb-writer==0.2.7
-mypy
-ruff
+# Pinned to Home Assistant Core's versions (requirements_test*.txt); keep them
+# equal when Core changes them. Dependabot ignores these and maxminddb
+# (.github/dependabot.yml).
+pyotp==2.10.0
+mypy==2.4.0
+ruff==0.17.1
 pre-commit

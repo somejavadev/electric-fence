@@ -18,6 +18,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Stay in sync with Home Assistant, never ahead of it:
+    # - pyotp, mypy and ruff are pinned to Home Assistant Core's versions;
+    #   change them when Core does.
+    # - maxminddb must equal the pin in the integration's manifest.json, which
+    #   Dependabot cannot update.
+    ignore:
+      - dependency-name: pyotp
+      - dependency-name: mypy
+      - dependency-name: ruff
+      - dependency-name: maxminddb
     groups:
       python-tooling:
         update-types: [minor, patch]
@@ -26,6 +36,11 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
+    # TypeScript majors wait until typescript-eslint supports them (TypeScript
+    # 7 failed: typescript-eslint 8.72 peers on typescript < 7).
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       frontend:
         update-types: [minor, patch]
