@@ -40,6 +40,9 @@ configuration directory.
 
    [![Add the integration to your Home Assistant instance.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=electric_fence)
 
+Electric Fence then appears in the sidebar for admins. Its sidebar icon shows
+after the next browser reload, or as soon as you open the panel.
+
 The minimum supported version is Home Assistant 2026.11.0.
 
 ## Settings

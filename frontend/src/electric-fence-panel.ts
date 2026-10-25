@@ -1,4 +1,7 @@
 import { LitElement, html } from "lit";
+// Also registers the sidebar icon: the extra module only loads on a full page
+// load, so this covers the integration being added without a reload.
+import "./electric-fence-icons.ts";
 import "./views/ef-activity.ts";
 import "./views/ef-audit.ts";
 import "./views/ef-overview.ts";

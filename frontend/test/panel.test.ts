@@ -90,3 +90,12 @@ describe("electric-fence-panel", () => {
     expect(tabFromPath("/settings/x")).toBe("settings");
   });
 });
+
+// The extra module reaches pages only on a full load, so opening the panel
+// right after adding the integration must register the sidebar icon too.
+it("registers the sidebar icon set when the panel loads", () => {
+  const sets = (
+    window as Window & { customIcons?: Record<string, { getIcon: unknown }> }
+  ).customIcons;
+  expect(typeof sets?.["electric-fence"]?.getIcon).toBe("function");
+});
