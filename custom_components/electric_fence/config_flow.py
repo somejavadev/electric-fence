@@ -91,10 +91,9 @@ class OptionsFlowHandler(OptionsFlow):
 
         def number(
             key: str, low: int, high: int, unit: str
-        ) -> tuple[probatio.Required, NumberSelector]:
-            return (
-                probatio.Required(key, default=getattr(current, key)),
-                NumberSelector(
+        ) -> dict[probatio.Required, NumberSelector]:
+            return {
+                probatio.Required(key, default=getattr(current, key)): NumberSelector(
                     NumberSelectorConfig(
                         min=low,
                         max=high,
@@ -102,11 +101,11 @@ class OptionsFlowHandler(OptionsFlow):
                         mode=NumberSelectorMode.BOX,
                         unit_of_measurement=unit,
                     )
-                ),
-            )
+                )
+            }
 
-        def flag(key: str) -> tuple[probatio.Required, type[bool]]:
-            return probatio.Required(key, default=getattr(current, key)), bool
+        def flag(key: str) -> dict[probatio.Required, type[bool]]:
+            return {probatio.Required(key, default=getattr(current, key)): bool}
 
         schema = probatio.Schema(
             {
@@ -134,43 +133,35 @@ class OptionsFlowHandler(OptionsFlow):
                 probatio.Required("record_values", default=current.record_values): bool,
                 probatio.Required("bans"): section(
                     probatio.Schema(
-                        dict(
-                            [
-                                flag("auto_ban"),
-                                number("ban_threshold", 1, 100, "attempts"),
-                                number("ban_window_minutes", 1, 1440, "minutes"),
-                                number("ban_hours", 0, 8760, "hours"),
-                                flag("ban_repeat_offenders"),
-                            ]
-                        )
+                        {
+                            **flag("auto_ban"),
+                            **number("ban_threshold", 1, 100, "attempts"),
+                            **number("ban_window_minutes", 1, 1440, "minutes"),
+                            **number("ban_hours", 0, 8760, "hours"),
+                            **flag("ban_repeat_offenders"),
+                        }
                     ),
                     {"collapsed": True},
                 ),
                 probatio.Required("username_protection"): section(
                     probatio.Schema(
-                        dict(
-                            [
-                                flag("username_protection"),
-                                number("attack_threshold", 2, 1000, "attempts"),
-                                number("attack_min_ips", 1, 100, "addresses"),
-                                number("attack_window_minutes", 1, 1440, "minutes"),
-                            ]
-                        )
+                        {
+                            **flag("username_protection"),
+                            **number("attack_threshold", 2, 1000, "attempts"),
+                            **number("attack_min_ips", 1, 100, "addresses"),
+                            **number("attack_window_minutes", 1, 1440, "minutes"),
+                        }
                     ),
                     {"collapsed": True},
                 ),
                 probatio.Required("notifications"): section(
                     probatio.Schema(
                         {
-                            **dict(
-                                [
-                                    flag("notify_failed_login"),
-                                    flag("notify_ip_banned"),
-                                    flag("notify_username_attack"),
-                                    flag("notify_new_country"),
-                                    flag("notify_ban_ended"),
-                                ]
-                            ),
+                            **flag("notify_failed_login"),
+                            **flag("notify_ip_banned"),
+                            **flag("notify_username_attack"),
+                            **flag("notify_new_country"),
+                            **flag("notify_ban_ended"),
                             probatio.Required(
                                 "ha_login_notification",
                                 default=current.ha_login_notification,
