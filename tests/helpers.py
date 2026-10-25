@@ -44,6 +44,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.http import current_request
+from homeassistant.setup import async_setup_component
 
 CLIENT_ID = "http://127.0.0.1:8123/"
 REDIRECT_URI = "http://127.0.0.1:8123/"
@@ -70,7 +71,11 @@ async def create_hass_user(
 
 
 async def login_flow(
-    client: TestClient[web.Request, web.Application], username: str, password: str
+    client: TestClient[web.Request, web.Application],
+    username: str,
+    password: str,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run a `homeassistant` provider login flow over HTTP.
 
@@ -83,13 +88,28 @@ async def login_flow(
             "handler": ["homeassistant", None],
             "redirect_uri": REDIRECT_URI,
         },
+        headers=headers,
     )
     step = await resp.json()
     resp = await client.post(
         f"/auth/login_flow/{step['flow_id']}",
         json={"client_id": CLIENT_ID, "username": username, "password": password},
+        headers=headers,
     )
     return cast(dict[str, Any], await resp.json())
+
+
+async def setup_forwarded_http(hass: HomeAssistant) -> None:
+    """Set up `http` so `X-Forwarded-For` sets the client address.
+
+    The test client connects from 127.0.0.1, a trusted proxy here. Call it
+    before anything else sets up `http`.
+    """
+    assert await async_setup_component(
+        hass,
+        "http",
+        {"http": {"use_x_forwarded_for": True, "trusted_proxies": ["127.0.0.1"]}},
+    )
 
 
 async def flush_worker(hass: HomeAssistant) -> None:
