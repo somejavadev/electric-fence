@@ -468,7 +468,7 @@ def hass_user_id(hass: HomeAssistant, username: Any) -> str | None:
     return None
 
 
-def _ws_ip(connection: ActiveConnection) -> str | None:
+def ws_ip(connection: ActiveConnection) -> str | None:
     """Return the WebSocket client's IP."""
     remote = _str(getattr(connection, "remote", None))
     if remote is not None:
@@ -487,7 +487,7 @@ def _ws_enter(
     scope = ActionScope(
         user_id=user.id,
         user_name=user.name,
-        ip=_ws_ip(connection),
+        ip=ws_ip(connection),
         action=ACTION_WS,
         details=_ws_details(command, connection, msg),
         owner=None,

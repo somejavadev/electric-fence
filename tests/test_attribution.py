@@ -1466,11 +1466,11 @@ def test_ws_details_cover_every_admin_command() -> None:
 
 async def test_ws_ip_falls_back_to_request() -> None:
     """Without `connection.remote`, the upgrade request gives the IP."""
-    assert attribution._ws_ip(_conn(remote="10.0.0.2")) == "10.0.0.2"
-    assert attribution._ws_ip(_conn(remote=None)) is None
+    assert attribution.ws_ip(_conn(remote="10.0.0.2")) == "10.0.0.2"
+    assert attribution.ws_ip(_conn(remote=None)) is None
     token = current_request.set(Mock(remote="10.0.0.3"))
     try:
-        assert attribution._ws_ip(_conn(remote=None)) == "10.0.0.3"
+        assert attribution.ws_ip(_conn(remote=None)) == "10.0.0.3"
     finally:
         current_request.reset(token)
 

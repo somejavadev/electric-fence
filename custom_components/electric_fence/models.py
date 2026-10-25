@@ -52,6 +52,12 @@ class ChangeKind(StrEnum):
     CONFIG_ENTRY = "config_entry"
     USER = "user"
     CORE_CONFIG = "core_config"
+    BACKUP = "backup"
+    HTTP = "http"
+    NETWORK = "network"
+    ANALYTICS = "analytics"
+    LOGGER = "logger"
+    RECORDER = "recorder"
 
 
 class ChangeAction(StrEnum):
@@ -65,6 +71,10 @@ class ChangeAction(StrEnum):
     ENABLED = "enabled"
     DISABLED = "disabled"
     PASSWORD_CHANGED = "password_changed"
+    RESTORE_REQUESTED = "restore_requested"
+    CONFIRMED = "confirmed"
+    PURGED = "purged"
+    WITHDRAWN = "withdrawn"
 
 
 @dataclass(slots=True)

@@ -290,3 +290,46 @@ for _name, _collector, _check in (
     ("core_config_event", "core_config", _check_core_config_event),
 ):
     register_contract(Contract(_name, _collector, _check))
+
+
+# Members of `ActiveConnection` the system settings collector reads or watches.
+_WATCHED_CONNECTION_ATTRS = (
+    "user",
+    "remote",
+    "send_result",
+    "send_error",
+    "send_message",
+    "async_handle_exception",
+)
+
+
+def _check_system_settings_ws(hass: HomeAssistant) -> str | None:
+    """Every command the collector wraps is registered once its component loads.
+
+    And `ActiveConnection` has the members the result watch relies on. A
+    component not loaded yet is checked again when it loads.
+    """
+    from homeassistant.components.websocket_api import ActiveConnection  # noqa: PLC0415
+    from homeassistant.components.websocket_api.const import (  # noqa: PLC0415
+        DOMAIN as WEBSOCKET_API_DOMAIN,
+    )
+
+    from .collectors.system_settings import SystemSettingsCollector  # noqa: PLC0415
+
+    for attr in _WATCHED_CONNECTION_ATTRS:
+        if not hasattr(ActiveConnection, attr):
+            return f"ActiveConnection.{attr} is missing"
+    handlers = hass.data.get(WEBSOCKET_API_DOMAIN, {})
+    missing = [
+        spec.command
+        for spec in SystemSettingsCollector.WS_SPECS
+        if spec.component in hass.config.components and spec.command not in handlers
+    ]
+    if missing:
+        return f"WebSocket commands not registered: {', '.join(missing)}"
+    return None
+
+
+register_contract(
+    Contract("system_settings_ws", "system_settings", _check_system_settings_ws)
+)

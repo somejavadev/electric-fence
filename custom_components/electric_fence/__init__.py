@@ -24,6 +24,7 @@ from .collectors.base import BaseCollector
 from .collectors.config_entries import ConfigEntryCollector
 from .collectors.core_config import CoreConfigCollector
 from .collectors.login import LoginCollector
+from .collectors.system_settings import SystemSettingsCollector
 from .collectors.users import UserCollector
 from .const import DOMAIN, MIN_HA_VERSION
 from .geo.base import GeoStatus
@@ -55,6 +56,7 @@ COLLECTOR_TYPES: list[type[BaseCollector]] = [
     LoginCollector,
     AuthFailureCollector,
     AttributionCollector,
+    SystemSettingsCollector,
     ConfigEntryCollector,
     UserCollector,
     CoreConfigCollector,

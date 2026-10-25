@@ -96,6 +96,7 @@ async def test_diagnostics_redacts_and_has_no_personal_data(
         "login",
         "auth_failures",
         "attribution",
+        "system_settings",
         "config_entries",
         "users",
         "core_config",
