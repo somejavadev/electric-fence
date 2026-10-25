@@ -150,6 +150,20 @@ describe("valueLines", () => {
     expect(line?.after).toBe("x: 2");
   });
 
+  it("shows a nested hidden field as changed (hidden)", () => {
+    const [line] = valueLines({
+      changed: ["headers"],
+      values: {
+        headers: {
+          before: { Accept: "a" },
+          after: { Accept: "b", Authorization: { hidden: true } },
+        },
+      },
+    });
+    expect(line?.before).toBe("Accept: a, Authorization: —");
+    expect(line?.after).toBe("Accept: b, Authorization: changed (hidden)");
+  });
+
   it("shows lists as comma lists", () => {
     const [line] = valueLines({
       changed: ["allowed"],
@@ -286,6 +300,17 @@ describe("audit rows with values", () => {
       "Home name: Home → Cabin",
       "Token: changed (hidden)",
     ]);
+  });
+
+  it("renders a value hidden as a whole as changed (hidden)", async () => {
+    const el = await mountAudit({
+      changed: ["create_backup"],
+      values: { create_backup: { hidden: true } },
+    });
+    const lines = [
+      ...(el.shadowRoot?.querySelectorAll(".details .line") ?? []),
+    ].map((l) => squash(l.textContent));
+    expect(lines).toEqual(["Create backup: changed (hidden)"]);
   });
 
   it("truncates a long value and keeps the full one in the title", async () => {

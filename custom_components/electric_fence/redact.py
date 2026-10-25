@@ -155,10 +155,17 @@ def diff_details(
         details["values"] = {
             name: dict(HIDDEN)
             if is_sensitive_name(name)
-            else {
-                "before": cap_value(_scrub(before.get(name), by_name=True)),
-                "after": cap_value(_scrub(after.get(name), by_name=True)),
-            }
+            else _value_pair(before.get(name), after.get(name))
             for name in changed
         }
     return details
+
+
+def _value_pair(before: Any, after: Any) -> dict[str, Any]:
+    """Redacted before and after; hidden when only redacted parts differ."""
+    shown = {
+        "before": cap_value(_scrub(before, by_name=True)),
+        "after": cap_value(_scrub(after, by_name=True)),
+    }
+    # The change is in what redaction hid: identical sides would show none.
+    return dict(HIDDEN) if shown["before"] == shown["after"] else shown

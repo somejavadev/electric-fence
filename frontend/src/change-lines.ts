@@ -70,6 +70,9 @@ function formatValue(value: unknown): string {
       : value.map(formatValue).join(", ");
   }
   if (isRecord(value)) {
+    if (value["hidden"] === true && Object.keys(value).length === 1) {
+      return strings.audit.hiddenValue;
+    }
     const label = value["name"];
     if (typeof label === "string" && label !== "") {
       return label;

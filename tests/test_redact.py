@@ -287,10 +287,8 @@ def test_diff_flat_scrape_headers_hidden() -> None:
         include_values=True,
     )
 
-    assert details["values"]["headers"] == {
-        "before": {"Authorization": HIDDEN},
-        "after": {"Authorization": HIDDEN},
-    }
+    # Only the hidden token differs, so the whole change is hidden.
+    assert details["values"]["headers"] == HIDDEN
 
 
 def test_diff_alarm_code_hidden() -> None:
@@ -298,3 +296,48 @@ def test_diff_alarm_code_hidden() -> None:
     details = diff_details({"code": "1234"}, {"code": "5678"}, include_values=True)
 
     assert details == {"changed": ["code"], "values": {"code": HIDDEN}}
+
+
+def test_diff_backup_password_only_change_hidden() -> None:
+    """A create_backup change of only its password is hidden as a whole."""
+    base = {
+        "name": "MyName",
+        "agent_ids": ["hassio.local"],
+        "include_database": True,
+        "password": "old-pass",
+    }
+    details = diff_details(
+        {"create_backup": base},
+        {"create_backup": {**base, "password": "new-pass"}},
+        include_values=True,
+    )
+
+    assert details == {
+        "changed": ["create_backup"],
+        "values": {"create_backup": HIDDEN},
+    }
+
+
+def test_diff_scrape_token_only_change_hidden() -> None:
+    """A Scrape headers change of only the Authorization token is hidden."""
+    details = diff_details(
+        {"headers": {"Authorization": "Bearer abc", "Accept": "text/html"}},
+        {"headers": {"Authorization": "Bearer xyz", "Accept": "text/html"}},
+        include_values=True,
+    )
+
+    assert details["values"] == {"headers": HIDDEN}
+
+
+def test_diff_visible_change_alongside_hidden_kept() -> None:
+    """A change with a visible difference keeps its values."""
+    details = diff_details(
+        {"create_backup": {"name": "N", "password": "a", "include_database": True}},
+        {"create_backup": {"name": "N", "password": "b", "include_database": False}},
+        include_values=True,
+    )
+
+    assert details["values"]["create_backup"] == {
+        "before": {"name": "N", "password": HIDDEN, "include_database": True},
+        "after": {"name": "N", "password": HIDDEN, "include_database": False},
+    }

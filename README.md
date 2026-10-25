@@ -139,8 +139,10 @@ resolver your system is configured to use. You can turn it off in the settings.
   credentials and query values in URLs, `user:password@host` credentials
   without a scheme, authorization values (`Bearer`, `Basic`, `Token`, or
   `Digest` followed by a value), opaque path segments such as webhook IDs, long
-  random-looking strings of letters and digits, and keys and certificates. An integration's connection `data` is never stored. A secret
-  that looks like plain text under an unrecognisable name can still show.
+  random-looking strings of letters and digits, and keys and certificates. A
+  change in which only hidden parts differ shows as "changed (hidden)" as a
+  whole. An integration's connection `data` is never stored. A secret that
+  looks like plain text under an unrecognisable name can still show.
 - **Retention.** Records older than the retention period are deleted. The
   default is 90 days.
 - **Removal.** Removing the integration deletes `.storage/electric_fence.db`
