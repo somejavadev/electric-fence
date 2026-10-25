@@ -443,7 +443,7 @@ describe("hostile values in the other tabs", () => {
     );
   });
 
-  it("users with an expanded session list", async () => {
+  it("users with the details dialog open", async () => {
     const fake = fakeApi({
       users: {
         items: [
@@ -474,30 +474,34 @@ describe("hostile values in the other tabs", () => {
       },
     });
     const el = await render("ef-users", fake);
-    el.shadowRoot?.querySelector("button")?.click();
-    await (el as unknown as { updateComplete: Promise<unknown> })
-      .updateComplete;
+    el.shadowRoot?.querySelector<HTMLButtonElement>("button.user")?.click();
+    for (let i = 0; i < 4; i += 1) {
+      await (el as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
+    }
+    expect(el.shadowRoot?.querySelector("dialog")?.open).toBe(true);
     inspect(
       el,
       [
         "h2",
         "div",
-        "table",
-        "thead",
-        "tbody",
-        "tr",
-        "th",
-        "td",
+        "ul",
+        "li",
         "button",
-        // Expand chevrons: the icon name is a constant, never data.
+        // Chevron and close icons: the icon name is a constant, never data.
         "ha-icon",
         "bdi",
         "span",
+        "dialog",
+        "header",
+        "h3",
+        "h4",
+        "p",
       ],
       ["name", "uname", "lastip", "sclient", "sip"],
     );
     for (const icon of el.shadowRoot?.querySelectorAll("ha-icon") ?? []) {
-      expect(["mdi:chevron-right", "mdi:chevron-down"]).toContain(
+      expect(["mdi:chevron-right", "mdi:close"]).toContain(
         icon.getAttribute("icon"),
       );
     }

@@ -162,7 +162,12 @@ export class EfLoginRow extends LitElement {
       [d.url, item.url],
       [d.hostname, item.hostname],
       [d.userAgent, item.user_agent],
-      [d.provider, item.provider],
+      [
+        d.provider,
+        item.provider !== null && Object.hasOwn(d.providers, item.provider)
+          ? (d.providers[item.provider] ?? item.provider)
+          : item.provider,
+      ],
       [d.mfaModule, item.mfa_module],
     ];
     return html`

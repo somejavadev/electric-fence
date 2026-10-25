@@ -81,7 +81,7 @@ export const rowStyles = css`
   }
   .main {
     font-weight: 500;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
   }
   bdi {
     unicode-bidi: isolate;
@@ -214,7 +214,7 @@ export const viewStyles = css`
     text-align: start;
     vertical-align: top;
     border-bottom: 1px solid var(--divider-color);
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
   }
   th {
     color: var(--secondary-text-color);

@@ -142,20 +142,13 @@ describe("lists sit in cards", () => {
   });
 });
 
-describe("Users expand toggles", () => {
-  it("use chevron icons, not text arrows", async () => {
+describe("Users rows", () => {
+  it("use a chevron icon, not text arrows", async () => {
     const root = await mount("ef-users", fakeApi({ users: { items: [user] } }));
-    const toggle = root.querySelector("button[aria-expanded]");
-    expect(toggle?.querySelector("ha-icon")?.getAttribute("icon")).toBe(
-      "mdi:chevron-right",
-    );
+    expect(
+      root.querySelector("button.user ha-icon")?.getAttribute("icon"),
+    ).toBe("mdi:chevron-right");
     expect(root.textContent).not.toMatch(/[▸▾]/);
-    (toggle as HTMLButtonElement).click();
-    await Promise.resolve();
-    await (root.host as Mounted).updateComplete;
-    expect(toggle?.querySelector("ha-icon")?.getAttribute("icon")).toBe(
-      "mdi:chevron-down",
-    );
   });
 });
 

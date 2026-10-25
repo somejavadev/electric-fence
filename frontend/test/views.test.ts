@@ -303,27 +303,25 @@ describe("ef-audit", () => {
 });
 
 describe("ef-users", () => {
-  it("renders sessions on expand and has only expand buttons", async () => {
+  it("shows sessions in a dialog and has no actions besides opening and closing", async () => {
     const fake = fakeApi({
       users: { items: [user(), user({ id: "u2", name: "Bo", sessions: [] })] },
     });
     const el = await mount<EfUsers>("ef-users", fake);
     const root = el.shadowRoot as ShadowRoot;
     expect(root.textContent).not.toContain("Firefox");
-    const buttons = [...root.querySelectorAll("button")];
-    expect(buttons).toHaveLength(2);
-    for (const b of buttons) {
-      expect(b.getAttribute("aria-expanded")).toBe("false");
-    }
-    buttons[0]?.click();
-    await settle(el);
-    expect(root.textContent).toContain("Firefox");
-    expect(buttons[0]?.getAttribute("aria-expanded")).toBe("true");
-    for (const b of root.querySelectorAll("button")) {
-      expect(b.hasAttribute("aria-expanded")).toBe(true);
-    }
-    expect(root.querySelectorAll("th[scope]").length).toBeGreaterThan(5);
+    const rows = [...root.querySelectorAll<HTMLButtonElement>("button.user")];
+    expect(rows).toHaveLength(2);
+    expect(root.querySelectorAll("button")).toHaveLength(2);
     expect(root.textContent).toContain("no two-factor");
+    rows[0]?.click();
+    await settle(el);
+    const dialog = root.querySelector("dialog") as HTMLDialogElement;
+    expect(dialog.open).toBe(true);
+    expect(dialog.textContent).toContain("Firefox");
+    expect(
+      [...root.querySelectorAll("button")].map((b) => b.className),
+    ).toEqual(["user", "user", "close"]);
   });
 
   it("refetches throttled on a login push", async () => {
@@ -765,23 +763,25 @@ describe("paging and lifecycle", () => {
 });
 
 describe("users accessibility", () => {
-  it("hides glyphs and sets aria-controls only when expanded", async () => {
+  it("hides the chevron and labels the dialog with the user's name", async () => {
     const el = await mount<EfUsers>(
       "ef-users",
       fakeApi({ users: { items: [user()] } }),
     );
     const root = el.shadowRoot as ShadowRoot;
-    const button = root.querySelector("button") as HTMLButtonElement;
-    expect(button.hasAttribute("aria-controls")).toBe(false);
-    expect(button.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    const button = root.querySelector("button.user") as HTMLButtonElement;
+    expect(button.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(button.querySelector('ha-icon[aria-hidden="true"]')).not.toBeNull();
     button.click();
     await settle(el);
-    const controls = button.getAttribute("aria-controls");
-    expect(controls).not.toBeNull();
-    expect(
-      root.getElementById?.(controls ?? "") ??
-        root.querySelector(`[id="${controls}"]`),
-    ).not.toBeNull();
+    const dialog = root.querySelector("dialog") as HTMLDialogElement;
+    const title = root.querySelector(
+      `[id="${dialog.getAttribute("aria-labelledby") ?? ""}"]`,
+    );
+    expect(title?.textContent).toContain("Anna");
+    const close = dialog.querySelector("button.close");
+    expect(close?.getAttribute("aria-label")).toBe("Close");
+    expect(close?.querySelector('ha-icon[aria-hidden="true"]')).not.toBeNull();
   });
 });
 
@@ -937,9 +937,9 @@ describe("ef-login-row", () => {
       "/auth/login_flow/abc",
       "host.example.net",
       "Firefox/140",
-      "homeassistant",
+      "Home Assistant",
       "totp",
-      "confirmed",
+      "Confirmed",
     ]) {
       expect(details).toContain(value);
     }
@@ -948,7 +948,7 @@ describe("ef-login-row", () => {
     unconfirmed.querySelector<HTMLButtonElement>("button.toggle")?.click();
     await (unconfirmed.host as EfLoginRow).updateComplete;
     expect(unconfirmed.querySelector(".details")?.textContent).toContain(
-      "unconfirmed",
+      "Unconfirmed",
     );
   });
 });
