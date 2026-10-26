@@ -155,6 +155,7 @@ class IntegrityScheduler:
         self._health: dict[str, str] = {}
         self._unchecked: list[str] = []
         self._scanned = False
+        self._scanned_at: datetime | None = None
         self._task: asyncio.Task[list[IntegrationStatus]] | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._pending: CALLBACK_TYPE | None = None
@@ -285,6 +286,16 @@ class IntegrityScheduler:
         """Scan now, or wait for the scan that is running and return its result."""
         return await asyncio.shield(self._start_scan())
 
+    @property
+    def scanned_at(self) -> datetime | None:
+        """Return when the last scan began, None before the first."""
+        return self._scanned_at
+
+    @property
+    def running(self) -> bool:
+        """Return True while a scan runs."""
+        return self._task is not None and not self._task.done()
+
     def results(self) -> list[IntegrationStatus]:
         """Return the statuses of the last scan."""
         return list(self._results)
@@ -411,6 +422,7 @@ class IntegrityScheduler:
             if s.files is not None and s.files.status == "unchecked"
         ]
         self._scanned = True
+        self._scanned_at = now
         self.apply_repairs()
         return results
 

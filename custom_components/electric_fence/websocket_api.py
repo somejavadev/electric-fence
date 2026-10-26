@@ -19,7 +19,11 @@ from homeassistant.util.hass_dict import HassKey
 
 from . import posture, sessions
 from .attribution import auth_users
+from .collectors.apps import AppCollector
 from .const import DOMAIN
+from .contracts import marketplace_contract_ok
+from .forwarding.forwarder import forwarding_state
+from .integrity.scheduler import IntegrityScheduler
 from .models import ChangeAction, ChangeKind, LoginResult, Record, SettingsChange
 from .protection.throttle import UsernameGuard
 from .runtime import Runtime
@@ -31,6 +35,8 @@ from .shapes import (
     ban_view_item,
     change_item,
     geo_status_item,
+    integration_item,
+    iso,
     login_item,
     record_event,
 )
@@ -54,11 +60,16 @@ OVERVIEW_ITEMS = 5
 FAILED_WINDOW = timedelta(hours=24)
 CHANGES_WINDOW = timedelta(days=7)
 _COUNT_PAGE = 500
+MAX_SEARCH = 200
+SCAN_COOLDOWN = timedelta(minutes=5)
 
 # entry_id -> callbacks that end that entry's subscriptions on unload.
 DATA_SUBSCRIPTIONS: HassKey[dict[str, set[CALLBACK_TYPE]]] = HassKey(
     f"{DOMAIN}_subscriptions"
 )
+
+# entry_id -> when a scan was last started from the panel.
+DATA_SCAN_REQUESTED: HassKey[dict[str, datetime]] = HassKey(f"{DOMAIN}_scan_requested")
 
 
 def _utc(value: datetime) -> datetime:
@@ -68,6 +79,7 @@ def _utc(value: datetime) -> datetime:
 
 _TIME = probatio.All(cv.datetime, _utc)
 _LIMIT = probatio.All(probatio.Coerce(int), probatio.Range(min=1, max=MAX_LIMIT))
+_SEARCH = probatio.All(str, probatio.Length(max=MAX_SEARCH))
 _PAGING: dict[str | probatio.Marker, Any] = {
     probatio.Optional("since"): _TIME,
     probatio.Optional("until"): _TIME,
@@ -91,6 +103,8 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_attacks,
         ws_end_slowdown,
         ws_clear_countries,
+        ws_integrations,
+        ws_scan_integrations,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -208,6 +222,7 @@ async def ws_overview(
         probatio.Optional("username"): str,
         probatio.Optional("ip"): str,
         probatio.Optional("country"): str,
+        probatio.Optional("search"): _SEARCH,
         **_PAGING,
     }
 )
@@ -233,6 +248,7 @@ async def ws_logins(
         country_code=msg.get("country"),
         since=msg.get("since"),
         until=msg.get("until"),
+        search=msg.get("search"),
     )
     limit: int = msg["limit"]
     rows = await hass.async_add_executor_job(
@@ -265,6 +281,9 @@ def _query_changes(
         probatio.Optional("kind"): probatio.In([k.value for k in ChangeKind]),
         probatio.Optional("actor_user_id"): str,
         probatio.Optional("include_system", default=False): bool,
+        probatio.Optional("action"): probatio.In([a.value for a in ChangeAction]),
+        probatio.Optional("ip"): str,
+        probatio.Optional("search"): _SEARCH,
         **_PAGING,
     }
 )
@@ -277,12 +296,16 @@ async def ws_changes(
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     kind = msg.get("kind")
+    action = msg.get("action")
     flt = ChangeFilter(
         kind=ChangeKind(kind) if kind is not None else None,
         actor_user_id=msg.get("actor_user_id"),
         include_system=msg["include_system"],
         since=msg.get("since"),
         until=msg.get("until"),
+        action=ChangeAction(action) if action is not None else None,
+        ip=msg.get("ip"),
+        search=msg.get("search"),
     )
     limit: int = msg["limit"]
     rows = await hass.async_add_executor_job(
@@ -343,8 +366,91 @@ async def ws_status(
                 "dropped": worker.dropped,
                 "storage_errors": worker.storage_errors,
             },
+            "forwarding": _forwarding(runtime),
+            "apps": (
+                "available"
+                if any(
+                    isinstance(c, AppCollector) and c.is_installed
+                    for c in runtime.collectors
+                )
+                else "not_available"
+            ),
         },
     )
+
+
+def _forwarding(runtime: Runtime) -> dict[str, Any] | None:
+    if (forwarder := runtime.forwarder) is None:
+        return None
+    stats = forwarder.stats()
+    return {
+        "state": forwarding_state(forwarder),
+        "queued": stats.queued,
+        "dropped": stats.dropped,
+        "last_error": stats.last_error,
+    }
+
+
+@websocket_api.websocket_command(
+    {probatio.Required("type"): "electric_fence/integrations"}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_integrations(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the last integration check results."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    scheduler = runtime.integrity
+    if scheduler is None:
+        connection.send_result(
+            msg["id"],
+            {"items": [], "scanned_at": None, "running": False, "available": False},
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        {
+            "items": [integration_item(s) for s in scheduler.results()],
+            "scanned_at": iso(scheduler.scanned_at),
+            "running": scheduler.running,
+            "available": marketplace_contract_ok(hass),
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {probatio.Required("type"): "electric_fence/scan_integrations"}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_scan_integrations(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Start an integration scan in the background, at most every 5 minutes."""
+    if (entry := _loaded_entry(hass)) is None:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Electric Fence is not loaded")
+        return
+    scheduler = entry.runtime_data.integrity
+    requested = hass.data.setdefault(DATA_SCAN_REQUESTED, {})
+    now = dt_util.utcnow()
+    last = requested.get(entry.entry_id)
+    if scheduler is None or (last is not None and now - last < SCAN_COOLDOWN):
+        connection.send_result(msg["id"], {"started": False})
+        return
+    requested[entry.entry_id] = now
+    hass.async_create_background_task(
+        _run_scan(scheduler), "electric_fence integration scan (panel)"
+    )
+    connection.send_result(msg["id"], {"started": True})
+
+
+async def _run_scan(scheduler: IntegrityScheduler) -> None:
+    try:
+        await scheduler.scan()
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Electric Fence scan failed: %s", type(err).__name__)
 
 
 @websocket_api.websocket_command(

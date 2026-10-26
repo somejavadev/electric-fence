@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from ipaddress import ip_address
 import json
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
@@ -18,6 +18,12 @@ from pytest_homeassistant_custom_component.typing import (
 )
 
 from custom_components.electric_fence import websocket_api as fence_ws
+from custom_components.electric_fence.collectors.apps import AppCollector
+from custom_components.electric_fence.forwarding.forwarder import ForwardStats
+from custom_components.electric_fence.integrity.files import FileReport
+from custom_components.electric_fence.integrity.health import HealthResult
+from custom_components.electric_fence.integrity.reference import FileResult
+from custom_components.electric_fence.integrity.scheduler import IntegrationStatus
 from custom_components.electric_fence.models import (
     ChangeAction,
     ChangeKind,
@@ -50,6 +56,8 @@ COMMANDS = (
     "electric_fence/attacks",
     "electric_fence/end_slowdown",
     "electric_fence/clear_countries",
+    "electric_fence/integrations",
+    "electric_fence/scan_integrations",
 )
 ARGS: dict[str, dict[str, Any]] = {
     "electric_fence/bans": {"state": "active"},
@@ -244,7 +252,7 @@ async def test_overview_shape_and_counts(
         "storage_error",
     }
     for item in posture:
-        assert item["level"] in ("ok", "warning", "error")
+        assert item["level"] in ("ok", "info", "warning", "error", "critical")
         assert isinstance(item["params"], dict)
     json.dumps(res)
 
@@ -1021,3 +1029,193 @@ async def test_status_notify_targets_is_list(
     assert res["settings"]["notify_targets"] == ["notify.phone"]
     assert res["settings"]["auto_ban"] is True
     assert res["settings"]["ban_threshold"] == 5
+
+
+async def test_changes_filter_new_fields(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Changes filter by action, IP and search."""
+    await store(
+        hass,
+        setup_entry,
+        change(action=ChangeAction.ADDED, actor_ip="192.168.1.5", target_name="Tuya"),
+        change(
+            action=ChangeAction.REMOVED,
+            actor_ip="10.0.0.9",
+            target_name="Hue",
+            details={"domain": "hue"},
+        ),
+    )
+
+    by_action = await result(ws, "electric_fence/changes", action="removed")
+    assert [i["target_name"] for i in by_action["items"]] == ["Hue"]
+    by_ip = await result(ws, "electric_fence/changes", ip="192.168.1.5")
+    assert [i["target_name"] for i in by_ip["items"]] == ["Tuya"]
+    by_search = await result(ws, "electric_fence/changes", search="tuy")
+    assert [i["target_name"] for i in by_search["items"]] == ["Tuya"]
+
+    bad = await call(ws, "electric_fence/changes", action="nonsense")
+    assert not bad["success"]
+
+
+async def test_logins_search(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Logins filter by free text."""
+    await store(
+        hass,
+        setup_entry,
+        attempt(username_typed="mallory"),
+        attempt(username_typed="admin"),
+    )
+
+    res = await result(ws, "electric_fence/logins", search="mallo")
+
+    assert [i["username_typed"] for i in res["items"]] == ["mallory"]
+
+
+async def test_search_too_long_rejected(
+    ws: MockHAClientWebSocket,
+) -> None:
+    """A search over 200 characters is refused; 200 is fine."""
+    for cmd in ("electric_fence/logins", "electric_fence/changes"):
+        assert not (await call(ws, cmd, search="x" * 201))["success"]
+        assert (await call(ws, cmd, search="x" * 200))["success"]
+
+
+def _status(domain: str = "tuya") -> IntegrationStatus:
+    report = FileReport(["a.py"], [], [], [], [])
+    return IntegrationStatus(
+        domain,
+        "Tuya",
+        "marketplace",
+        "1.0",
+        "owner/repo",
+        FileResult(domain, "marketplace", "changed", report, None, "v1.0"),
+        HealthResult(domain, "ok", "ok", dt_util.utcnow(), None),
+        True,
+    )
+
+
+async def test_integrations_command(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """The integration check results are sent as JSON-safe items."""
+    scheduler = setup_entry.runtime_data.integrity
+    assert scheduler is not None
+
+    empty = await result(ws, "electric_fence/integrations")
+    assert empty["items"] == []
+    assert empty["scanned_at"] is None
+    assert empty["running"] is False
+    assert empty["available"] is True
+
+    scheduler._results = [_status()]
+    scheduler._scanned_at = dt_util.utcnow()
+    res = await result(ws, "electric_fence/integrations")
+
+    json.dumps(res)
+    assert res["scanned_at"] == scheduler._scanned_at.isoformat()
+    item = res["items"][0]
+    assert item["domain"] == "tuya"
+    assert item["truncated"] is True
+    assert item["files"]["status"] == "changed"
+    assert item["files"]["report"]["changed"] == ["a.py"]
+    assert item["files"]["ref"] == "v1.0"
+    assert item["health"]["status"] == "ok"
+    assert isinstance(item["health"]["last_updated"], str)
+
+
+async def test_integrations_unavailable(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a scheduler, or a trusted Marketplace, checks are unavailable."""
+    monkeypatch.setattr(fence_ws, "marketplace_contract_ok", lambda _hass: False)
+    assert (await result(ws, "electric_fence/integrations"))["available"] is False
+    monkeypatch.undo()
+    setup_entry.runtime_data.integrity = None
+    res = await result(ws, "electric_fence/integrations")
+    assert res == {
+        "items": [],
+        "scanned_at": None,
+        "running": False,
+        "available": False,
+    }
+    assert await result(ws, "electric_fence/scan_integrations") == {"started": False}
+
+
+async def test_scan_rate_limited(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    freezer: Any,
+) -> None:
+    """A scan starts in the background, at most once per 5 minutes."""
+    scheduler = setup_entry.runtime_data.integrity
+    assert scheduler is not None
+    scheduler.scan = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    assert await result(ws, "electric_fence/scan_integrations") == {"started": True}
+    await hass.async_block_till_done()
+    assert scheduler.scan.await_count == 1
+
+    freezer.tick(timedelta(minutes=4))
+    assert await result(ws, "electric_fence/scan_integrations") == {"started": False}
+    assert scheduler.scan.await_count == 1
+
+    freezer.tick(timedelta(minutes=2))
+    assert await result(ws, "electric_fence/scan_integrations") == {"started": True}
+    await hass.async_block_till_done()
+    assert scheduler.scan.await_count == 2
+
+
+async def test_status_v03_fields(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Status carries the new settings, forwarding state and apps."""
+    runtime = setup_entry.runtime_data
+    res = await result(ws, "electric_fence/status")
+    assert res["settings"]["forward_enabled"] is False
+    assert res["settings"]["verify_files"] is True
+    assert res["settings"]["integration_repairs"] is True
+    assert res["forwarding"] is None
+    assert res["apps"] == "not_available"
+
+    forwarder = MagicMock()
+    forwarder.stats.return_value = ForwardStats(False, 3, 1, 7, "refused", None)
+    runtime.forwarder = forwarder
+    app = next(c for c in runtime.collectors if isinstance(c, AppCollector))
+    app._installed = True
+    res = await result(ws, "electric_fence/status")
+    assert res["forwarding"] == {
+        "state": "failing",
+        "queued": 3,
+        "dropped": 1,
+        "last_error": "refused",
+    }
+    assert res["apps"] == "available"
+
+    forwarder.stats.return_value = ForwardStats(True, 0, 0, 7, None, None)
+    res = await result(ws, "electric_fence/status")
+    assert res["forwarding"]["state"] == "connected"
+    json.dumps(res)
+    runtime.forwarder = None
+    app._installed = False
+
+
+async def test_new_commands_require_admin(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """A user who is not an admin gets `unauthorized` from the new commands."""
+    hass_admin_user.groups = []
+    client = await hass_ws_client(hass)
+    for cmd in ("electric_fence/integrations", "electric_fence/scan_integrations"):
+        msg = await call(client, cmd)
+        assert not msg["success"]
+        assert msg["error"]["code"] == "unauthorized"

@@ -250,3 +250,10 @@ class Forwarder:
                 del self._queue[index]
                 return True
         return False
+
+
+def forwarding_state(forwarder: Forwarder | None) -> str:
+    """Return `connected`, `failing` or `off`, as the forwarding sensor shows."""
+    if forwarder is None:
+        return "off"
+    return "connected" if forwarder.stats().connected else "failing"

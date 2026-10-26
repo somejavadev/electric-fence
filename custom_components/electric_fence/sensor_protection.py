@@ -18,6 +18,7 @@ from . import ElectricFenceConfigEntry
 from .attribution import auth_users
 from .const import SIGNAL_FORWARDING_UPDATED
 from .entity import REFRESH_INTERVAL, AsyncFenceEntity, FenceEntity
+from .forwarding.forwarder import forwarding_state
 from .models import ChangeKind, LoginAttempt, LoginResult, Record, SettingsChange
 from .posture import async_admins_without_mfa
 from .privacy import inline_text
@@ -351,10 +352,7 @@ class ForwardingSensor(FenceEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         """Return connected, failing or off."""
-        forwarder = self._entry.runtime_data.forwarder
-        if forwarder is None:
-            return "off"
-        return "connected" if forwarder.stats().connected else "failing"
+        return forwarding_state(self._entry.runtime_data.forwarder)
 
     @property
     def extra_state_attributes(self) -> dict[str, int]:

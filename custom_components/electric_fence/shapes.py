@@ -61,7 +61,7 @@ AttackItem (a username under attack)::
 
 PostureItem::
 
-    {id: str, level: "ok" | "info" | "warning" | "error" | "critical",
+    {id: str, level: "ok" | "notice" | "warning" | "critical",
      params: object}
 
     id                  params
@@ -147,10 +147,16 @@ Commands::
                      attack_window_minutes, notify_ip_banned,
                      notify_username_attack, notify_new_country,
                      notify_ban_ended, notify_targets: [str],
-                     maxmind_license_key_set: bool},
+                     maxmind_license_key_set: bool,
+                     forward_enabled: bool, verify_files: bool,
+                     integration_repairs: bool, ...},
           geo: GeoStatus | null,
           collectors: [{name: str, enabled: bool, reason: [str]}],
-          worker: {queued: int, dropped: int, storage_errors: int}}
+          worker: {queued: int, dropped: int, storage_errors: int},
+          forwarding: {state: "connected" | "failing", queued: int,
+                       dropped: int, last_error: str | null} | null,
+                       # null when forwarding is off
+          apps: "available" | "not_available"}
     electric_fence/subscribe {}  (subscription; result null, then events)
       event {type: "login", item: LoginItem}   # item.id is null
       event {type: "change", item: ChangeItem} # item.id is null
@@ -158,6 +164,34 @@ Commands::
                                                # ended, subscribe again later
       A subscription ends without an event once its user is no longer an
       active admin.
+
+IntegrationItem (the last check of one custom integration)::
+
+    {domain: str, name: str,    # name: manifest name, RAW author text
+     source: "marketplace" | "manual" | ...,
+     version: str | null, repository: str | null,
+     files: null              # null when `verify_files` is off
+          | {status: "match" | "changed" | "unchecked" | "baseline_recorded"
+                     | "baseline_renewed",
+             reason: str | null,        # why `unchecked`
+             ref: str | null, version_before: str | null,
+             report: null | {changed: [str], missing: [str], added: [str],
+                             unreadable: [str], symlinks: [str]}},
+                             # file names are RAW author text; each list holds
+                             # at most 500 paths (see `truncated`)
+     health: {status: "ok" | "archived" | "removed" | "unmaintained"
+                      | "unknown",
+              level: "ok" | "notice" | "warning" | "critical",
+              last_updated: str | null, reason: str | null},
+     truncated: bool}
+
+    electric_fence/integrations {}
+      -> {items: [IntegrationItem], scanned_at: str | null, running: bool,
+          available: bool}   # available: false without a scheduler or a
+                             # trusted Marketplace
+    electric_fence/scan_integrations {}
+      -> {started: bool}     # false when rate limited (5 minutes per entry)
+                             # or unavailable; the scan runs in the background
 
 Paging: pass the previous `next_before_id` as `before_id`; it is null when
 the page was not full. `since`/`until` are ISO 8601; without an offset they
@@ -175,6 +209,7 @@ from .models import LoginAttempt, Record
 from .storage import AttackRow, BanRow, ChangeRow, LoginRow
 
 if TYPE_CHECKING:
+    from .integrity.scheduler import IntegrationStatus
     from .protection.bans import BanView
     from .protection.throttle import AttackView
 
@@ -301,4 +336,39 @@ def attack_row_item(row: AttackRow) -> dict[str, Any]:
         "countries": list(row.countries),
         "end_reason": row.end_reason,
         "active": row.ended_at is None,
+    }
+
+
+def integration_item(status: IntegrationStatus) -> dict[str, Any]:
+    """Return an integration check result (see IntegrationItem above)."""
+    files = status.files
+    report = files.report if files is not None else None
+    health = status.health
+    return {
+        "domain": status.domain,
+        "name": status.name,
+        "source": status.source,
+        "version": status.version,
+        "repository": status.repository,
+        "files": None
+        if files is None
+        else {
+            "status": files.status,
+            "reason": files.reason,
+            "ref": files.ref,
+            "version_before": files.version_before,
+            "report": None
+            if report is None
+            else {
+                name: list(getattr(report, name))
+                for name in ("changed", "missing", "added", "unreadable", "symlinks")
+            },
+        },
+        "health": {
+            "status": health.status,
+            "level": health.level,
+            "last_updated": iso(health.last_updated),
+            "reason": health.reason,
+        },
+        "truncated": status.truncated,
     }
