@@ -273,6 +273,11 @@ forwarding** section of the settings.
   panel. Before and after values are included only when **Record before and
   after values** is on, redacted as in the audit log. Passwords, tokens, keys
   and coordinates are never sent.
+- **Details.** A change event carries a `details` object: the record's
+  details (file lists, versions, the apps of a burst, and so on) without the
+  values, with fields named like a secret or a location hidden. Every list in
+  it holds at most 50 entries; a cut list has `<name>_truncated: true` beside
+  it, and so does `changed`.
 - **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
   Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
   certificate is checked unless you turn that off, and you can paste your own
@@ -306,6 +311,8 @@ histories stay fast.
   `electric-fence-audit-2026-10-26-unmasked.csv`). In the CSV, values that
   start with `=`, `+`, `-`, `@`, a tab or a carriage return are neutralised so
   a spreadsheet doesn't run them as formulas, and the file opens as UTF-8.
+  The audit CSV has a `details` column with each record's details as JSON;
+  before and after values are only in the `values` column.
 
 ## Events
 
@@ -363,7 +370,8 @@ panel.
   unless it belongs to an existing user.
 - `changed` lists the names of the settings that changed, never their values.
   Integration options are namespaced as `options.<key>`, and the panel shows
-  them as "Option: ...".
+  them as "Option: ...". It holds at most 50 names; a longer list (such as the
+  files of an integration check) is cut and `changed_truncated` is `true`.
 
 ## Sensor
 

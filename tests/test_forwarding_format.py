@@ -91,6 +91,43 @@ def test_change_event_values_follow_setting() -> None:
     assert "values" not in event_dict(change(details={"changed": ["a"]}), values=True)
 
 
+def test_change_event_details_without_values() -> None:
+    """Details go out without values, redacted, and with lists capped at 50."""
+    files = [f"lib/file_{n}.py" for n in range(120)]
+    record = change(
+        kind=ChangeKind.FILES,
+        action=ChangeAction.FILES_CHANGED,
+        details={
+            "changed": files,
+            "missing": ["a.py"],
+            "repository": "owner/repo",
+            "values": {"a": 1},
+            "nested": {"api_token": "abc", "apps": list(range(60))},
+        },
+    )
+    for values in (False, True):
+        event = event_dict(record, values=values)
+        details = event["details"]
+        assert "values" not in details
+        assert details["changed"] == files[:50]
+        assert details["changed_truncated"] is True
+        assert details["missing"] == ["a.py"]
+        assert "missing_truncated" not in details
+        assert details["repository"] == "owner/repo"
+        assert details["nested"]["api_token"] == {"hidden": True}
+        assert details["nested"]["apps"] == list(range(50))
+        assert details["nested"]["apps_truncated"] is True
+        assert event["changed"] == files[:50]
+        assert event["changed_truncated"] is True
+    assert event_dict(record, values=True)["values"] == {"a": 1}
+    assert record.details["changed"] == files
+    small = event_dict(change(), values=False)
+    assert small["details"] == {"changed": ["a"]}
+    assert "changed_truncated" not in small
+    line = syslog_line(event_dict(record, values=True), hostname="ha", now=NOW)
+    assert len(line) < 8192
+
+
 def test_actor_kind() -> None:
     """Actor kind."""
     assert (

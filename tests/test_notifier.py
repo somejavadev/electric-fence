@@ -631,6 +631,31 @@ async def test_event_changed_ignores_non_list(
     assert events[0].data["changed"] == []
 
 
+async def test_event_changed_capped(hass: HomeAssistant, notifier: Notifier) -> None:
+    """A long file list is capped at 50 names in the event."""
+    events = async_capture_events(hass, "electric_fence_settings_changed")
+    files = [f"f{n}.py" for n in range(80)]
+    for changed in (files, files[:3]):
+        notifier.on_record(
+            SettingsChange(
+                ts=dt_util.utcnow(),
+                kind=ChangeKind.FILES,
+                action=ChangeAction.FILES_CHANGED,
+                target_id="demo",
+                target_name="Demo",
+                details={"changed": changed},
+                actor_user_id=None,
+                actor_name=None,
+                actor_ip=None,
+            )
+        )
+    await hass.async_block_till_done()
+    assert events[0].data["changed"] == files[:50]
+    assert events[0].data["changed_truncated"] is True
+    assert events[1].data["changed"] == files[:3]
+    assert "changed_truncated" not in events[1].data
+
+
 async def test_new_country_event(hass: HomeAssistant, notifier: Notifier) -> None:
     """A confirmed new-country login fires its event with the count."""
     user = await create_hass_user(hass, "alice", "pw-123456")

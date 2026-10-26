@@ -13,7 +13,8 @@ from ..models import (
     Record,
     UserExists,
 )
-from ..notifier import _changed
+from ..notifier import changed_fields
+from ..redact import shared_details
 
 FACILITY_LOCAL0 = 16
 SEVERITY_WARNING = 4
@@ -115,7 +116,9 @@ def event_dict(record: Record, *, values: bool) -> dict[str, Any]:
         "actor_name": record.actor_name,
         "actor_ip": record.actor_ip,
         "actor_kind": actor_kind,
-        "changed": _changed(record.details),
+        **changed_fields(record.details),
+        # Values only through `values` below, when they are recorded.
+        "details": shared_details(record.details),
     }
     if record.action is ChangeAction.FORWARDING_FAILED and "error" in record.details:
         event["error"] = str(record.details["error"])

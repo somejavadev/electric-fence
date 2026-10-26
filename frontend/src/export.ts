@@ -91,6 +91,14 @@ export const exportName = (
 const names = (value: unknown): string =>
   Array.isArray(value) ? value.map(String).join("; ") : "";
 
+/** The details as JSON, without `values` (they have their own column). */
+const detailsJson = (details: Record<string, unknown>): string => {
+  const rest = Object.fromEntries(
+    Object.entries(details).filter(([key]) => key !== "values"),
+  );
+  return JSON.stringify(rest);
+};
+
 export function auditCsv(items: ChangeItem[]): string {
   const withValues = items.some((i) => i.details["values"] !== undefined);
   const header = [
@@ -102,6 +110,7 @@ export function auditCsv(items: ChangeItem[]): string {
     "actor",
     "actor_ip",
     "changed",
+    "details",
     ...(withValues ? ["values"] : []),
   ];
   return toCsv(
@@ -115,6 +124,7 @@ export function auditCsv(items: ChangeItem[]): string {
       i.actor_name ?? i.actor_user_id,
       i.actor_ip,
       names(i.details["changed"]),
+      detailsJson(i.details),
       ...(withValues
         ? [
             i.details["values"] === undefined

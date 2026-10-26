@@ -189,7 +189,8 @@ describe("audit download", () => {
     expect(file?.body).toContain("203.0.113.9");
     expect(file?.body).toContain("'=cmd");
     expect(file?.body.split("\r\n")[0]).toBe(
-      BOM + "time,kind,action,target,target_name,actor,actor_ip,changed",
+      BOM +
+        "time,kind,action,target,target_name,actor,actor_ip,changed,details",
     );
   });
 
@@ -204,8 +205,37 @@ describe("audit download", () => {
     const el = await mount<EfAudit>("ef-audit", api);
     await choose(el, 0);
     const lines = saved.calls[0]?.body.split("\r\n") ?? [];
-    expect(lines[0]).toMatch(/,changed,values$/);
-    expect(lines[1]).toContain('a; b,"{""a"":1}"');
+    expect(lines[0]).toMatch(/,changed,details,values$/);
+    expect(lines[1]).toContain(
+      'a; b,"{""changed"":[""a"",""b""]}","{""a"":1}"',
+    );
+  });
+
+  it("adds the details without values as JSON, safe for spreadsheets", async () => {
+    const api = fakeApi({
+      changes: page(
+        [
+          change({
+            id: 3,
+            details: {
+              repository: "=HYPERLINK(1)",
+              values: { secret: "x" },
+            },
+          }),
+          change({ id: 4, details: {} }),
+        ],
+        null,
+      ),
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", api);
+    await choose(el, 0);
+    const lines = saved.calls[0]?.body.split("\r\n") ?? [];
+    // The details cell, then the values cell: values only in their own.
+    expect(lines[1]).toContain(
+      ',"{""repository"":""=HYPERLINK(1)""}","{""secret"":""x""}"',
+    );
+    expect(lines[2]?.endsWith(",{},")).toBe(true);
   });
 
   it("exports JSON with the filters and the rows unchanged", async () => {

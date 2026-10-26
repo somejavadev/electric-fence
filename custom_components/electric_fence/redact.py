@@ -10,6 +10,9 @@ HIDDEN: Final = {"hidden": True}
 
 _MASK: Final = "•••"
 _CAP: Final = 1024
+# Most entries of a list sent outside the store (SIEM, events, exports).
+LIST_CAP: Final = 50
+TRUNCATED_SUFFIX: Final = "_truncated"
 _STRONG: Final = (
     "password",
     "passwd",
@@ -169,3 +172,43 @@ def _value_pair(before: Any, after: Any) -> dict[str, Any]:
     }
     # The change is in what redaction hid: identical sides would show none.
     return dict(HIDDEN) if shown["before"] == shown["after"] else shown
+
+
+def cap_lists(value: Any) -> Any:
+    """Return a copy with every list cut to `LIST_CAP` entries.
+
+    A cut list under a mapping key gets a `<key>_truncated: true` beside it.
+    """
+    if isinstance(value, Mapping):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            out[name] = cap_lists(item)
+            if isinstance(item, (list, tuple)) and len(item) > LIST_CAP:
+                out[name + TRUNCATED_SUFFIX] = True
+        return out
+    if isinstance(value, (list, tuple)):
+        return [cap_lists(item) for item in value[:LIST_CAP]]
+    return value
+
+
+def hide_named(value: Any) -> Any:
+    """Return a copy with the values under secret or location names hidden.
+
+    Only by name: stored details are already redacted by shape when they
+    are recorded, and file paths would otherwise look like opaque tokens.
+    """
+    if isinstance(value, Mapping):
+        return {
+            str(k): dict(HIDDEN) if is_sensitive_name(str(k)) else hide_named(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [hide_named(item) for item in value]
+    return value
+
+
+def shared_details(details: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a change's details as sent out: no `values`, redacted, capped."""
+    rest = {k: v for k, v in details.items() if k != "values"}
+    return cap_lists(hide_named(rest))

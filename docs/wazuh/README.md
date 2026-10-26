@@ -70,7 +70,10 @@ The header is RFC 3164, not RFC 5424. Wazuh's pre-decoder reads the 3164 form
 (`Mmm dd hh:mm:ss host program:`) reliably and hands the JSON to its stock JSON
 decoder, so no custom decoder is needed. The rules match the program name
 `electric_fence` and then the JSON fields `event_type`, `kind`, `action` and
-`actor_kind`.
+`actor_kind`. A change event also has `target`, `target_name`, `actor_name`,
+`actor_ip`, `changed` and a `details` object (for example the changed,
+missing and added files of an integration check, at most 50 of each, with
+`<name>_truncated: true` when a list was cut).
 
 The syslog time is UTC with no zone. When you need the time of an event, use
 the `ts` field in the JSON, which is ISO 8601 with a `Z`.
