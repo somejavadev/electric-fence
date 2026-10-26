@@ -21,7 +21,6 @@ from . import posture, sessions
 from .attribution import auth_users
 from .collectors.apps import AppCollector
 from .const import DOMAIN
-from .contracts import marketplace_contract_ok
 from .forwarding.forwarder import forwarding_state
 from .integrity.scheduler import IntegrityScheduler
 from .models import ChangeAction, ChangeKind, LoginResult, Record, SettingsChange
@@ -417,7 +416,7 @@ async def ws_integrations(
             "items": [integration_item(s) for s in scheduler.results()],
             "scanned_at": iso(scheduler.scanned_at),
             "running": scheduler.running,
-            "available": marketplace_contract_ok(hass),
+            "available": scheduler.marketplace_ok,
         },
     )
 

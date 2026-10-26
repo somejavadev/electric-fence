@@ -1138,7 +1138,9 @@ async def test_integrations_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without a scheduler, or a trusted Marketplace, checks are unavailable."""
-    monkeypatch.setattr(fence_ws, "marketplace_contract_ok", lambda _hass: False)
+    monkeypatch.setattr(
+        type(setup_entry.runtime_data.integrity), "marketplace_ok", False
+    )
     assert (await result(ws, "electric_fence/integrations"))["available"] is False
     monkeypatch.undo()
     setup_entry.runtime_data.integrity = None

@@ -196,6 +196,34 @@ async def test_first_scan_after_delay(
     assert fake.inventory.await_count == 2
 
 
+async def test_marketplace_contract_checked_once_per_scan(
+    hass: HomeAssistant,
+    fake: Fake,
+    freezer: FrozenDateTimeFactory,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading availability reuses the scan's Marketplace check."""
+    calls: list[bool] = []
+
+    def contract_ok(_hass: HomeAssistant) -> bool:
+        calls.append(fake.contract)
+        return fake.contract
+
+    monkeypatch.setattr(scheduler, "marketplace_contract_ok", contract_ok)
+    sched = integrity(setup_entry)
+    # Before the first scan it is checked once, then reused.
+    assert sched.marketplace_ok is True
+    assert sched.marketplace_ok is True
+    assert len(calls) == 1
+    fake.contract = False
+    await tick(hass, freezer, timedelta(minutes=30))
+    assert len(calls) == 2
+    for _ in range(3):
+        assert sched.marketplace_ok is False
+    assert len(calls) == 2
+
+
 async def test_delay_setting_respected(
     hass: HomeAssistant,
     fake: Fake,

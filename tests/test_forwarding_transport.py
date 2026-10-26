@@ -133,7 +133,9 @@ async def test_peer_close_after_first_line_is_noticed() -> None:
     """A peer that closes after one line makes the next send fail, not vanish."""
     got: list[bytes] = []
 
-    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         got.append(await reader.readline())
         writer.close()
 

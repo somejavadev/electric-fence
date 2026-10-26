@@ -166,6 +166,9 @@ class IntegrityScheduler:
         # a count of installs that ended, to spot one landing during a scan.
         self._installing: dict[str | None, datetime] = {}
         self._install_generation = 0
+        # The last scan's Marketplace contract check: it walks the whole
+        # catalogue, so the panel's frequent reads reuse it.
+        self._contract_ok: bool | None = None
 
     def _delay(self) -> timedelta:
         return timedelta(minutes=self.runtime.settings.scan_delay_minutes)
@@ -296,6 +299,13 @@ class IntegrityScheduler:
         """Return True while a scan runs."""
         return self._task is not None and not self._task.done()
 
+    @property
+    def marketplace_ok(self) -> bool:
+        """Return the last scan's Marketplace contract result (checked once before)."""
+        if self._contract_ok is None:
+            self._contract_ok = marketplace_contract_ok(self.hass)
+        return self._contract_ok
+
     def results(self) -> list[IntegrationStatus]:
         """Return the statuses of the last scan."""
         return list(self._results)
@@ -376,7 +386,7 @@ class IntegrityScheduler:
     async def _async_scan(self) -> list[IntegrationStatus]:
         hass = self.hass
         settings = self.runtime.settings
-        contract_ok = marketplace_contract_ok(hass)
+        contract_ok = self._contract_ok = marketplace_contract_ok(hass)
         generation = self._install_generation
         items = await async_inventory(hass)
         now = dt_util.utcnow()
