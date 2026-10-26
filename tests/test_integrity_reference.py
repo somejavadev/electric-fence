@@ -13,6 +13,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 
 from custom_components.electric_fence.integrity.inventory import InstalledIntegration
 from custom_components.electric_fence.integrity.reference import (
+    Unchecked,
     fetch_reference,
     reference_url,
     verify,
@@ -304,8 +305,8 @@ async def test_symlinked_manual(
     link = tmp_path / "link"
     link.symlink_to(real)
     item = _item(tmp_path, path=link, symlinked=True, source="manual", repository=None)
-    assert (await verify(hass, runtime, item)).status == "baseline_recorded"
     result = await verify(hass, runtime, item)
+    assert runtime.store.baseline("demo") == (None, {})
     assert result.status == "changed"
     assert result.report is not None
     assert result.report.symlinks == ["."]
@@ -323,3 +324,75 @@ async def test_archive_without_domain_files_is_bad(
     result = await verify(hass, runtime, item)
     assert (result.status, result.reason) == ("unchecked", "bad_archive")
     assert runtime.store.reference_hashes(REPO, "1.2.0") is None
+
+
+async def test_release_without_filename_uses_archive(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    runtime: Runtime,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """zip_release without a zip filename falls back to the tag archive."""
+    item = _item(tmp_path, zip_filename=None)
+    members = {
+        f"demo-1.2.0/custom_components/demo/{k}": v for k, v in _members(item).items()
+    }
+    aioclient_mock.get(TAG, content=_zip(members))
+    assert reference_url(item) == TAG
+    assert (await verify(hass, runtime, item)).status == "match"
+
+
+async def test_folder_name_differs_from_domain(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    runtime: Runtime,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """The first directory of custom_components is the integration, as in Core."""
+    item = _item(tmp_path, zip_release=False)
+    members = {
+        f"demo-1.2.0/custom_components/alpha/{k}": v for k, v in _members(item).items()
+    }
+    members["demo-1.2.0/custom_components/demo/__init__.py"] = b"decoy"
+    aioclient_mock.get(TAG, content=_zip(members))
+    assert (await verify(hass, runtime, item)).status == "match"
+
+
+async def test_zip_limits(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Too many members or too much expanded data is too_large."""
+    item = _item(tmp_path)
+    many = {f"f{i}": b"" for i in range(50_001)}
+    aioclient_mock.get(RELEASE, content=_zip(many))
+    assert await fetch_reference(hass, item) == Unchecked("too_large")
+    aioclient_mock.clear_requests()
+    big = _zip({"a": b"\0" * (60 * 1024 * 1024), "b": b"\0" * (60 * 1024 * 1024)})
+    aioclient_mock.get(RELEASE, content=big)
+    assert await fetch_reference(hass, item) == Unchecked("too_large")
+
+
+async def test_member_names_normalised(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Dot parts and empty parts are dropped, traversal names ignored."""
+    item = _item(tmp_path)
+    aioclient_mock.get(
+        RELEASE,
+        content=_zip(
+            {
+                "./__init__.py": b"a",
+                "sub//b.py": b"b",
+                "../evil.py": b"e",
+                "a/../c.py": b"c",
+            }
+        ),
+    )
+    assert set(cast(dict[str, str], await fetch_reference(hass, item))) == {
+        "__init__.py",
+        "sub/b.py",
+    }

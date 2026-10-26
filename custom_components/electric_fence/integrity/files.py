@@ -52,7 +52,8 @@ def is_cache(name: str) -> bool:
     return name == "__pycache__" or name.endswith(".pyc")
 
 
-def _skipped(rel: str, prefixes: tuple[str, ...], ignore: frozenset[str]) -> bool:
+def skipped(rel: str, prefixes: tuple[str, ...], ignore: frozenset[str]) -> bool:
+    """Return True when a relative path is ignored."""
     return rel in ignore or rel.startswith(prefixes)
 
 
@@ -77,15 +78,15 @@ def hash_tree(root: Path, ignore: frozenset[str]) -> TreeHashes:
         for entry in entries:
             rel_path = f"{rel}{entry.name}"
             if entry.is_symlink():
-                if not _skipped(rel_path, prefixes, ignore):
+                if not skipped(rel_path, prefixes, ignore):
                     result.symlinks.append(rel_path)
             elif entry.is_dir(follow_symlinks=False):
-                if not is_cache(entry.name) and not _skipped(
+                if not is_cache(entry.name) and not skipped(
                     rel_path + "/", prefixes, ignore
                 ):
                     walk(entry.path, rel_path + "/")
             elif entry.is_file(follow_symlinks=False):
-                if is_cache(entry.name) or _skipped(rel_path, prefixes, ignore):
+                if is_cache(entry.name) or skipped(rel_path, prefixes, ignore):
                     continue
                 try:
                     result.files[rel_path] = _hash_file(entry.path)

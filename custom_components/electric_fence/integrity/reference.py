@@ -6,6 +6,7 @@ import logging
 from tempfile import SpooledTemporaryFile
 from typing import IO, Literal
 import zipfile
+import zlib
 
 import aiohttp
 
@@ -13,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..runtime import Runtime
-from .files import FileReport, TreeHashes, _skipped, compare, hash_tree, is_cache
+from .files import FileReport, TreeHashes, compare, hash_tree, is_cache, skipped
 from .inventory import InstalledIntegration
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
 _CHUNK = 64 * 1024
+MAX_EXPANDED_BYTES = 100 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 50_000
 
 UncheckedReason = Literal[
     "no_reference",
@@ -54,12 +57,22 @@ class FileResult:
     version_before: str | None = None
 
 
+def _uses_release_asset(item: InstalledIntegration) -> bool:
+    """Return True when Core installs from a release zip rather than an archive."""
+    return bool(
+        item.zip_release
+        and item.installed_version
+        and item.zip_filename
+        and item.zip_filename.endswith(".zip")
+    )
+
+
 def reference_url(item: InstalledIntegration) -> str | None:
     """Return where the published files of the installed version live."""
     repo = item.repository
     if not repo:
         return None
-    if item.zip_release and item.installed_version and item.zip_filename:
+    if _uses_release_asset(item):
         return (
             f"https://github.com/{repo}/releases/download/"
             f"{item.installed_version}/{item.zip_filename}"
@@ -73,19 +86,25 @@ def reference_url(item: InstalledIntegration) -> str | None:
     return None
 
 
-def _member_path(item: InstalledIntegration, name: str) -> str | None:
-    """Map an archive member to a path inside the integration folder."""
-    parts = name.split("/")
-    if "" in parts[:-1] or ".." in parts or name.endswith("/"):
+def _parts(name: str) -> list[str] | None:
+    """Split a member name like `extractall` does, or None when it escapes."""
+    parts = [part for part in name.split("/") if part not in ("", ".")]
+    if ".." in parts or name.endswith("/"):
         return None
-    if not item.zip_release:
-        parts = parts[1:]
-        if not item.content_in_root:
-            prefix = ["custom_components", item.domain]
-            if parts[:2] != prefix:
-                return None
-            parts = parts[2:]
-    return "/".join(parts) or None
+    return parts
+
+
+def _first_directory(names: list[list[str]]) -> str | None:
+    """Return the folder Core installs from `custom_components/`.
+
+    Core takes the first directory of the git tree, which is path ordered.
+    """
+    folders = {
+        parts[1]
+        for parts in names
+        if len(parts) > 2 and parts[0] == "custom_components"
+    }
+    return min(folders, key=lambda name: name + "/", default=None)
 
 
 def _hash_archive(
@@ -94,18 +113,41 @@ def _hash_archive(
     hashes: dict[str, str] = {}
     try:
         with zipfile.ZipFile(spool) as archive:
-            for info in archive.infolist():
-                rel = _member_path(item, info.filename)
-                if rel is None or any(is_cache(part) for part in rel.split("/")):
+            members = archive.infolist()
+            if (
+                len(members) > MAX_ARCHIVE_MEMBERS
+                or sum(info.file_size for info in members) > MAX_EXPANDED_BYTES
+            ):
+                return Unchecked("too_large")
+            named = [(info, _parts(info.filename)) for info in members]
+            folder: str | None = None
+            if not _uses_release_asset(item) and not item.content_in_root:
+                folder = _first_directory(
+                    [parts[1:] for _, parts in named if parts is not None]
+                )
+                if folder is None:
+                    return Unchecked("bad_archive")
+            for info, parts in named:
+                if parts is None or info.is_dir():
+                    continue
+                if not _uses_release_asset(item):
+                    parts = parts[1:]
+                    if not item.content_in_root:
+                        if parts[:2] != ["custom_components", folder]:
+                            continue
+                        parts = parts[2:]
+                if not parts or any(is_cache(part) for part in parts):
                     continue
                 digest = hashlib.sha256()
                 with archive.open(info) as member:
                     while chunk := member.read(_CHUNK):
                         digest.update(chunk)
-                hashes[rel] = digest.hexdigest()
+                hashes["/".join(parts)] = digest.hexdigest()
     except (
         zipfile.BadZipFile,
         zipfile.LargeZipFile,
+        zlib.error,
+        RuntimeError,
         OSError,
         ValueError,
         EOFError,
@@ -168,6 +210,14 @@ async def verify(
     """Compare the installed files with the published copy or the baseline."""
     ignore = _ignore(runtime, item)
     store = runtime.store
+    if item.symlinked:
+        return FileResult(
+            item.domain,
+            item.source,
+            "changed",
+            report=_symlink_report(),
+            ref=item.installed_version or item.installed_commit or item.version,
+        )
     if item.source == "marketplace":
         return await _verify_marketplace(hass, runtime, item, ignore)
 
@@ -217,10 +267,6 @@ async def _verify_marketplace(
 ) -> FileResult:
     ref = item.installed_version or item.installed_commit
     repo = item.repository
-    if item.symlinked:
-        return FileResult(
-            item.domain, "marketplace", "changed", report=_symlink_report(), ref=ref
-        )
     if not repo or not ref:
         return FileResult(
             item.domain, "marketplace", "unchecked", reason="no_reference", ref=ref
@@ -239,12 +285,7 @@ async def _verify_marketplace(
             )
         await hass.async_add_executor_job(store.save_reference, repo, ref, fetched)
         reference = fetched
-    reference = {
-        k: v for k, v in reference.items() if not _skipped(k, _prefixes(ignore), ignore)
-    }
+    prefixes = tuple(i for i in ignore if i.endswith("/"))
+    reference = {k: v for k, v in reference.items() if not skipped(k, prefixes, ignore)}
     actual = await hass.async_add_executor_job(hash_tree, item.path, ignore)
     return _compared(item, reference, actual, ref)
-
-
-def _prefixes(ignore: frozenset[str]) -> tuple[str, ...]:
-    return tuple(i for i in ignore if i.endswith("/"))
