@@ -296,6 +296,29 @@ async def test_manual_empty_folder_baseline_stable(
     assert (await verify(hass, rt, item)).status == "match"
 
 
+async def test_manual_ignore_added_after_baseline(
+    hass: HomeAssistant, tmp_path: Path, runtime: Runtime
+) -> None:
+    """A file ignored after the baseline was taken is skipped, not missing."""
+    item = _item(tmp_path, source="manual", repository=None, installed_version=None)
+    (item.path / "data").mkdir()
+    (item.path / "data" / "cache.json").write_text("a")
+    assert (await verify(hass, runtime, item)).status == "baseline_recorded"
+    (item.path / "data" / "cache.json").write_text("b")
+    assert (await verify(hass, runtime, item)).status == "changed"
+    for ignored in ("demo/data/cache.json", "demo/data/"):
+        rt = cast(
+            Runtime,
+            SimpleNamespace(
+                settings=Settings(ignored_files=(ignored,)), store=runtime.store
+            ),
+        )
+        result = await verify(hass, rt, item)
+        assert result.status == "match", ignored
+        assert result.report is not None
+        assert result.report.missing == []
+
+
 async def test_symlinked_manual(
     hass: HomeAssistant, tmp_path: Path, runtime: Runtime
 ) -> None:

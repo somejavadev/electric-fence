@@ -200,6 +200,14 @@ def _ignore(runtime: Runtime, item: InstalledIntegration) -> frozenset[str]:
     return frozenset(ignore)
 
 
+def _without_ignored(
+    expected: dict[str, str], ignore: frozenset[str]
+) -> dict[str, str]:
+    """Drop ignored paths, so a file ignored later isn't reported missing."""
+    prefixes = tuple(i for i in ignore if i.endswith("/"))
+    return {k: v for k, v in expected.items() if not skipped(k, prefixes, ignore)}
+
+
 def _symlink_report() -> FileReport:
     return FileReport([], [], ["."], [], ["."])
 
@@ -240,7 +248,7 @@ async def verify(
             ref=version,
             version_before=before,
         )
-    return _compared(item, baseline, actual, version)
+    return _compared(item, _without_ignored(baseline, ignore), actual, version)
 
 
 def _compared(
@@ -285,7 +293,6 @@ async def _verify_marketplace(
             )
         await hass.async_add_executor_job(store.save_reference, repo, ref, fetched)
         reference = fetched
-    prefixes = tuple(i for i in ignore if i.endswith("/"))
-    reference = {k: v for k, v in reference.items() if not skipped(k, prefixes, ignore)}
+    reference = _without_ignored(reference, ignore)
     actual = await hass.async_add_executor_job(hash_tree, item.path, ignore)
     return _compared(item, reference, actual, ref)
