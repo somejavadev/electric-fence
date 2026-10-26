@@ -172,7 +172,7 @@ def test_reopen_after_migration_keeps_countries(tmp_path: Path) -> None:
 
 
 def test_schema_version() -> None:
-    """The schema version is 2."""
+    """The schema version is 3."""
     assert SCHEMA_VERSION == 3
 
 

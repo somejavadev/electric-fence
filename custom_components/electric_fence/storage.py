@@ -3,7 +3,7 @@
 Synchronous: call it from the executor only.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -497,7 +497,7 @@ def _change_values(c: SettingsChange) -> tuple[Any, ...]:
         str(c.action),
         c.target_id,
         c.target_name,
-        json.dumps(c.details, sort_keys=True),
+        json.dumps(c.details, sort_keys=True, ensure_ascii=False),
         c.actor_user_id,
         c.actor_name,
         c.actor_ip,
@@ -813,7 +813,12 @@ class FenceStore:
                     continue
                 if isinstance(details, dict) and "values" in details:
                     del details["values"]
-                    updates.append((json.dumps(details, sort_keys=True), row_id))
+                    updates.append(
+                        (
+                            json.dumps(details, sort_keys=True, ensure_ascii=False),
+                            row_id,
+                        )
+                    )
             if not updates:
                 return 0
             db.execute("BEGIN")
@@ -862,6 +867,20 @@ class FenceStore:
                     _LOGGER.debug("VACUUM failed after purge")
         return deleted
 
+    @contextlib.contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """Hold the lock and run the block in one transaction (all or nothing)."""
+        with self._lock:
+            db = self._conn()
+            db.execute("BEGIN")
+            try:
+                yield db
+                db.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
+                raise
+
     def _write(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         """Run one statement in its own transaction and return the cursor."""
         with self._lock:
@@ -890,23 +909,15 @@ class FenceStore:
 
     def save_reference(self, repository: str, ref: str, hashes: dict[str, str]) -> None:
         """Cache official hashes, replacing any earlier ref of the repository."""
-        with self._lock:
-            db = self._conn()
-            db.execute("BEGIN")
-            try:
-                db.execute(
-                    "DELETE FROM file_references WHERE repository = ?", (repository,)
-                )
-                db.executemany(
-                    "INSERT INTO file_references (repository, ref, path, sha256) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(repository, ref, p, h) for p, h in hashes.items()],
-                )
-                db.execute("COMMIT")
-            except BaseException:
-                with contextlib.suppress(sqlite3.Error):
-                    db.execute("ROLLBACK")
-                raise
+        with self._transaction() as db:
+            db.execute(
+                "DELETE FROM file_references WHERE repository = ?", (repository,)
+            )
+            db.executemany(
+                "INSERT INTO file_references (repository, ref, path, sha256) "
+                "VALUES (?, ?, ?, ?)",
+                [(repository, ref, p, h) for p, h in hashes.items()],
+            )
 
     def baseline(self, domain: str) -> tuple[str | None, dict[str, str]]:
         """Return the baseline version and file hashes of an integration."""
@@ -922,21 +933,13 @@ class FenceStore:
         self, domain: str, version: str | None, hashes: dict[str, str]
     ) -> None:
         """Replace the baseline of an integration."""
-        with self._lock:
-            db = self._conn()
-            db.execute("BEGIN")
-            try:
-                db.execute("DELETE FROM file_baselines WHERE domain = ?", (domain,))
-                db.executemany(
-                    "INSERT INTO file_baselines (domain, version, path, sha256) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(domain, version, p, h) for p, h in hashes.items()],
-                )
-                db.execute("COMMIT")
-            except BaseException:
-                with contextlib.suppress(sqlite3.Error):
-                    db.execute("ROLLBACK")
-                raise
+        with self._transaction() as db:
+            db.execute("DELETE FROM file_baselines WHERE domain = ?", (domain,))
+            db.executemany(
+                "INSERT INTO file_baselines (domain, version, path, sha256) "
+                "VALUES (?, ?, ?, ?)",
+                [(domain, version, p, h) for p, h in hashes.items()],
+            )
 
     def finding(self, domain: str, check_name: str) -> dict[str, Any] | None:
         """Return the stored state of one check, if any."""
@@ -954,25 +957,22 @@ class FenceStore:
         self._write(
             "INSERT OR REPLACE INTO integration_findings "
             "(domain, check_name, state_json, updated_at) VALUES (?, ?, ?, ?)",
-            (domain, check_name, json.dumps(state, sort_keys=True), _to_text(at)),
+            (
+                domain,
+                check_name,
+                json.dumps(state, sort_keys=True, ensure_ascii=False),
+                _to_text(at),
+            ),
         )
 
     def drop_findings(self, keep_domains: set[str]) -> None:
         """Delete the findings of integrations that are no longer installed."""
-        with self._lock:
-            db = self._conn()
-            db.execute("BEGIN")
-            try:
-                marks = ", ".join("?" * len(keep_domains))
-                db.execute(
-                    f"DELETE FROM integration_findings WHERE domain NOT IN ({marks})",  # noqa: S608
-                    sorted(keep_domains),
-                )
-                db.execute("COMMIT")
-            except BaseException:
-                with contextlib.suppress(sqlite3.Error):
-                    db.execute("ROLLBACK")
-                raise
+        with self._transaction() as db:
+            marks = ", ".join("?" * len(keep_domains))
+            db.execute(
+                f"DELETE FROM integration_findings WHERE domain NOT IN ({marks})",  # noqa: S608
+                sorted(keep_domains),
+            )
 
     def app_snapshot(self) -> dict[str, AppSnapshot]:
         """Return the last seen state of every app, by slug."""
@@ -988,33 +988,25 @@ class FenceStore:
     def save_app_snapshot(self, snaps: dict[str, AppSnapshot], at: datetime) -> None:
         """Replace the stored app states."""
         text = _to_text(at)
-        with self._lock:
-            db = self._conn()
-            db.execute("BEGIN")
-            try:
-                db.execute("DELETE FROM app_snapshots")
-                db.executemany(
-                    "INSERT INTO app_snapshots (slug, name, version, state, "
-                    "options_hash, settings_json, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (
-                            s.slug,
-                            s.name,
-                            s.version,
-                            s.state,
-                            s.options_hash,
-                            json.dumps(s.settings, sort_keys=True),
-                            text,
-                        )
-                        for s in snaps.values()
-                    ],
-                )
-                db.execute("COMMIT")
-            except BaseException:
-                with contextlib.suppress(sqlite3.Error):
-                    db.execute("ROLLBACK")
-                raise
+        with self._transaction() as db:
+            db.execute("DELETE FROM app_snapshots")
+            db.executemany(
+                "INSERT INTO app_snapshots (slug, name, version, state, "
+                "options_hash, settings_json, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        s.slug,
+                        s.name,
+                        s.version,
+                        s.state,
+                        s.options_hash,
+                        json.dumps(s.settings, sort_keys=True, ensure_ascii=False),
+                        text,
+                    )
+                    for s in snaps.values()
+                ],
+            )
 
     def app_repositories(self) -> set[str]:
         """Return the known app repository URLs."""
@@ -1022,20 +1014,12 @@ class FenceStore:
 
     def save_app_repositories(self, urls: set[str]) -> None:
         """Replace the known app repository URLs."""
-        with self._lock:
-            db = self._conn()
-            db.execute("BEGIN")
-            try:
-                db.execute("DELETE FROM app_repositories")
-                db.executemany(
-                    "INSERT INTO app_repositories (url) VALUES (?)",
-                    [(u,) for u in sorted(urls)],
-                )
-                db.execute("COMMIT")
-            except BaseException:
-                with contextlib.suppress(sqlite3.Error):
-                    db.execute("ROLLBACK")
-                raise
+        with self._transaction() as db:
+            db.execute("DELETE FROM app_repositories")
+            db.executemany(
+                "INSERT INTO app_repositories (url) VALUES (?)",
+                [(u,) for u in sorted(urls)],
+            )
 
     def add_ban(
         self,

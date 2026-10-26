@@ -200,3 +200,9 @@ def test_purge_keeps_audit_tables(store: FenceStore) -> None:
     assert store.finding("x", "c") == {"k": 1}
     assert set(store.app_snapshot()) == {"a"}
     assert store.app_repositories() == {"u"}
+
+
+def test_change_search_non_ascii(store: FenceStore) -> None:
+    """Search finds non-ASCII text in the details."""
+    store.insert([change(details={"name": "ユーザー"}), change(details={"name": "x"})])
+    assert len(store.query_changes(ChangeFilter(search="ユーザー"))) == 1
