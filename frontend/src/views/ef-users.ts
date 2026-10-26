@@ -8,7 +8,7 @@ import { dialogStyles, viewStyles } from "../styles.ts";
 import { bdiText } from "../text.ts";
 import type { SessionItem, UserItem } from "../types.ts";
 import { LiveView } from "./live-view.ts";
-import { showIp } from "../mask.ts";
+import { showClient, showIp } from "../mask.ts";
 
 const DIALOG_TITLE = "user-dialog-title";
 
@@ -204,7 +204,12 @@ export class EfUsers extends LiveView {
       : undefined;
     return html`<li class="session">
       <span class="primary"
-        >${bdiText(s.client_name ?? s.client_id ?? strings.unknownClient)}</span
+        >${bdiText(
+          s.client_name ??
+            (s.client_id === null
+              ? strings.unknownClient
+              : showClient(s.client_id)),
+        )}</span
       >
       <span class="secondary">
         ${type ?? bdiText(s.token_type)} ·

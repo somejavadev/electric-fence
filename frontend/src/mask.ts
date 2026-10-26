@@ -62,3 +62,27 @@ export const showIp = (ip: string): string => (masking ? maskIp(ip) : ip);
 
 /** A reverse DNS host name as the panel shows it: often it spells the IP. */
 export const showHost = (host: string): string => (masking ? HIDDEN : host);
+
+/** Client IDs of the official apps name no one's server, so they stay. */
+const PUBLIC_CLIENT_HOST = /(^|\.)home-assistant\.io$/i;
+
+/**
+ * A login's client ID as the panel shows it. A browser login's client ID is
+ * the URL of the Home Assistant it used, so its host is hidden:
+ * https://ha.example.com/ shows as https://hidden/.
+ */
+export function showClient(clientId: string): string {
+  if (!masking) {
+    return clientId;
+  }
+  let url: URL;
+  try {
+    url = new URL(clientId);
+  } catch {
+    return HIDDEN;
+  }
+  if (PUBLIC_CLIENT_HOST.test(url.hostname)) {
+    return clientId;
+  }
+  return `${url.protocol}//${HIDDEN}${url.pathname}`;
+}

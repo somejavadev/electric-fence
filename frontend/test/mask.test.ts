@@ -5,6 +5,7 @@ import "../src/components/ef-login-row.ts";
 import "../src/electric-fence-panel.ts";
 import {
   maskIp,
+  showClient,
   maskingIps,
   setMaskIps,
   showHost,
@@ -13,6 +14,7 @@ import {
 import { changeSentence, postureText } from "../src/strings.ts";
 import type { Status } from "../src/types.ts";
 import "../src/views/ef-bans.ts";
+import "../src/views/ef-users.ts";
 import { ban, change, fakeApi, login, overview, status } from "./helpers.ts";
 import type { FakeApi } from "./helpers.ts";
 
@@ -84,7 +86,93 @@ describe("maskIp", () => {
   });
 });
 
+describe("showClient", () => {
+  it.each([
+    ["https://ha.example.com/", "https://hidden/"],
+    ["http://127.0.0.1:8123/", "http://hidden/"],
+    ["http://[2001:db8::1]:8123/lovelace", "http://hidden/lovelace"],
+    ["https://home-assistant.io/android", "https://home-assistant.io/android"],
+    ["https://home-assistant.io/iOS", "https://home-assistant.io/iOS"],
+    ["not a url", "hidden"],
+  ])("masks %s as %s", (clientId, masked) => {
+    expect(showClient(clientId)).toBe(clientId);
+    setMaskIps(true);
+    expect(showClient(clientId)).toBe(masked);
+  });
+
+  it("does not trust a host that only ends like the apps' one", () => {
+    setMaskIps(true);
+    expect(showClient("https://evilhome-assistant.io/")).toBe(
+      "https://hidden/",
+    );
+  });
+});
+
 describe("masked screens", () => {
+  it("masks the client URL of a successful login", async () => {
+    setMaskIps(true);
+    const el = document.createElement("ef-login-row");
+    el.hass = fakeApi({}).hass;
+    el.variant = "success";
+    el.item = login({
+      result: "success",
+      reason: "ok",
+      client_name: null,
+      client_id: "https://ha.example.com/",
+    });
+    document.body.append(el);
+    await el.updateComplete;
+    const client = el.shadowRoot?.querySelector(".client");
+    expect(client?.textContent).toBe("https://hidden/");
+    expect(client?.getAttribute("title")).toBe("https://hidden/");
+  });
+
+  it("masks session client URLs and addresses in the Users tab", async () => {
+    setMaskIps(true);
+    const session = {
+      id: "s1",
+      client_name: null,
+      client_id: "https://ha.example.com/",
+      token_type: "normal",
+      created_at: "2026-10-20T10:00:00+00:00",
+      last_used_at: null,
+      last_used_ip: "198.51.100.20",
+    };
+    const fake = fakeApi({
+      users: {
+        items: [
+          {
+            id: "u1",
+            name: "Anna",
+            username: "anna",
+            is_admin: true,
+            is_owner: false,
+            is_active: true,
+            local_only: false,
+            system_generated: false,
+            mfa_modules: [],
+            last_login: login({ result: "success", reason: "ok" }),
+            sessions: [session],
+          },
+        ],
+      },
+    });
+    const el = document.createElement("ef-users") as Mounted;
+    (el as unknown as { hass: unknown }).hass = fake.hass;
+    document.body.append(el);
+    await settle(el);
+    const root = el.shadowRoot as ShadowRoot;
+    root.querySelector<HTMLButtonElement>("button.user")?.click();
+    await settle(el);
+    const text = squash(root.textContent);
+    expect(text).toContain("https://hidden/");
+    expect(text).toContain("198.x.x.x");
+    expect(text).toContain("203.x.x.x");
+    expect(text).not.toContain("ha.example.com");
+    expect(text).not.toContain("198.51");
+    expect(text).not.toContain("203.0");
+  });
+
   it("masks the login row's address and its host name", async () => {
     setMaskIps(true);
     const el = document.createElement("ef-login-row");
