@@ -1,5 +1,6 @@
 """Config flow for Electric Fence."""
 
+import ssl
 from typing import Any
 
 from aiohttp import ClientError
@@ -34,7 +35,13 @@ from .geo.maxmind import MaxMindProvider
 from .settings import Settings
 
 DBIP_URL = "https://db-ip.com"
-SECTION_NAMES = ("bans", "username_protection", "notifications")
+SECTION_NAMES = (
+    "bans",
+    "username_protection",
+    "notifications",
+    "integration_checks",
+    "forwarding",
+)
 
 
 class ElectricFenceConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -69,15 +76,35 @@ class OptionsFlowHandler(OptionsFlow):
     def _current(self) -> Settings:
         return Settings.from_options(self.config_entry.options)
 
+    async def _forwarding_errors(self, flat: dict[str, Any]) -> dict[str, str]:
+        """Check the forwarding settings; errors are keyed by the section."""
+        if flat["forward_enabled"] and not str(flat["forward_host"]).strip():
+            return {"forwarding": "forward_host_required"}
+        pem = str(flat["forward_ca_pem"])
+        if pem.strip():
+            try:
+                await self.hass.async_add_executor_job(
+                    lambda: ssl.create_default_context(cadata=pem)
+                )
+            except ssl.SSLError, ValueError:
+                return {"forwarding": "forward_ca_invalid"}
+        return {}
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Ask for the general settings."""
         current = self._current()
+        shown = current.to_options()
+        shown["ignored_files"] = "\n".join(current.ignored_files)
+        errors: dict[str, str] = {}
         if user_input is not None:
             flat = {k: v for k, v in user_input.items() if k not in SECTION_NAMES}
             for name in SECTION_NAMES:
                 flat.update(user_input[name])
+            shown.update(flat)
+            errors = await self._forwarding_errors(flat)
+        if user_input is not None and not errors:
             self._pending = {
                 **current.to_options(),
                 **flat,
@@ -90,27 +117,27 @@ class OptionsFlowHandler(OptionsFlow):
             return self.async_create_entry(data=self._pending)
 
         def number(
-            key: str, low: int, high: int, unit: str
+            key: str, low: int, high: int, unit: str | None = None
         ) -> dict[probatio.Required, NumberSelector]:
             return {
-                probatio.Required(key, default=getattr(current, key)): NumberSelector(
+                probatio.Required(key, default=shown[key]): NumberSelector(
                     NumberSelectorConfig(
                         min=low,
                         max=high,
                         step=1,
                         mode=NumberSelectorMode.BOX,
-                        unit_of_measurement=unit,
+                        **({"unit_of_measurement": unit} if unit else {}),
                     )
                 )
             }
 
         def flag(key: str) -> dict[probatio.Required, type[bool]]:
-            return {probatio.Required(key, default=getattr(current, key)): bool}
+            return {probatio.Required(key, default=shown[key]): bool}
 
         schema = probatio.Schema(
             {
                 probatio.Required(
-                    "retention_days", default=current.retention_days
+                    "retention_days", default=shown["retention_days"]
                 ): NumberSelector(
                     NumberSelectorConfig(
                         min=1,
@@ -121,7 +148,7 @@ class OptionsFlowHandler(OptionsFlow):
                     )
                 ),
                 probatio.Required(
-                    "geoip_provider", default=current.geoip_provider
+                    "geoip_provider", default=shown["geoip_provider"]
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=["dbip_lite", "maxmind", "none"],
@@ -129,8 +156,10 @@ class OptionsFlowHandler(OptionsFlow):
                         mode=SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                probatio.Required("reverse_dns", default=current.reverse_dns): bool,
-                probatio.Required("record_values", default=current.record_values): bool,
+                probatio.Required("reverse_dns", default=shown["reverse_dns"]): bool,
+                probatio.Required(
+                    "record_values", default=shown["record_values"]
+                ): bool,
                 **flag("mask_ips"),
                 probatio.Required("bans"): section(
                     probatio.Schema(
@@ -165,7 +194,7 @@ class OptionsFlowHandler(OptionsFlow):
                             **flag("notify_ban_ended"),
                             probatio.Required(
                                 "ha_login_notification",
-                                default=current.ha_login_notification,
+                                default=shown["ha_login_notification"],
                             ): SelectSelector(
                                 SelectSelectorConfig(
                                     options=["replace", "keep"],
@@ -175,7 +204,7 @@ class OptionsFlowHandler(OptionsFlow):
                             ),
                             probatio.Required(
                                 "notify_targets",
-                                default=list(current.notify_targets),
+                                default=list(shown["notify_targets"]),
                             ): EntitySelector(
                                 EntitySelectorConfig(domain="notify", multiple=True)
                             ),
@@ -183,11 +212,51 @@ class OptionsFlowHandler(OptionsFlow):
                     ),
                     {"collapsed": False},
                 ),
+                probatio.Required("integration_checks"): section(
+                    probatio.Schema(
+                        {
+                            **flag("verify_files"),
+                            **flag("integration_repairs"),
+                            **number("unmaintained_months", 1, 36, "months"),
+                            **number("scan_delay_minutes", 1, 1440, "minutes"),
+                            probatio.Required(
+                                "ignored_files", default=shown["ignored_files"]
+                            ): TextSelector(TextSelectorConfig(multiline=True)),
+                        }
+                    ),
+                    {"collapsed": True},
+                ),
+                probatio.Required("forwarding"): section(
+                    probatio.Schema(
+                        {
+                            **flag("forward_enabled"),
+                            probatio.Required(
+                                "forward_host", default=shown["forward_host"]
+                            ): TextSelector(),
+                            **number("forward_port", 1, 65535),
+                            probatio.Required(
+                                "forward_protocol", default=shown["forward_protocol"]
+                            ): SelectSelector(
+                                SelectSelectorConfig(
+                                    options=["tcp", "udp", "tls"],
+                                    translation_key="forward_protocol",
+                                    mode=SelectSelectorMode.DROPDOWN,
+                                )
+                            ),
+                            **flag("forward_verify_tls"),
+                            probatio.Required(
+                                "forward_ca_pem", default=shown["forward_ca_pem"]
+                            ): TextSelector(TextSelectorConfig(multiline=True)),
+                        }
+                    ),
+                    {"collapsed": True},
+                ),
             }
         )
         return self.async_show_form(
             step_id="init",
             data_schema=schema,
+            errors=errors,
             # hassfest bans URLs in strings; the link comes in as a placeholder.
             description_placeholders={"dbip_url": DBIP_URL},
         )
