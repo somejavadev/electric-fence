@@ -295,8 +295,9 @@ active filters, and a search box. Filtering happens on the server, so large
 histories stay fast.
 
 - **Audit** filters by kind, action, user, IP address, time, and whether to
-  show System changes. **Activity** filters by result (success or failed), user
-  or submitted username, IP address, country, and time.
+  show System changes. Changes made outside Home Assistant are always shown.
+  **Activity** filters by result (success or failed), user or submitted
+  username, IP address, country, and time.
 - **Search** matches the target, IP address, username and details.
 - Under the menu (**&vellip;**), **Download data** saves the filtered records as
   CSV or JSON. It exports everything the filters match, not just what's on

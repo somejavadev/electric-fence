@@ -19,7 +19,7 @@ import {
   withinBounds,
 } from "../format.ts";
 import type { RangeChoice } from "../format.ts";
-import { actorLabel, strings } from "../strings.ts";
+import { actorLabel, isSystemChange, strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type {
   ChangeAction,
@@ -157,7 +157,7 @@ export function matchesChange(
   filters: AuditFilters,
   now: number = Date.now(),
 ): boolean {
-  if (item.actor_user_id === null && !filters.system) {
+  if (isSystemChange(item) && !filters.system) {
     return false;
   }
   if (filters.kind !== "" && item.kind !== filters.kind) {

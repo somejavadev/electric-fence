@@ -568,6 +568,13 @@ function protectionSentence(item: ChangeItem): string | undefined {
   return undefined;
 }
 
+/** A System change: no user, and not made outside Home Assistant. */
+export function isSystemChange(
+  item: Pick<ChangeItem, "actor_user_id" | "actor_name">,
+): boolean {
+  return item.actor_user_id === null && item.actor_name !== OUTSIDE_ACTOR;
+}
+
 /** Who made a change: a user, System, or a change made outside Home Assistant. */
 export function actorLabel(
   item: Pick<ChangeItem, "actor_user_id" | "actor_name">,

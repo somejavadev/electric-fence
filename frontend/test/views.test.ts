@@ -750,6 +750,13 @@ describe("push filter semantics", () => {
     const sys = change({ actor_user_id: null, ts: "2026-10-24T11:00:00Z" });
     expect(c({}, sys)).toBe(false);
     expect(c({ system: true }, sys)).toBe(true);
+    const outside = change({
+      actor_user_id: null,
+      actor_name: "outside",
+      actor_ip: null,
+      ts: "2026-10-24T11:00:00Z",
+    });
+    expect(c({}, outside)).toBe(true);
     const old = change({ ts: "2026-10-01T00:00:00Z" });
     expect(c({}, old)).toBe(false);
     expect(c({ range: "all" }, old)).toBe(true);

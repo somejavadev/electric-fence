@@ -260,18 +260,22 @@ async def test_overview_shape_and_counts(
 async def test_overview_hides_system_changes(
     hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
 ) -> None:
-    """Changes nobody made (System) are not counted or shown."""
+    """System changes are not counted or shown; Outside changes are."""
     await store(
         hass,
         setup_entry,
         change(target_id="user-made"),
         change(target_id="system-made", actor_user_id=None, actor_name=None),
+        change(target_id="outside-made", actor_user_id=None, actor_name="outside"),
     )
 
     res = await result(ws, "electric_fence/overview")
 
-    assert res["changes_7d"]["count"] == 1
-    assert [i["target_id"] for i in res["changes_7d"]["items"]] == ["user-made"]
+    assert res["changes_7d"]["count"] == 2
+    assert sorted(i["target_id"] for i in res["changes_7d"]["items"]) == [
+        "outside-made",
+        "user-made",
+    ]
 
 
 async def test_overview_counts_changes_past_one_page(

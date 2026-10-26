@@ -16,6 +16,7 @@ import threading
 from typing import Any, Final, Literal
 
 from .models import (
+    OUTSIDE_ACTOR,
     ChangeAction,
     ChangeKind,
     LoginAttempt,
@@ -705,7 +706,9 @@ class FenceStore:
             params.append(f.ip)
         _search_clause(where, params, f.search, _CHANGE_SEARCH)
         if not f.include_system:
-            where.append("actor_user_id IS NOT NULL")
+            # System only: changes made outside Home Assistant stay shown.
+            where.append("(actor_user_id IS NOT NULL OR actor_name = ?)")
+            params.append(OUTSIDE_ACTOR)
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
             where.append(
