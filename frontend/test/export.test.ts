@@ -297,17 +297,168 @@ describe("download menu", () => {
     await menu(el).updateComplete;
     expect(trigger?.getAttribute("aria-expanded")).toBe("true");
     expect(root.querySelectorAll("[role=menuitem]")).toHaveLength(2);
-    root
-      .querySelector("[role=menu]")
-      ?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
+    root.querySelector("[role=menu]")?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        composed: true,
+      }),
+    );
     await menu(el).updateComplete;
     expect(root.querySelector("[role=menu]")).toBeNull();
     trigger?.click();
     await menu(el).updateComplete;
     document.body.click();
     await menu(el).updateComplete;
+    expect(root.querySelector("[role=menu]")).toBeNull();
+  });
+});
+
+describe("download while the view changes", () => {
+  const gated = () => {
+    const release: (() => void)[] = [];
+    const api = fakeApi({
+      changes: (m: Record<string, unknown>) => {
+        if (m.limit !== 200) {
+          return { items: [], next_before_id: null };
+        }
+        const before = (m.before_id as number | undefined) ?? 100;
+        return new Promise((resolve) => {
+          release.push(() =>
+            resolve({
+              items: [change({ id: before - 1 })],
+              next_before_id: before - 1,
+            }),
+          );
+        });
+      },
+      users: { items: [] },
+    });
+    return { api, release };
+  };
+
+  const exportCalls = (api: FakeApi) =>
+    api.of("changes").filter((m) => m.limit === 200);
+
+  it("shows progress and disables the button while collecting", async () => {
+    const { api, release } = gated();
+    const el = await mount<EfAudit>("ef-audit", api);
+    const m = menu(el) as ReturnType<typeof menu> & { busy: boolean };
+    const done = choose(el, 0);
+    await settle(el);
+    expect(m.busy).toBe(true);
+    const trigger = part(el).querySelector<HTMLButtonElement>("button.trigger");
+    expect(trigger?.disabled).toBe(true);
+    expect(trigger?.textContent).toContain("Preparing… 0 rows");
+    release.shift()?.();
+    await settle(el);
+    expect(trigger?.textContent).toContain("Preparing… 1 rows");
+    void done;
+  });
+
+  it("stops paging and downloads nothing after disconnect", async () => {
+    const { api, release } = gated();
+    const el = await mount<EfAudit>("ef-audit", api);
+    void choose(el, 0);
+    await settle(el);
+    expect(exportCalls(api)).toHaveLength(1);
+    el.remove();
+    release.shift()?.();
+    await settle();
+    expect(exportCalls(api)).toHaveLength(1);
+    expect(saved.calls).toHaveLength(0);
+    expect(el.shadowRoot?.querySelector(".notice.error")).toBeNull();
+  });
+
+  it("keeps the filter it started with when filters change", async () => {
+    const { api, release } = gated();
+    const el = await mount<EfAudit>("ef-audit", api);
+    void choose(el, 0);
+    await settle(el);
+    const pane = el.shadowRoot?.querySelector("ef-filter-pane");
+    pane?.dispatchEvent(
+      new CustomEvent("filter-changed", {
+        detail: { name: "kind", value: "user" },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    await settle(el);
+    release.shift()?.();
+    await settle(el);
+    const calls = exportCalls(api);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).not.toHaveProperty("kind");
+    }
+  });
+
+  it("tells the user when the cap cut the download short", async () => {
+    let next = 1_000_000;
+    const api = fakeApi({
+      changes: (m: Record<string, unknown>) => {
+        if (m.limit !== 200) {
+          return { items: [], next_before_id: null };
+        }
+        const items = Array.from({ length: 200 }, () => change({ id: next }));
+        next -= 200;
+        return { items, next_before_id: next };
+      },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", api);
+    await choose(el, 1);
+    for (let i = 0; i < 600; i += 1) {
+      await Promise.resolve();
+    }
+    await settle(el);
+    const data = JSON.parse(saved.calls[0]?.body ?? "{}") as {
+      truncated: boolean;
+      items: unknown[];
+    };
+    expect(data.truncated).toBe(true);
+    expect(data.items).toHaveLength(100_000);
+    expect(el.shadowRoot?.querySelector(".notice")?.textContent).toContain(
+      "100000",
+    );
+  });
+});
+
+describe("download menu keyboard", () => {
+  it("closes on Escape at the host and returns focus after busy", async () => {
+    const api = fakeApi({
+      changes: { items: [], next_before_id: null },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", api);
+    const m = menu(el) as ReturnType<typeof menu> & { busy: boolean };
+    const root = part(el);
+    root.querySelector<HTMLButtonElement>("button.trigger")?.click();
+    await m.updateComplete;
+    m.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await m.updateComplete;
+    expect(root.querySelector("[role=menu]")).toBeNull();
+    m.busy = true;
+    await m.updateComplete;
+    m.busy = false;
+    await m.updateComplete;
+    expect(root.activeElement?.classList.contains("trigger")).toBe(true);
+  });
+
+  it("closes when focus moves outside the component", async () => {
+    const api = fakeApi({
+      changes: { items: [], next_before_id: null },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", api);
+    const m = menu(el);
+    const root = part(el);
+    root.querySelector<HTMLButtonElement>("button.trigger")?.click();
+    await m.updateComplete;
+    const other = document.createElement("button");
+    document.body.append(other);
+    m.dispatchEvent(new FocusEvent("focusout", { relatedTarget: other }));
+    await m.updateComplete;
     expect(root.querySelector("[role=menu]")).toBeNull();
   });
 });

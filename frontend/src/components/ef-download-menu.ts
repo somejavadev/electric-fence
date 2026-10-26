@@ -83,8 +83,37 @@ export class EfDownloadMenu extends LitElement {
     this._open = false;
   }
 
+  protected override updated(changed: Map<PropertyKey, unknown>): void {
+    if (changed.get("busy") === true && !this.busy) {
+      this.shadowRoot?.querySelector<HTMLElement>(".trigger")?.focus();
+    }
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener("keydown", this._onHostKey);
+    this.addEventListener("focusout", this._onFocusOut);
+  }
+
+  private _onHostKey = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && this._open) {
+      event.stopPropagation();
+      this._close(true);
+    }
+  };
+
+  private _onFocusOut = (event: FocusEvent): void => {
+    const to = event.relatedTarget;
+    if (this._open && to instanceof Node && !this.contains(to)) {
+      // relatedTarget is retargeted at a shadow host; inside it stays ours.
+      this._close(false);
+    }
+  };
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.removeEventListener("keydown", this._onHostKey);
+    this.removeEventListener("focusout", this._onFocusOut);
     document.removeEventListener("click", this._onOutside, true);
   }
 
@@ -121,11 +150,6 @@ export class EfDownloadMenu extends LitElement {
   }
 
   private _onKey(event: KeyboardEvent): void {
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      this._close(true);
-      return;
-    }
     const step =
       event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
     if (step === 0) {

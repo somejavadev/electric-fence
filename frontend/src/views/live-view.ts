@@ -27,6 +27,9 @@ export const LIVE_CAP = 200;
 
 export type Phase = "loading" | "ready" | "error" | "unloaded";
 
+/** Thrown inside an export whose view went away or was reloaded. */
+class ExportAbandoned extends Error {}
+
 export const isNotLoaded = (err: unknown): boolean =>
   typeof err === "object" &&
   err !== null &&
@@ -88,19 +91,29 @@ export abstract class LiveView extends LitElement {
     }
     this._exportNote = "";
     this._exportRows = 0;
+    const generation = this._generation;
+    const stale = (): boolean =>
+      !this.isConnected || generation !== this._generation;
     try {
       const { items, truncated } = await collectAll(
-        (before) =>
-          fetchPage({
+        (before) => {
+          if (stale()) {
+            throw new ExportAbandoned();
+          }
+          return fetchPage({
             ...filter,
             limit: EXPORT_PAGE,
             ...(before === null ? {} : { before_id: before }),
-          }),
+          });
+        },
         undefined,
         (n) => {
           this._exportRows = n;
         },
       );
+      if (stale()) {
+        return;
+      }
       if (format === "csv") {
         downloadFile(
           exportName(tab, format),
@@ -115,8 +128,10 @@ export abstract class LiveView extends LitElement {
         );
       }
       this._exportNote = truncated ? "truncated" : "";
-    } catch {
-      this._exportNote = "failed";
+    } catch (err) {
+      if (!(err instanceof ExportAbandoned) && !stale()) {
+        this._exportNote = "failed";
+      }
     } finally {
       this._exportRows = null;
     }
