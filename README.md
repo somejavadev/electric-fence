@@ -46,6 +46,26 @@ Screenshots are coming.
 - Creates persistent notifications, sends messages to your phone, fires events,
   and provides sensors, so you can build your own automations.
 
+## Keep Home Assistant off the internet
+
+Electric Fence is defence in depth. It is not a reason to expose Home
+Assistant to the internet. The safest Home Assistant is one the internet can't
+reach at all. For remote access, in order of preference:
+
+1. **A VPN**, such as WireGuard or NetBird. Your phone and laptop join your
+   home network, and Home Assistant stays private. Nothing is exposed.
+2. **Home Assistant Cloud** by Nabu Casa. Remote access through an encrypted
+   connection, without opening a port on your router.
+3. **Exposing Home Assistant yourself**, with port forwarding or a reverse
+   proxy, only if neither of the above works for you. Then use TLS, give every
+   user two-factor authentication, keep Home Assistant up to date, and set up
+   the reverse proxy settings (see [IP bans](#ip-bans)).
+
+Electric Fence is useful in every case: it records who logs in and who changes
+what, and warns about admins without two-factor authentication. Over a VPN,
+logins come from local network addresses, which are never banned or slowed
+down, but they're still recorded and alerted on.
+
 ## Install
 
 Install Electric Fence from the Marketplace built into Home Assistant 2026.11
@@ -68,7 +88,8 @@ The minimum supported version is Home Assistant 2026.11.0.
 
 ## Settings
 
-Select **Configure** on the integration to change these. All of them apply
+Go to **Settings** > **Devices & services** > **Electric Fence**, and select
+the cog (**Configure**) to change these. All of them apply
 immediately, without a restart. The dialog has the general settings below, and
 the **Bans**, **Username protection**, and **Notifications** sections.
 
@@ -217,7 +238,7 @@ code, and a throttled attempt. Invalid tokens and blocked users don't count.
   typo doesn't ban it again at once.
 - **Never banned.** Local network addresses (loopback, private ranges,
   100.64.0.0/10, link-local, and IPv6 unique-local), the Supervisor, and your
-  `trusted_proxies`.
+  trusted proxies.
 - **Trusted after success.** An address with a successful login within the ban
   length (24 hours if bans never expire) isn't banned automatically. A
   successful login resets that address's count.
@@ -225,24 +246,24 @@ code, and a throttled attempt. Invalid tokens and blocked users don't count.
   further ban of the same address within 30 days doubles the length. The fourth
   is permanent. A ban length of 0 is always permanent.
 
-Bans need Home Assistant's IP ban to be switched on. Add this to your
-`configuration.yaml` and restart:
-
-```yaml
-http:
-  ip_ban_enabled: true
-```
-
-It's on unless you turned it off. If it's off, Electric Fence raises a repair
+Bans need Home Assistant's IP ban to be switched on. It's on unless you
+turned it off. To check, go to **Settings** > **System** > **Network** >
+**HTTP server** > **IP banning**, and make sure **Enable IP banning** is on.
+Saving restarts Home Assistant. If it's off, Electric Fence raises a repair
 issue and can't ban anything. The **Auto ban available** entity shows whether
 it can.
 
+Home Assistant keeps these HTTP server settings itself and no longer reads an
+`http:` block in `configuration.yaml`. An existing block was imported once,
+and Home Assistant raises a repair issue while it's still there.
+
 > [!IMPORTANT]
-> If Home Assistant runs behind a reverse proxy, set `use_x_forwarded_for` and
-> `trusted_proxies` under `http:`. Without them, every visitor appears to come
-> from the proxy's address. Proxy addresses are never banned, so bans then do
-> nothing. Check the proxy's address is a `trusted_proxies` entry, and not a
-> public address you'd lock yourself out of.
+> If Home Assistant runs behind a reverse proxy, turn on **Trust
+> X-Forwarded-For** and add the proxy to **Trusted proxies**, in the **Reverse
+> proxy** section of the same **HTTP server** settings. Without them, every
+> visitor appears to come from the proxy's address. Proxy addresses are never
+> banned, so bans then do nothing. Check the proxy's address is a trusted
+> proxy, and not a public address you'd lock yourself out of.
 
 ### Username protection
 

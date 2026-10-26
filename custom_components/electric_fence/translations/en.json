@@ -63,7 +63,7 @@
     },
     "ip_ban_disabled": {
       "title": "Home Assistant IP bans are switched off",
-      "description": "Electric Fence bans addresses through Home Assistant's own IP ban, which is switched off, so Electric Fence cannot block any address. To switch it on, add `ip_ban_enabled: true` under `http:` in your `configuration.yaml` and restart Home Assistant. Logins are not affected."
+      "description": "Electric Fence bans addresses through Home Assistant's own IP ban, which is switched off, so Electric Fence cannot block any address. To switch it on, go to Settings > System > Network > HTTP server > IP banning, turn on Enable IP banning, and save. Saving restarts Home Assistant. Logins are not affected."
     },
     "schema_too_new": {
       "title": "Electric Fence database is from a newer version",
