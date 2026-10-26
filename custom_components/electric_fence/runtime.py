@@ -10,6 +10,7 @@ from .worker import Enricher, FenceWorker
 
 if TYPE_CHECKING:
     from .alerts import Alerter
+    from .forwarding.forwarder import Forwarder
     from .geo.base import GeoStatus
     from .geo.updater import GeoUpdater
     from .notifier import Notifier
@@ -35,3 +36,4 @@ class Runtime:
     ip_policy: IpPolicy | None = None
     username_guard: UsernameGuard | None = None
     alerts: Alerter | None = None
+    forwarder: Forwarder | None = None

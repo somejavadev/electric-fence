@@ -14,6 +14,7 @@ from homeassistant.components.http.ban import KEY_LOGIN_THRESHOLD
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from .forwarding.forwarder import FAILING_AFTER
 from .geo.base import classify_ip
 from .models import LoginResult, Source
 from .protection.backend import HEALTH_IP_BAN_DISABLED
@@ -66,6 +67,9 @@ async def async_check(
     async def storage() -> list[PostureItem]:
         return [_storage_error(runtime)]
 
+    async def forwarding() -> list[PostureItem]:
+        return _forwarding_failing(runtime)
+
     checks: list[tuple[str, Callable[[], Awaitable[list[PostureItem]]]]] = [
         ("admins_without_mfa", admins),
         ("auto_ban_off", auto_ban),
@@ -74,6 +78,7 @@ async def async_check(
         ("geoip_missing", geoip),
         ("collector_disabled", collectors),
         ("storage_error", storage),
+        ("forwarding_failing", forwarding),
     ]
     items: list[PostureItem] = []
     for item_id, run in checks:
@@ -217,3 +222,22 @@ def _storage_error(runtime: Runtime) -> PostureItem:
         last_error=worker.last_storage_error,
         last_error_at=iso(at),
     )
+
+
+def _forwarding_failing(runtime: Runtime) -> list[PostureItem]:
+    forwarder = runtime.forwarder
+    if forwarder is None:
+        return []
+    stats = forwarder.stats()
+    since = stats.failing_since
+    failing = since is not None and dt_util.utcnow() - since > FAILING_AFTER
+    return [
+        _item(
+            "forwarding_failing",
+            "warning" if failing else "ok",
+            last_error=stats.last_error,
+            failing_since=iso(since),
+            queued=stats.queued,
+            dropped=stats.dropped,
+        )
+    ]

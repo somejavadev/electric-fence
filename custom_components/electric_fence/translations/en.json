@@ -38,6 +38,14 @@
       },
       "geoip_updated": {
         "name": "GeoIP updated"
+      },
+      "forwarding": {
+        "name": "Forwarding",
+        "state": {
+          "connected": "Connected",
+          "failing": "Failing",
+          "off": "Off"
+        }
       }
     },
     "binary_sensor": {

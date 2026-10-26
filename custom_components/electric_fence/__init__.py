@@ -33,6 +33,8 @@ from .collectors.login import LoginCollector
 from .collectors.system_settings import SystemSettingsCollector
 from .collectors.users import UserCollector
 from .const import DOMAIN, MIN_HA_VERSION, SIGNAL_SETTINGS_UPDATED
+from .forwarding.forwarder import Forwarder
+from .forwarding.transport import SyslogTransport, build_ssl_context
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
@@ -221,6 +223,21 @@ async def async_setup_entry(
     await username_guard.async_start()
     entry.async_on_unload(worker.add_listener(username_guard.on_record))
 
+    await _async_start_forwarder(hass, runtime)
+
+    async def _async_stop_forwarder() -> None:
+        if runtime.forwarder is not None:
+            await runtime.forwarder.stop()
+
+    entry.async_on_unload(_async_stop_forwarder)
+
+    async def _async_drain_on_stop(_event: Event) -> None:
+        await _async_stop_forwarder()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_drain_on_stop)
+    )
+
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)
         runtime.collectors.append(collector)
@@ -287,6 +304,78 @@ async def _async_strip_values(
         )
 
 
+def _forward_target(settings: Settings) -> tuple[object, ...] | None:
+    """Return what the forwarder depends on, None when forwarding is off.
+
+    `record_values` is left out: events read it when they are queued.
+    """
+    if not (settings.forward_enabled and settings.forward_host):
+        return None
+    return (
+        settings.forward_host,
+        settings.forward_port,
+        settings.forward_protocol,
+        settings.forward_verify_tls,
+        settings.forward_ca_pem,
+    )
+
+
+async def _async_new_forwarder(
+    hass: HomeAssistant, runtime: Runtime
+) -> Forwarder | None:
+    """Return a started forwarder for the current settings, None when off."""
+    settings = runtime.settings
+    if _forward_target(settings) is None:
+        return None
+    ssl_context = None
+    if settings.forward_protocol == "tls":
+        try:
+            ssl_context = await hass.async_add_executor_job(
+                build_ssl_context, settings.forward_verify_tls, settings.forward_ca_pem
+            )
+        except Exception as err:  # noqa: BLE001
+            # The transport then fails to connect, which the sensor shows.
+            _LOGGER.warning(
+                "Electric Fence could not set up TLS for forwarding: %s",
+                type(err).__name__,
+            )
+
+    def factory() -> SyslogTransport:
+        return SyslogTransport(
+            settings.forward_host,
+            settings.forward_port,
+            settings.forward_protocol,
+            ssl_context,
+        )
+
+    forwarder = Forwarder(hass, runtime, factory)
+    forwarder.start()
+    return forwarder
+
+
+async def _async_start_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Start forwarding when it is on. Never raises."""
+    try:
+        runtime.forwarder = await _async_new_forwarder(hass, runtime)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not start forwarding: %s", type(err).__name__
+        )
+
+
+async def _async_restart_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Replace the forwarder; events still queued move to the new one."""
+    old = runtime.forwarder
+    if old is not None:
+        # No record falls between the two: the swap has no await.
+        old.detach()
+    await _async_start_forwarder(hass, runtime)
+    if old is not None:
+        await old.stop()
+        if runtime.forwarder is not None:
+            runtime.forwarder.adopt(old.take_queue())
+
+
 async def async_apply_settings(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> None:
@@ -308,6 +397,8 @@ async def async_apply_settings(
                 "Electric Fence could not switch GeoIP provider: %s",
                 type(err).__name__,
             )
+    if _forward_target(settings) != _forward_target(old):
+        await _async_restart_forwarder(hass, runtime)
     if old.record_values and not settings.record_values:
         # Flush first so rows still queued with values are covered too.
         await _async_strip_values(hass, runtime, flush=True)
