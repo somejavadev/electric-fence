@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  clearCountries,
+  endSlowdown,
+  fetchAttacks,
+  fetchBans,
   fetchChanges,
   fetchLogins,
   fetchOverview,
   subscribe,
+  unban,
 } from "../src/api.ts";
 import type { HomeAssistant, SubscribeEvent } from "../src/types.ts";
 
@@ -83,5 +88,23 @@ describe("api", () => {
     await subscribe(hass, (e) => seen.push(e));
     push({ type: "unloaded" });
     expect(seen).toEqual([{ type: "unloaded" }]);
+  });
+
+  it("sends the protection commands with their parameters", async () => {
+    const { hass, sendMessagePromise } = fakeHass();
+    await fetchBans(hass, "active");
+    await fetchBans(hass, "history", 9);
+    await unban(hass, "203.0.113.9");
+    await fetchAttacks(hass, "active");
+    await endSlowdown(hass, "admin");
+    await clearCountries(hass);
+    expect(sendMessagePromise.mock.calls.map(([m]) => m as object)).toEqual([
+      { type: "electric_fence/bans", state: "active" },
+      { type: "electric_fence/bans", state: "history", before_id: 9 },
+      { type: "electric_fence/unban", ip: "203.0.113.9" },
+      { type: "electric_fence/attacks", state: "active" },
+      { type: "electric_fence/end_slowdown", username: "admin" },
+      { type: "electric_fence/clear_countries" },
+    ]);
   });
 });

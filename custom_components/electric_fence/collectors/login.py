@@ -7,6 +7,17 @@ inside `self.guard` (fail open), is synchronous, reads memory only (never the
 request body), and queues at most one record. User resolution and storage
 happen later in the worker.
 
+The one exception is the username slow-down (spec, protection): during an
+HTTP login step, `async_configure` first waits its turn in the username
+guard, and only while that username is under attack. Without an attack the
+guard returns before its first await, so the step doesn't yield to the loop.
+Any error in the gate sends the step straight to Core; cancellation
+propagates. The slot is released in a `finally` around Core's call. When the
+queue is full the step never reaches Core: it is recorded as `throttled`,
+counted by both policies, and refused with a 403 whose JSON `message` the
+login page shows. Each queued attempt is also handed to the IP policy and
+the username guard, which count in memory and never raise.
+
 When it queues an attempt for a request, it marks the request
 (`REQUEST_RECORDED`): True when Electric Fence will notify about it (a
 failure, or a success the worker will block), False otherwise. The auth
@@ -21,9 +32,11 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv6Address, ip_address
+import json
+import logging
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import hdrs
+from aiohttp import hdrs, web
 
 from homeassistant.auth.models import TOKEN_TYPE_NORMAL, Credentials, RefreshToken
 from homeassistant.auth.providers.homeassistant import HassAuthProvider
@@ -38,10 +51,14 @@ from ..attribution import auth_users
 from ..hooks import wrap_async_method
 from ..models import LoginAttempt, LoginReason, LoginResult, Source, UserExists
 from ..privacy import sanitise_text
+from ..protection.throttle import THROTTLE_MESSAGE, Refused
 from .base import BaseCollector
 
 if TYPE_CHECKING:
+    from ..protection.throttle import _Slot
     from ..runtime import Runtime
+
+_LOGGER = logging.getLogger(__name__)
 
 # Flows remembered between steps (username, MFA module); the oldest is dropped.
 MAX_FLOWS = 1024
@@ -136,7 +153,8 @@ class LoginCollector(BaseCollector):
     def _uninstall(self) -> None:
         self._flows.clear()
 
-    # Wrappers. Core's call runs first, untouched; ours never raises.
+    # Wrappers. Core's call runs first, untouched (except the slow-down);
+    # ours never raises, other than the 403 for a refused step.
 
     def _wrap_init(self, original: _AsyncFn) -> _AsyncFn:
         async def async_init(*args: Any, **kwargs: Any) -> Any:
@@ -150,7 +168,22 @@ class LoginCollector(BaseCollector):
         async def async_configure(*args: Any, **kwargs: Any) -> Any:
             # Before the call: a finished flow is gone afterwards.
             info = self.guard.call(self._flow_info, args, kwargs)
-            result = await original(*args, **kwargs)
+            # The deliberate exception to "Core's call runs first": the
+            # spec's slow-down runs before Core's step, during an attack only.
+            gate = self.guard.call(self._gate_args, args, kwargs, info)
+            try:
+                slot = await self._async_gate(gate)
+            except Refused:
+                self.guard.call(self._observe_refused, args, kwargs, info, gate)
+                raise web.HTTPForbidden(
+                    text=json.dumps({"message": THROTTLE_MESSAGE}),
+                    content_type="application/json",
+                ) from None
+            try:
+                result = await original(*args, **kwargs)
+            finally:
+                if slot is not None:
+                    self.guard.call(slot.release)
             self.guard.call(self._observe_configure, args, kwargs, info, result)
             return result
 
@@ -163,6 +196,73 @@ class LoginCollector(BaseCollector):
             return token
 
         return async_create_refresh_token
+
+    # Slow-down
+
+    def _gate_args(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any], info: _FlowInfo | None
+    ) -> tuple[str | None, str | None] | None:
+        """Return the step's username and IP; None outside an HTTP request."""
+        request = current_request.get()
+        if request is None:
+            return None
+        flow_id = _arg(args, kwargs, 0, "flow_id")
+        typed = self._typed_username(flow_id, _arg(args, kwargs, 1, "user_input"))
+        ip = self._attempt_ip(info, request)
+        return typed, str(ip) if ip is not None else None
+
+    async def _async_gate(
+        self, gate: tuple[str | None, str | None] | None
+    ) -> _Slot | None:
+        """Wait for the step's turn; None means go straight to Core."""
+        try:
+            guard = self.runtime.username_guard
+            if gate is None or guard is None:
+                return None
+            return await guard.async_enter(*gate)
+        except Refused:
+            raise
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Login slow-down failed: %s", type(err).__name__)
+            return None
+
+    def _observe_refused(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        info: _FlowInfo | None,
+        gate: tuple[str | None, str | None] | None,
+    ) -> None:
+        """Queue and count a step refused because the queue is full."""
+        flow_id = _arg(args, kwargs, 0, "flow_id")
+        typed = gate[0] if gate is not None else None
+        handler = info.handler if info else None
+        self._queue(
+            flow_id,
+            info,
+            typed,
+            handler,
+            LoginResult.FAILED,
+            LoginReason.THROTTLED,
+            self._user_exists(handler, typed),
+        )
+
+    def _typed_username(self, flow_id: Any, user_input: Any) -> str | None:
+        """Return the step's username (sanitised), else the flow's earlier one."""
+        raw = user_input.get("username") if isinstance(user_input, Mapping) else None
+        typed = sanitise_text(raw) if isinstance(raw, str) else None
+        if typed is None and isinstance(flow_id, str):
+            memo = self._flows.get(flow_id)
+            typed = memo.username if memo is not None else None
+        return typed
+
+    @staticmethod
+    def _attempt_ip(info: _FlowInfo | None, request: Any) -> _IP | None:
+        """Return the flow's IP, else the request's remote address."""
+        ip = info.ip if info else None
+        if ip is None and request is not None:
+            ip = _as_ip(request.remote)
+        return ip
 
     # H8
 
@@ -284,10 +384,73 @@ class LoginCollector(BaseCollector):
             # Forms without errors, MFA prompts, other aborts: not attempts.
             return
 
+        self._queue(
+            flow_id,
+            info,
+            typed,
+            handler,
+            outcome,
+            reason,
+            exists,
+            mfa_module=mfa_module,
+            credentials=credentials,
+        )
+
+    def _queue(
+        self,
+        flow_id: Any,
+        info: _FlowInfo | None,
+        typed: str | None,
+        handler: _Handler | None,
+        outcome: LoginResult,
+        reason: LoginReason,
+        exists: UserExists,
+        *,
+        mfa_module: str | None = None,
+        credentials: Credentials | None = None,
+    ) -> None:
+        """Queue a login attempt, mark the request and count it for the policies."""
         request = current_request.get()
-        ip = info.ip if info else None
-        if ip is None and request is not None:
-            ip = _as_ip(request.remote)
+        ip = self._attempt_ip(info, request)
+        ip_text = str(ip) if ip is not None else None
+        blocked = self.guard.call(
+            self._submit_attempt,
+            request,
+            ip,
+            flow_id,
+            typed,
+            handler,
+            outcome,
+            reason,
+            exists,
+            mfa_module,
+            credentials,
+        )
+        if blocked is not None:
+            outcome, reason = LoginResult.BLOCKED, blocked
+        # Counted even when the record can't be built or queued (the worker's
+        # queue is full, a lookup failed): a flood must not switch protection
+        # off. Each policy in its own guard, so one failing never skips the
+        # other.
+        if (policy := self.runtime.ip_policy) is not None:
+            self.guard.call(policy.on_attempt, ip_text, outcome, reason)
+        if (guard := self.runtime.username_guard) is not None:
+            self.guard.call(guard.on_attempt, typed, ip_text, outcome, reason, exists)
+
+    def _submit_attempt(
+        self,
+        request: Any,
+        ip: _IP | None,
+        flow_id: Any,
+        typed: str | None,
+        handler: _Handler | None,
+        outcome: LoginResult,
+        reason: LoginReason,
+        exists: UserExists,
+        mfa_module: str | None,
+        credentials: Credentials | None,
+    ) -> LoginReason | None:
+        """Queue the record and mark the request; return why a success is blocked."""
         if is_cloud_connection(self.hass):
             source: Source | None = Source.CLOUD
         elif ip is None:
@@ -321,27 +484,35 @@ class LoginCollector(BaseCollector):
                 credentials=credentials,
             )
         )
+        blocked = (
+            self._block_reason(credentials, source)
+            if outcome is LoginResult.SUCCESS
+            else None
+        )
         if queued and isinstance(request, MutableMapping):
-            request[REQUEST_RECORDED] = (
-                outcome is LoginResult.FAILED or self._will_block(credentials, source)
+            request[REQUEST_RECORDED] = outcome is not LoginResult.SUCCESS or (
+                blocked is not None
             )
+        return blocked
 
-    def _will_block(
+    def _block_reason(
         self, credentials: Credentials | None, source: Source | None
-    ) -> bool:
-        """Return True if the worker will store this success as blocked.
+    ) -> LoginReason | None:
+        """Return why the worker will store this success as blocked, if it will.
 
         Memory only: the same rules as `FenceWorker._resolve_success`.
         """
         users = auth_users(self.hass)
         if credentials is None or users is None:
-            return False
+            return None
         for user in users.values():
             if any(c.id == credentials.id for c in user.credentials):
-                return not user.is_active or (
-                    user.local_only and source is not Source.LOCAL
-                )
-        return False
+                if not user.is_active:
+                    return LoginReason.BLOCKED_INACTIVE
+                if user.local_only and source is not Source.LOCAL:
+                    return LoginReason.BLOCKED_LOCAL_ONLY
+                return None
+        return None
 
     def _remember(
         self, flow_id: Any, typed: str | None, module: str | None, *, failed: bool

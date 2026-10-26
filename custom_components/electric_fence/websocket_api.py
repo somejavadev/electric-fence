@@ -20,11 +20,24 @@ from homeassistant.util.hass_dict import HassKey
 from . import posture, sessions
 from .attribution import auth_users
 from .const import DOMAIN
-from .models import ChangeKind, LoginResult, Record
+from .models import ChangeAction, ChangeKind, LoginResult, Record, SettingsChange
+from .protection.throttle import UsernameGuard
 from .runtime import Runtime
-from .shapes import UserNames, change_item, geo_status_item, login_item, record_event
+from .shapes import (
+    UserNames,
+    attack_row_item,
+    attack_view_item,
+    ban_row_item,
+    ban_view_item,
+    change_item,
+    geo_status_item,
+    login_item,
+    record_event,
+)
 from .storage import (
     FAILED_OR_BLOCKED,
+    AttackRow,
+    BanRow,
     ChangeFilter,
     ChangeRow,
     FenceStore,
@@ -73,6 +86,11 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_users,
         ws_status,
         ws_subscribe,
+        ws_bans,
+        ws_unban,
+        ws_attacks,
+        ws_end_slowdown,
+        ws_clear_countries,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -148,6 +166,20 @@ def _overview(store: FenceStore, now: datetime, names: UserNames) -> dict[str, A
     }
 
 
+def _protection(runtime: Runtime) -> dict[str, Any]:
+    bans, guard = runtime.bans, runtime.username_guard
+    return {
+        "available": bans is not None and bans.available,
+        "active_bans": len(bans.active()) if bans is not None else 0,
+        "bans_24h": bans.bans_24h() if bans is not None else 0,
+        "attacks": (
+            [attack_view_item(a) for a in guard.active_attacks()]
+            if guard is not None
+            else []
+        ),
+    }
+
+
 @websocket_api.websocket_command({probatio.Required("type"): "electric_fence/overview"})
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -162,6 +194,7 @@ async def ws_overview(
         _overview, store, dt_util.utcnow(), user_names(hass)
     )
     result["posture"] = await posture.async_check(hass, runtime, store)
+    result["protection"] = _protection(runtime)
     connection.send_result(msg["id"], result)
 
 
@@ -287,6 +320,7 @@ async def ws_status(
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     settings = runtime.settings.to_options()
+    settings["notify_targets"] = list(settings["notify_targets"])
     settings["maxmind_license_key_set"] = bool(settings.pop("maxmind_license_key"))
     version = async_get_loaded_integration(hass, DOMAIN).version
     worker = runtime.worker
@@ -368,3 +402,167 @@ def ws_subscribe(
     closers.add(_close_on_unload)
     connection.subscriptions[msg_id] = _unsubscribe
     connection.send_result(msg_id)
+
+
+_STATE = probatio.In(["active", "history"])
+
+
+def _query_bans(store: FenceStore, limit: int, before_id: int | None) -> list[BanRow]:
+    return store.query_bans(active=False, limit=limit, before_id=before_id)
+
+
+def _query_attacks(store: FenceStore, limit: int) -> list[AttackRow]:
+    return store.query_attacks(active=False, limit=limit)
+
+
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "electric_fence/bans",
+        probatio.Required("state"): _STATE,
+        probatio.Optional("before_id"): cv.positive_int,
+        probatio.Optional("limit", default=DEFAULT_LIMIT): _LIMIT,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_bans(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the active bans, or a page of ended ones."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    bans = runtime.bans
+    if bans is None:
+        connection.send_result(
+            msg["id"],
+            {
+                "available": False,
+                "reason": ERR_NOT_LOADED,
+                "items": [],
+                "next_before_id": None,
+            },
+        )
+        return
+    reason = bans.unavailable_reason
+    items: list[dict[str, Any]]
+    next_before_id: int | None = None
+    if msg["state"] == "active":
+        views = sorted(bans.active(), key=lambda v: v.banned_at, reverse=True)
+        items = [ban_view_item(v) for v in views]
+    else:
+        limit: int = msg["limit"]
+        rows = await hass.async_add_executor_job(
+            _query_bans, runtime.store, limit, msg.get("before_id")
+        )
+        items = [ban_row_item(r) for r in rows]
+        next_before_id = rows[-1].id if len(rows) == limit else None
+    connection.send_result(
+        msg["id"],
+        {
+            "available": reason is None,
+            "reason": reason,
+            "items": items,
+            "next_before_id": next_before_id,
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {probatio.Required("type"): "electric_fence/unban", probatio.Required("ip"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_unban(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Lift a ban, recording the admin."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if runtime.bans is None:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Bans are not loaded")
+        return
+    user = connection.user
+    unbanned = await runtime.bans.async_unban(msg["ip"], user.id, user.name)
+    connection.send_result(msg["id"], {"unbanned": unbanned})
+
+
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "electric_fence/attacks",
+        probatio.Required("state"): _STATE,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_attacks(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the active username attacks, or the ended ones."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    items: list[dict[str, Any]]
+    if msg["state"] == "active":
+        guard = runtime.username_guard
+        items = (
+            []
+            if guard is None
+            else [attack_view_item(a) for a in guard.active_attacks()]
+        )
+    else:
+        rows = await hass.async_add_executor_job(
+            _query_attacks, runtime.store, DEFAULT_LIMIT
+        )
+        items = [attack_row_item(r) for r in rows]
+    connection.send_result(msg["id"], {"items": items})
+
+
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "electric_fence/end_slowdown",
+        probatio.Required("username"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_end_slowdown(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """End the slow-down of a username under attack."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if (guard := runtime.username_guard) is None:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Protection is not loaded")
+        return
+    user = connection.user
+    key = UsernameGuard.key(msg["username"])
+    ended = key is not None and await guard.async_end(key, user.id, user.name)
+    connection.send_result(msg["id"], {"ended": ended})
+
+
+@websocket_api.websocket_command(
+    {probatio.Required("type"): "electric_fence/clear_countries"}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_clear_countries(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Forget every user's known login countries."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    cleared = await hass.async_add_executor_job(runtime.store.clear_countries)
+    user = connection.user
+    runtime.worker.submit(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.LOGIN_PROTECTION,
+            action=ChangeAction.COUNTRIES_CLEARED,
+            target_id=None,
+            target_name=None,
+            details={"cleared": cleared},
+            actor_user_id=user.id,
+            actor_name=user.name,
+            actor_ip=None,
+        )
+    )
+    connection.send_result(msg["id"], {"cleared": cleared})

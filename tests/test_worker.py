@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
 import sqlite3
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
@@ -14,7 +14,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.electric_fence import COLLECTOR_TYPES
+from custom_components.electric_fence import COLLECTOR_TYPES, shapes
 from custom_components.electric_fence.collectors.base import BaseCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.models import (
@@ -859,3 +859,142 @@ async def test_credentials_cleared_on_any_record(
     assert rec.credentials is None
     assert rec.user_id is None
     assert [r.result for r in logins(store)] == [LoginResult.FAILED]
+
+
+async def _login_from(
+    worker: FenceWorker,
+    store: FenceStore,
+    user: User,
+    country: str | None,
+    source: Source | None = Source.REMOTE,
+) -> LoginAttempt:
+    """Submit and store a confirmed success of `user` from `country`."""
+    rec = success(user_id="unused")
+    rec.user_id = None
+    rec.source = source
+    rec.country_code = country
+    rec.credentials = user.credentials[0]
+    worker.submit(rec)
+    worker.confirm_success(user.id, None, None)
+    await worker.async_flush()
+    return rec
+
+
+async def test_first_country_not_new(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A user's first country is recorded, not flagged."""
+    _, user = await _credential_success(hass)
+    rec = await _login_from(worker, store, user, "DE")
+    assert rec.new_country is False
+    assert store.known_countries(user.id) == ["DE"]
+    assert [r.new_country for r in logins(store)] == [False]
+
+
+async def test_second_country_new(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A second country flags the stored row; a repeat of it does not."""
+    _, user = await _credential_success(hass)
+    await _login_from(worker, store, user, "DE")
+    rec = await _login_from(worker, store, user, "FR")
+    assert rec.new_country is True
+    assert rec.known_countries_before == 1
+    again = await _login_from(worker, store, user, "FR")
+    assert again.new_country is False
+    assert [r.new_country for r in logins(store)] == [False, True, False]
+    assert shapes.login_item(logins(store)[1], {})["new_country"] is True
+
+
+@pytest.mark.parametrize(
+    ("source", "country"),
+    [(Source.LOCAL, "FR"), (Source.REMOTE, None)],
+)
+async def test_local_or_unknown_country_not_new(
+    hass: HomeAssistant,
+    worker: FenceWorker,
+    store: FenceStore,
+    source: Source,
+    country: str | None,
+) -> None:
+    """Local logins and logins without a country are skipped."""
+    _, user = await _credential_success(hass)
+    await _login_from(worker, store, user, "DE")
+    rec = await _login_from(worker, store, user, country, source)
+    assert rec.new_country is False
+    assert store.known_countries(user.id) == ["DE"]
+
+
+async def test_blocked_success_not_counted(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A blocked success leaves the known countries alone."""
+    _, user = await _credential_success(hass)
+    await _login_from(worker, store, user, "DE")
+    await hass.auth.async_update_user(user, local_only=True)
+    rec = await _login_from(worker, store, user, "FR")
+    assert rec.result is LoginResult.BLOCKED
+    assert rec.new_country is False
+    assert store.known_countries(user.id) == ["DE"]
+
+
+async def test_new_country_failure_contained(
+    hass: HomeAssistant,
+    worker: FenceWorker,
+    store: FenceStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A store error leaves the flag False and the login stored."""
+    _, user = await _credential_success(hass)
+    monkeypatch.setattr(store, "note_country", Mock(side_effect=KeyError(SECRET)))
+    rec = await _login_from(worker, store, user, "DE")
+    assert rec.new_country is False
+    assert [(r.result, r.new_country) for r in logins(store)] == [
+        (LoginResult.SUCCESS, False)
+    ]
+    assert SECRET not in caplog.text
+
+
+async def test_unconfirmed_success_never_noted(
+    hass: HomeAssistant, store: FenceStore
+) -> None:
+    """A success that expires or is released on stop adds no country."""
+    w = FenceWorker(
+        hass, store, NullEnricher(), confirm_timeout=0.1, flush_interval=0.05
+    )
+    await w.async_start()
+    _, user = await _credential_success(hass)
+    try:
+        rec = success(user_id=user.id)
+        rec.confirmed = False
+        rec.source = Source.REMOTE
+        rec.country_code = "DE"
+        w.submit(rec)
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if logins(store):
+                break
+    finally:
+        await w.async_stop()
+    assert [(r.confirmed, r.new_country) for r in logins(store)] == [(False, False)]
+    assert store.known_countries(user.id) == []
+
+
+async def test_held_success_detected_when_confirmed(
+    hass: HomeAssistant, worker: FenceWorker, store: FenceStore
+) -> None:
+    """A held success is checked at confirmation, before it is stored."""
+    _, user = await _credential_success(hass)
+    await _login_from(worker, store, user, "DE")
+    rec = success(user_id="unused")
+    rec.user_id, rec.source, rec.country_code = None, Source.REMOTE, "FR"
+    rec.credentials = user.credentials[0]
+    worker.submit(rec)
+    await worker.async_flush()
+    assert rec.new_country is False
+    assert logins(store)[-1].country_code == "DE"
+    worker.confirm_success(user.id, None, None)
+    await worker.async_flush()
+    assert rec.new_country is True
+    assert [r.new_country for r in logins(store)] == [False, True]

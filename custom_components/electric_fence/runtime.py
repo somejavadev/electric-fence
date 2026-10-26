@@ -9,9 +9,13 @@ from .storage import FenceStore
 from .worker import Enricher, FenceWorker
 
 if TYPE_CHECKING:
+    from .alerts import Alerter
     from .geo.base import GeoStatus
     from .geo.updater import GeoUpdater
     from .notifier import Notifier
+    from .protection.bans import BanManager
+    from .protection.policy import IpPolicy
+    from .protection.throttle import UsernameGuard
 
 
 @dataclass
@@ -27,3 +31,7 @@ class Runtime:
     notifier: Notifier | None = None
     geo_status: GeoStatus | None = None
     geo_updater: GeoUpdater | None = None
+    bans: BanManager | None = None
+    ip_policy: IpPolicy | None = None
+    username_guard: UsernameGuard | None = None
+    alerts: Alerter | None = None

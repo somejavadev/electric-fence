@@ -1,18 +1,16 @@
 import { LitElement, css, html, nothing } from "lit";
-import { countryFlag, formatTime, reasonLabel, truncate } from "../format.ts";
+import { MAX_TEXT, formatTime, reasonLabel, truncate } from "../format.ts";
+import "./ef-flag.ts";
 import { strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
 import type { HomeAssistant, LoginItem } from "../types.ts";
 
-export const MAX_TEXT = 64;
-
-/** Flag and code; "local" only when the login really came from the local network. */
+/** Country code; "local" only when the login really came from the local network. */
 export function locationLabel(item: LoginItem): string {
-  return item.country_code !== null
-    ? `${countryFlag(item.country_code)} ${item.country_code}`.trim()
-    : item.source === "local"
-      ? strings.local
-      : strings.unknownCountry;
+  return (
+    item.country_code ??
+    (item.source === "local" ? strings.local : strings.unknownCountry)
+  );
 }
 
 /**
@@ -107,7 +105,9 @@ export class EfLoginRow extends LitElement {
             ? html`<span class="tag warn">${strings.unconfirmed}</span>`
             : nothing
         }
+        <ef-flag .code=${item.country_code}></ef-flag>
         <span class="where">${where}</span>
+        ${this._newCountry(item)}
         ${
           this.detailed
             ? html`<button
@@ -124,6 +124,12 @@ export class EfLoginRow extends LitElement {
       </div>
       ${this.detailed && this._open ? this._details(item) : nothing}
     `;
+  }
+
+  private _newCountry(item: LoginItem) {
+    return item.new_country
+      ? html`<span class="tag warn">${strings.newCountry}</span>`
+      : nothing;
   }
 
   private _toggle = (): void => {
@@ -172,6 +178,17 @@ export class EfLoginRow extends LitElement {
     ];
     return html`
       <dl class="details" id="details">
+        <dt>${strings.country}</dt>
+        <dd>
+          <ef-flag .code=${item.country_code}></ef-flag>
+          ${
+            item.country_code ??
+            (item.source === "local"
+              ? strings.countryLocal
+              : strings.countryUnknown)
+          }
+          ${this._newCountry(item)}
+        </dd>
         ${rows.map(
           ([label, value]) =>
             html`<dt>${label}</dt>

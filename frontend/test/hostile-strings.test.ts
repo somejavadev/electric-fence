@@ -7,7 +7,10 @@ import "../src/views/ef-audit.ts";
 import "../src/views/ef-overview.ts";
 import "../src/views/ef-settings.ts";
 import "../src/views/ef-users.ts";
+import "../src/views/ef-bans.ts";
 import {
+  attack,
+  ban,
   change,
   fakeApi,
   fakeHass,
@@ -42,6 +45,20 @@ async function row(
   await el.updateComplete;
   return el;
 }
+
+it("renders no image or injected nodes for a hostile country code", async () => {
+  const el = document.createElement("ef-login-row");
+  el.hass = hass;
+  el.item = login({ country_code: '"><img onerror=alert(1)>' });
+  document.body.append(el);
+  await el.updateComplete;
+  const flag = el.shadowRoot?.querySelector("ef-flag");
+  await (flag as unknown as { updateComplete: Promise<unknown> })
+    .updateComplete;
+  expect(flag?.shadowRoot?.querySelector("img")).toBeNull();
+  expect(el.shadowRoot?.querySelector("img")).toBeNull();
+  expect(el.shadowRoot?.querySelector("[onerror]")).toBeNull();
+});
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -208,6 +225,8 @@ describe("hostile values across the whole overview", () => {
       new Set([
         "ef-answer-card",
         "ef-login-row",
+        "ef-flag",
+        "img",
         "ef-change-row",
         "ef-posture-list",
         // Posture icons: the icon name is a constant, never data.
@@ -289,7 +308,10 @@ describe("hostile values in the other tabs", () => {
       new Set([...tags, ...(names.has("style") ? ["style"] : [])]),
     );
     expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
-    expect(elements.some((e) => e.localName === "img")).toBe(false);
+    const images = elements.filter((e) => e.localName === "img");
+    for (const img of images) {
+      expect(img.getAttribute("src")).toMatch(/\/flags\/[a-z]{2}\.svg$/);
+    }
     const shown = elements.map((e) => e.textContent).join("\n");
     for (const label of labels) {
       expect(shown, label).toContain(H(label));
@@ -356,6 +378,8 @@ describe("hostile values in the other tabs", () => {
         "ul",
         "li",
         "ef-login-row",
+        "ef-flag",
+        "img",
         "div",
         "span",
         "bdi",
@@ -515,6 +539,9 @@ describe("hostile values in the other tabs", () => {
         "h3",
         "h4",
         "p",
+        // The last login's country flag: a bundled file named by the code.
+        "ef-flag",
+        "img",
       ],
       ["name", "uname", "lastip", "sclient", "sip"],
     );
@@ -536,6 +563,7 @@ describe("hostile values in the other tabs", () => {
     s.collectors = [
       { name: H("collector"), enabled: false, reason: [H("reason")] },
     ];
+    s.settings.notify_targets = [H("target"), H("target2")];
     const el = await render("ef-settings", fakeApi({ status: s }));
     inspect(
       el,
@@ -552,9 +580,140 @@ describe("hostile values in the other tabs", () => {
         "p",
         "bdi",
         "button",
+        "div",
       ],
-      ["geoerror", "attribution", "collector", "reason"],
+      ["geoerror", "attribution", "collector", "reason", "target", "target2"],
     );
+  });
+
+  async function settleAll(el: HTMLElement) {
+    for (let i = 0; i < 4; i += 1) {
+      for (let j = 0; j < 8; j += 1) {
+        await Promise.resolve();
+      }
+      await (el as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
+      const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog");
+      await (confirm as unknown as { updateComplete?: Promise<unknown> } | null)
+        ?.updateComplete;
+    }
+  }
+
+  function textOnly(el: HTMLElement, labels: string[]) {
+    const elements = allShadowElements(el.shadowRoot as ShadowRoot);
+    expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
+    expect(elements.some((e) => e.localName === "a")).toBe(false);
+    for (const img of elements.filter((e) => e.localName === "img")) {
+      expect(img.getAttribute("src")).toMatch(/\/flags\/[a-z]{2}\.svg$/);
+    }
+    const shown = elements.map((e) => e.textContent).join("\n");
+    for (const label of labels) {
+      expect(shown, label).toContain(H(label));
+    }
+    const carriers = elements.filter((e) =>
+      [...e.childNodes].some(
+        (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+      ),
+    );
+    expect(carriers.length).toBeGreaterThanOrEqual(labels.length);
+    for (const carrier of carriers) {
+      expect(
+        carrier.closest("bdi"),
+        `<${carrier.localName} class="${carrier.className}">`,
+      ).not.toBeNull();
+    }
+  }
+
+  it("hostile usernames in attacks render as text", async () => {
+    const fake = fakeApi({
+      overview: overview({
+        protection: {
+          available: true,
+          active_bans: 1,
+          bans_24h: 1,
+          attacks: [
+            attack({ username: H("attacker"), countries: ['"><img>'] }),
+          ],
+        },
+      }),
+      status: status(),
+    });
+    const el = await render("ef-overview", fake);
+    await settleAll(el);
+    textOnly(el, ["attacker"]);
+    el.shadowRoot
+      ?.querySelector<HTMLButtonElement>(".attacks li button")
+      ?.click();
+    await settleAll(el);
+    const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog");
+    expect(confirm?.shadowRoot?.querySelector("dialog")?.open).toBe(true);
+    // The name shows in the list and again in the question.
+    textOnly(el, ["attacker"]);
+    const question = confirm?.shadowRoot?.querySelector("h3 bdi");
+    expect(question?.textContent).toBe(H("attacker"));
+  });
+
+  it("bans with the details dialog and the unban question open", async () => {
+    const fake = fakeApi({
+      bans: {
+        available: true,
+        reason: null,
+        items: [ban({ hostname: H("host"), ip: H("ip") })],
+        next_before_id: null,
+      },
+    });
+    const el = await render("ef-bans", fake);
+    await settleAll(el);
+    el.shadowRoot?.querySelector<HTMLButtonElement>("button.ban")?.click();
+    await settleAll(el);
+    el.shadowRoot
+      ?.querySelector<HTMLButtonElement>("dialog button.unban")
+      ?.click();
+    await settleAll(el);
+    expect(el.shadowRoot?.querySelector("dialog")?.open).toBe(true);
+    textOnly(el, ["host", "ip"]);
+    const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog");
+    expect(confirm?.shadowRoot?.querySelector("h3 bdi")?.textContent).toBe(
+      H("ip"),
+    );
+  });
+
+  it("protection changes keep a hostile IP and username as text", async () => {
+    for (const item of [
+      change({
+        kind: "ip_ban",
+        action: "banned",
+        target_id: H("banip"),
+        actor_ip: null,
+      }),
+      change({
+        kind: "login_protection",
+        action: "attack_started",
+        target_name: H("attackname"),
+        details: { countries: [H("country")], failures: 3, ip_count: 2 },
+        actor_ip: null,
+      }),
+    ]) {
+      const el = document.createElement("ef-change-row");
+      el.hass = hass;
+      el.item = item;
+      el.details = true;
+      document.body.append(el);
+      await el.updateComplete;
+      const elements = allShadowElements(el.shadowRoot as ShadowRoot);
+      expect(elements.some((e) => e.localName === "img")).toBe(false);
+      expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
+      const carriers = elements.filter((e) =>
+        [...e.childNodes].some(
+          (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+        ),
+      );
+      expect(carriers.length).toBeGreaterThan(0);
+      for (const carrier of carriers) {
+        expect(carrier.closest("bdi")).not.toBeNull();
+      }
+      document.body.replaceChildren();
+    }
   });
 
   it("truncates long values and keeps the full text in title", async () => {

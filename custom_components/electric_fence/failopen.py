@@ -41,3 +41,8 @@ class FailOpen:
                     "".join(traceback.format_tb(err.__traceback__)),
                 )
             return None
+
+
+def reraise(err: Exception) -> None:
+    """Re-raise `err` inside a guard so it is counted and logged."""
+    raise err

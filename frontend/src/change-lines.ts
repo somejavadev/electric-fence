@@ -1,7 +1,17 @@
 import { html, nothing } from "lit";
 import type { TemplateResult } from "lit";
-import { truncate } from "./format.ts";
+import { formatTime, truncate } from "./format.ts";
 import { strings } from "./strings.ts";
+import type { ChangeItem, HomeAssistant } from "./types.ts";
+
+/** Kinds Electric Fence records itself; their details are not settings. */
+const PROTECTION_KINDS: ReadonlySet<string> = new Set([
+  "ip_ban",
+  "login_protection",
+]);
+
+export const isProtectionChange = (item: ChangeItem): boolean =>
+  PROTECTION_KINDS.has(item.kind);
 
 export interface DetailGroup {
   label: string;
@@ -232,4 +242,64 @@ export function changeDetails(
     ${more > 0 ? html`<div class="line">${a.andMore(more)}</div>` : nothing}
     ${extra.map((g) => groupTemplate(g.label, g.list))}
   </div>`;
+}
+
+const count = (value: unknown): string | undefined =>
+  typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : undefined;
+
+/** The facts a ban or login protection change carries, on one line. */
+function protectionDetails(
+  details: Record<string, unknown>,
+  hass: HomeAssistant,
+): TemplateResult | typeof nothing {
+  const p = strings.audit.protection;
+  const parts: [string, string][] = [];
+  const add = (label: string, value: string | undefined) => {
+    if (value !== undefined && value !== "") {
+      parts.push([label, value]);
+    }
+  };
+  add(p.failures, count(details["failures"]));
+  if (Object.hasOwn(details, "expires_at")) {
+    const expires = details["expires_at"];
+    add(
+      p.expires,
+      typeof expires === "string" ? formatTime(expires, hass) : p.never,
+    );
+  }
+  add(p.banNumber, count(details["ban_number"]));
+  add(p.addresses, count(details["ip_count"]));
+  add(p.countries, names(details["countries"]).join(", "));
+  const reason = details["reason"];
+  if (typeof reason === "string") {
+    add(p.how, Object.hasOwn(p.reasons, reason) ? p.reasons[reason] : reason);
+  }
+  const source = details["source"];
+  if (source === "electric_fence" || source === "other") {
+    add(p.source, strings.bans.sources[source]);
+  }
+  add(p.cleared, count(details["cleared"]));
+  if (parts.length === 0) {
+    return nothing;
+  }
+  return html`<div class="details">
+    ${parts.map(([label, value], i) => {
+      const text = truncate(value, 128);
+      return html`${i > 0 ? " · " : nothing}${label}:
+        <bdi title=${text.full}>${text.short}</bdi>`;
+    })}
+  </div>`;
+}
+
+/** Details of any change: protection facts, or the changed settings. */
+export function changeLines(
+  item: ChangeItem,
+  hass: HomeAssistant,
+  limit?: number,
+): TemplateResult | typeof nothing {
+  return isProtectionChange(item)
+    ? protectionDetails(item.details, hass)
+    : changeDetails(item.details, limit);
 }

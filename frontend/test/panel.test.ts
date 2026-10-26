@@ -39,7 +39,7 @@ const tabs = (el: ElectricFencePanel) => [
 ];
 
 describe("electric-fence-panel", () => {
-  it("shows the title and five tabs, overview by default", async () => {
+  it("shows the title and six tabs, overview by default", async () => {
     const el = await mount("");
     expect(el.shadowRoot?.querySelector("h1")?.textContent).toBe(
       "Electric Fence",
@@ -48,6 +48,7 @@ describe("electric-fence-panel", () => {
       "Overview",
       "Activity",
       "Users",
+      "Bans",
       "Audit",
       "Settings",
     ]);
@@ -88,6 +89,7 @@ describe("electric-fence-panel", () => {
     expect(tabFromPath("/nonsense")).toBe("overview");
     expect(tabFromPath(undefined)).toBe("overview");
     expect(tabFromPath("/settings/x")).toBe("settings");
+    expect(tabFromPath("/bans")).toBe("bans");
   });
 });
 

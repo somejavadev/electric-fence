@@ -12,8 +12,11 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -31,6 +34,7 @@ from .geo.maxmind import MaxMindProvider
 from .settings import Settings
 
 DBIP_URL = "https://db-ip.com"
+SECTION_NAMES = ("bans", "username_protection", "notifications")
 
 
 class ElectricFenceConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -71,9 +75,12 @@ class OptionsFlowHandler(OptionsFlow):
         """Ask for the general settings."""
         current = self._current()
         if user_input is not None:
+            flat = {k: v for k, v in user_input.items() if k not in SECTION_NAMES}
+            for name in SECTION_NAMES:
+                flat.update(user_input[name])
             self._pending = {
                 **current.to_options(),
-                **user_input,
+                **flat,
                 "retention_days": int(user_input["retention_days"]),
             }
             if user_input["geoip_provider"] == "maxmind":
@@ -81,20 +88,27 @@ class OptionsFlowHandler(OptionsFlow):
             self._pending["maxmind_account_id"] = None
             self._pending["maxmind_license_key"] = None
             return self.async_create_entry(data=self._pending)
+
+        def number(
+            key: str, low: int, high: int, unit: str
+        ) -> dict[probatio.Required, NumberSelector]:
+            return {
+                probatio.Required(key, default=getattr(current, key)): NumberSelector(
+                    NumberSelectorConfig(
+                        min=low,
+                        max=high,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement=unit,
+                    )
+                )
+            }
+
+        def flag(key: str) -> dict[probatio.Required, type[bool]]:
+            return {probatio.Required(key, default=getattr(current, key)): bool}
+
         schema = probatio.Schema(
             {
-                probatio.Required(
-                    "notify_failed_login", default=current.notify_failed_login
-                ): bool,
-                probatio.Required(
-                    "ha_login_notification", default=current.ha_login_notification
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=["replace", "keep"],
-                        translation_key="ha_login_notification",
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
                 probatio.Required(
                     "retention_days", default=current.retention_days
                 ): NumberSelector(
@@ -117,6 +131,57 @@ class OptionsFlowHandler(OptionsFlow):
                 ),
                 probatio.Required("reverse_dns", default=current.reverse_dns): bool,
                 probatio.Required("record_values", default=current.record_values): bool,
+                probatio.Required("bans"): section(
+                    probatio.Schema(
+                        {
+                            **flag("auto_ban"),
+                            **number("ban_threshold", 1, 100, "attempts"),
+                            **number("ban_window_minutes", 1, 1440, "minutes"),
+                            **number("ban_hours", 0, 8760, "hours"),
+                            **flag("ban_repeat_offenders"),
+                        }
+                    ),
+                    {"collapsed": True},
+                ),
+                probatio.Required("username_protection"): section(
+                    probatio.Schema(
+                        {
+                            **flag("username_protection"),
+                            **number("attack_threshold", 2, 1000, "attempts"),
+                            **number("attack_min_ips", 1, 100, "addresses"),
+                            **number("attack_window_minutes", 1, 1440, "minutes"),
+                        }
+                    ),
+                    {"collapsed": True},
+                ),
+                probatio.Required("notifications"): section(
+                    probatio.Schema(
+                        {
+                            **flag("notify_failed_login"),
+                            **flag("notify_ip_banned"),
+                            **flag("notify_username_attack"),
+                            **flag("notify_new_country"),
+                            **flag("notify_ban_ended"),
+                            probatio.Required(
+                                "ha_login_notification",
+                                default=current.ha_login_notification,
+                            ): SelectSelector(
+                                SelectSelectorConfig(
+                                    options=["replace", "keep"],
+                                    translation_key="ha_login_notification",
+                                    mode=SelectSelectorMode.DROPDOWN,
+                                )
+                            ),
+                            probatio.Required(
+                                "notify_targets",
+                                default=list(current.notify_targets),
+                            ): EntitySelector(
+                                EntitySelectorConfig(domain="notify", multiple=True)
+                            ),
+                        }
+                    ),
+                    {"collapsed": False},
+                ),
             }
         )
         return self.async_show_form(

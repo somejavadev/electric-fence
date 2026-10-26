@@ -193,3 +193,64 @@ async def test_logbook_unknown_kind_and_odd_changed(hass: HomeAssistant) -> None
         )
     )
     assert out[LOGBOOK_ENTRY_MESSAGE] == "changed HTTP settings (a b) by System"
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "data", "expected"),
+    [
+        ("ip_ban", "banned", {"target": "203.0.113.9"}, "banned 203.0.113.9"),
+        (
+            "ip_ban",
+            "unbanned",
+            {"target": "203.0.113.9", "changed_by_name": "Ann"},
+            "unbanned 203.0.113.9 by Ann",
+        ),
+        ("ip_ban", "expired", {"target": "203.0.113.9"}, "ban of 203.0.113.9 expired"),
+        (
+            "ip_ban",
+            "removed",
+            {"target": "203.0.113.9"},
+            "ban of 203.0.113.9 was removed from ip_bans.yaml",
+        ),
+        (
+            "login_protection",
+            "attack_started",
+            {"target_name": "ho•••"},
+            "username ho••• came under attack",
+        ),
+        (
+            "login_protection",
+            "attack_ended",
+            {"target_name": "{names}"},
+            "attack on {names} ended",
+        ),
+        (
+            "login_protection",
+            "slowdown_ended",
+            {"target_name": "admin", "changed_by_name": "Ann"},
+            "ended the slow-down for admin by Ann",
+        ),
+        (
+            "login_protection",
+            "countries_cleared",
+            {"changed_by_name": "Ann"},
+            "cleared known login countries by Ann",
+        ),
+    ],
+)
+async def test_logbook_protection(
+    hass: HomeAssistant,
+    kind: str,
+    action: str,
+    data: dict[str, str],
+    expected: str,
+) -> None:
+    """Bans and login protection read like the panel; no "by System"."""
+    describe = describers(hass)["electric_fence_settings_changed"]
+    out = describe(
+        Event(
+            "electric_fence_settings_changed",
+            {"kind": kind, "action": action, **data},
+        )
+    )
+    assert out[LOGBOOK_ENTRY_MESSAGE] == expected

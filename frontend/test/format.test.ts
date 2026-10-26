@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  countryFlag,
   formatDate,
   formatTime,
   reasonLabel,
@@ -14,19 +13,6 @@ const fakeHass = (time_zone: string): HomeAssistant =>
     config: { time_zone },
     language: "en",
   }) as unknown as HomeAssistant;
-
-describe("countryFlag", () => {
-  it("maps ISO codes to flag emoji", () => {
-    expect(countryFlag("NL")).toBe("🇳🇱");
-    expect(countryFlag("nl")).toBe("🇳🇱");
-  });
-  it("is empty for null or invalid codes", () => {
-    expect(countryFlag(null)).toBe("");
-    expect(countryFlag("")).toBe("");
-    expect(countryFlag("NLD")).toBe("");
-    expect(countryFlag("1!")).toBe("");
-  });
-});
 
 describe("truncate", () => {
   it("cuts to the limit plus an ellipsis and keeps the full text", () => {

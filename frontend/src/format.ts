@@ -9,7 +9,11 @@ const REASON_LABELS: Record<LoginReason, string> = {
   invalid_token: "Invalid token",
   blocked_inactive_user: "Blocked: inactive user",
   blocked_local_only: "Blocked: local only",
+  throttled: "Too many attempts",
 };
+
+/** Longest user-supplied text shown before it is cut. */
+export const MAX_TEXT = 64;
 
 /** Format an ISO timestamp in the user's language and the server time zone. */
 export function formatTime(iso: string, hass: HomeAssistant): string {
@@ -50,18 +54,6 @@ export function formatDate(day: string, hass: HomeAssistant): string {
     dateStyle: "medium",
     timeZone: "UTC",
   }).format(value);
-}
-
-/** Regional-indicator flag emoji for an ISO alpha-2 code, else "". */
-export function countryFlag(code: string | null): string {
-  if (code === null || !/^[A-Za-z]{2}$/.test(code)) {
-    return "";
-  }
-  return String.fromCodePoint(
-    ...[...code.toUpperCase()].map(
-      (c) => 0x1f1e6 + (c.codePointAt(0) ?? 65) - 65,
-    ),
-  );
 }
 
 /** Cut text to `max` characters plus an ellipsis; keep the full text. */

@@ -3,7 +3,7 @@ import { fetchChanges, fetchUsers } from "../api.ts";
 import "../components/ef-change-row.ts";
 import "../components/ef-filter-bar.ts";
 import type { FilterChange, FilterField } from "../components/ef-filter-bar.ts";
-import { changeDetails } from "../change-lines.ts";
+import { changeLines } from "../change-lines.ts";
 import { TIME_RANGES, sinceFor, truncate } from "../format.ts";
 import type { TimeRange } from "../format.ts";
 import { strings } from "../strings.ts";
@@ -30,6 +30,8 @@ const KINDS = [
   "analytics",
   "logger",
   "recorder",
+  "ip_ban",
+  "login_protection",
 ] as const satisfies readonly KnownChangeKind[];
 
 export interface AuditFilters {
@@ -249,7 +251,7 @@ export class EfAudit extends LiveView {
   }
 
   private _details(item: ChangeItem) {
-    return changeDetails(item.details);
+    return changeLines(item, this.hass);
   }
 
   protected override render() {

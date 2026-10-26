@@ -5,7 +5,6 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
@@ -13,6 +12,7 @@ from .attribution import auth_users
 from .const import DOMAIN
 from .failopen import FailOpen
 from .models import (
+    ChangeKind,
     LoginAttempt,
     LoginReason,
     LoginResult,
@@ -29,6 +29,9 @@ _LOGGER = logging.getLogger(__name__)
 EVENT_LOGIN_FAILED = f"{DOMAIN}_login_failed"
 EVENT_LOGIN_SUCCEEDED = f"{DOMAIN}_login_succeeded"
 EVENT_SETTINGS_CHANGED = f"{DOMAIN}_settings_changed"
+EVENT_IP_BANNED = f"{DOMAIN}_ip_banned"
+EVENT_USERNAME_ATTACK = f"{DOMAIN}_username_attack"
+EVENT_NEW_COUNTRY_LOGIN = f"{DOMAIN}_new_country_login"
 NOTIFICATION_ID = f"{DOMAIN}_login_failed"
 NOTIFICATION_TITLE = "Electric Fence: failed login"
 PANEL_LINK = "[Open Electric Fence](/electric-fence)"
@@ -46,6 +49,7 @@ REASON_TEXT: dict[LoginReason, str] = {
     LoginReason.INVALID_TOKEN: "invalid token",
     LoginReason.BLOCKED_INACTIVE: "blocked: inactive user",
     LoginReason.BLOCKED_LOCAL_ONLY: "blocked: local only",
+    LoginReason.THROTTLED: "too many attempts",
 }
 
 # ISO 3166-1 alpha-2 code to English short name.
@@ -119,15 +123,37 @@ def _exists(value: UserExists) -> bool | None:
     return None
 
 
-def display_username(record: LoginAttempt) -> tuple[str | None, bool]:
-    """Return (display name, masked) of the typed username.
+def display_name(typed: str | None, exists: UserExists) -> tuple[str | None, bool]:
+    """Return (display name, masked) of a typed username.
 
     The only place a typed username is turned into something shown outside the
     panel: existing users in full, everything else masked.
     """
-    if record.username_typed is None:
+    if typed is None:
         return None, False
-    return mask_username(inline_text(record.username_typed), record.user_exists)
+    return mask_username(inline_text(typed), exists)
+
+
+def display_username(record: LoginAttempt) -> tuple[str | None, bool]:
+    """Return (display name, masked) of an attempt's typed username."""
+    return display_name(record.username_typed, record.user_exists)
+
+
+def change_target_name(record: SettingsChange) -> str | None:
+    """Return a change's target name as shown outside the panel.
+
+    Login protection targets a typed username: in full only when it belongs
+    to an existing user (`details["user_exists"]`), else masked.
+    """
+    if record.kind != ChangeKind.LOGIN_PROTECTION:
+        return record.target_name
+    known = record.details.get("user_exists") is True
+    return display_name(record.target_name, exists_of(known))[0]
+
+
+def exists_of(known: bool) -> UserExists:
+    """Return the `UserExists` of a known-user flag."""
+    return UserExists.YES if known else UserExists.NO
 
 
 def _counts(store: FenceStore, token_ip: str | None) -> tuple[int, int | None]:
@@ -189,7 +215,7 @@ class Notifier:
                     "kind": str(record.kind),
                     "action": str(record.action),
                     "target": record.target_id,
-                    "target_name": record.target_name,
+                    "target_name": change_target_name(record),
                     "changed_by_user_id": record.actor_user_id,
                     "changed_by_name": record.actor_name,
                     "ip": record.actor_ip,
@@ -211,13 +237,12 @@ class Notifier:
         # can't await; Task 9's in-memory lookup is the same data.
         users = auth_users(self._hass)
         user = users.get(record.user_id) if users and record.user_id else None
+        username = inline_text(user.name) if user is not None and user.name else None
         self._hass.bus.async_fire(
             EVENT_LOGIN_SUCCEEDED,
             {
                 "user_id": record.user_id,
-                "username": inline_text(user.name)
-                if user is not None and user.name
-                else None,
+                "username": username,
                 "ip": record.ip,
                 "country": record.country_code,
                 "source": _str(record.source),
@@ -225,6 +250,21 @@ class Notifier:
                 "mfa_used": record.mfa_module is not None,
             },
         )
+        if not record.new_country:
+            return
+        self._hass.bus.async_fire(
+            EVENT_NEW_COUNTRY_LOGIN,
+            {
+                "user_id": record.user_id,
+                "username": username,
+                "ip": record.ip,
+                "country": record.country_code,
+                "hostname": record.hostname,
+                "previous_countries_count": record.known_countries_before,
+            },
+        )
+        if (alerts := self._runtime.alerts) is not None:
+            alerts.new_country(record)
 
     def _fire_failed(self, record: LoginAttempt) -> None:
         username, masked = display_username(record)
@@ -276,9 +316,8 @@ class Notifier:
         message = self._notify_guard.call(build_message, record, total, tokens)
         if message is None:
             return
-        persistent_notification.async_create(
-            self._hass, message, NOTIFICATION_TITLE, NOTIFICATION_ID
-        )
+        if (alerts := self._runtime.alerts) is not None:
+            alerts.failed_login(message)
 
 
 def build_message(record: LoginAttempt, total: int | None, tokens: int | None) -> str:

@@ -33,7 +33,8 @@ def _reason(value: object) -> str:
         return _text(value)
 
 
-# Sentence for a (kind, action) pair; `{names}` is " (a, b)" or "".
+# Sentence for a (kind, action) pair; `{names}` is " (a, b)" or "", and
+# `{target}` the target's name (masked by the notifier for unknown usernames).
 _CHANGE_TEXT: dict[tuple[str, str], str] = {
     ("backup", "updated"): "changed backup settings{names}",
     ("backup", "removed"): "deleted a backup",
@@ -47,7 +48,17 @@ _CHANGE_TEXT: dict[tuple[str, str], str] = {
     ("recorder", "disabled"): "disabled the recorder",
     ("recorder", "enabled"): "enabled the recorder",
     ("recorder", "purged"): "purged the recorder",
+    ("ip_ban", "banned"): "banned {target}",
+    ("ip_ban", "unbanned"): "unbanned {target}",
+    ("ip_ban", "expired"): "ban of {target} expired",
+    ("ip_ban", "removed"): "ban of {target} was removed from ip_bans.yaml",
+    ("login_protection", "attack_started"): "username {target} came under attack",
+    ("login_protection", "attack_ended"): "attack on {target} ended",
+    ("login_protection", "slowdown_ended"): "ended the slow-down for {target}",
+    ("login_protection", "countries_cleared"): "cleared known login countries",
 }
+# Electric Fence does these itself: no "by System" without a person.
+_SELF_KINDS = frozenset({"ip_ban", "login_protection"})
 
 
 def _names(value: object) -> str:
@@ -101,9 +112,14 @@ def async_describe_events(
         data = event.data
         target = _text(data.get("target_name") or data.get("target"))
         by = _text(data.get("changed_by_name"), "System")
-        template = _CHANGE_TEXT.get((str(data.get("kind")), str(data.get("action"))))
+        kind = str(data.get("kind"))
+        template = _CHANGE_TEXT.get((kind, str(data.get("action"))))
         if template is not None:
-            message = f"{template.format(names=_names(data.get('changed')))} by {by}"
+            # Format arguments are never re-parsed, so a hostile name with
+            # braces stays text.
+            message = template.format(names=_names(data.get("changed")), target=target)
+            if kind not in _SELF_KINDS or data.get("changed_by_name"):
+                message += f" by {by}"
         else:
             message = (
                 f"{_text(data.get('kind'))} {target} "

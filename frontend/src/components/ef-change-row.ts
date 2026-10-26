@@ -1,10 +1,9 @@
 import { LitElement, html, nothing } from "lit";
-import { changeDetails } from "../change-lines.ts";
-import { formatTime, truncate } from "../format.ts";
+import { changeLines, isProtectionChange } from "../change-lines.ts";
+import { MAX_TEXT, formatTime, truncate } from "../format.ts";
 import { changeSentence, strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
 import type { ChangeItem, HomeAssistant } from "../types.ts";
-import { MAX_TEXT } from "./ef-login-row.ts";
 
 /** One settings change: who did what, and from where. */
 export class EfChangeRow extends LitElement {
@@ -33,9 +32,14 @@ export class EfChangeRow extends LitElement {
         <span class="time">${formatTime(item.ts, this.hass)}</span>
         <bdi class="main actor" title=${actor.full}>${actor.short}</bdi>
         <bdi class="what" title=${sentence.full}>${sentence.short}</bdi>
-        <bdi class="ip">${item.actor_ip ?? strings.unknownIp}</bdi>
+        ${
+          // Made over the panel's WebSocket or by Electric Fence: no IP.
+          item.actor_ip === null && isProtectionChange(item)
+            ? nothing
+            : html`<bdi class="ip">${item.actor_ip ?? strings.unknownIp}</bdi>`
+        }
       </div>
-      ${this.details ? changeDetails(item.details, 3) : nothing}
+      ${this.details ? changeLines(item, this.hass, 3) : nothing}
     `;
   }
 }

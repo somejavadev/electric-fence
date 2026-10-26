@@ -1,4 +1,6 @@
 import type {
+  AttackItem,
+  BanItem,
   ChangeItem,
   HomeAssistant,
   LoginItem,
@@ -29,6 +31,7 @@ export function login(over: Partial<LoginItem> = {}): LoginItem {
     mfa_module: null,
     confirmed: false,
     count: 1,
+    new_country: false,
     ...over,
   };
 }
@@ -61,9 +64,10 @@ export function overview(over: Partial<Overview> = {}): Overview {
       {
         id: "auto_ban_off",
         level: "warning",
-        params: { threshold: null },
+        params: { threshold: null, electric_fence: false },
       },
     ],
+    protection: { available: true, active_bans: 2, bans_24h: 5, attacks: [] },
     ...over,
   };
 }
@@ -77,6 +81,21 @@ export const status = (attribution: string | null = null): Status => ({
     geoip_provider: "dbip_lite",
     maxmind_account_id: null,
     reverse_dns: false,
+    record_values: false,
+    auto_ban: true,
+    ban_threshold: 5,
+    ban_window_minutes: 15,
+    ban_hours: 24,
+    ban_repeat_offenders: false,
+    username_protection: true,
+    attack_threshold: 10,
+    attack_min_ips: 3,
+    attack_window_minutes: 15,
+    notify_ip_banned: true,
+    notify_username_attack: true,
+    notify_new_country: true,
+    notify_ban_ended: false,
+    notify_targets: [],
     maxmind_license_key_set: false,
   },
   geo: {
@@ -88,6 +107,37 @@ export const status = (attribution: string | null = null): Status => ({
   collectors: [],
   worker: { queued: 0, dropped: 0, storage_errors: 0 },
 });
+
+export function ban(over: Partial<BanItem> = {}): BanItem {
+  return {
+    ip: "203.0.113.9",
+    source: "electric_fence",
+    banned_at: "2026-10-24T09:00:00+00:00",
+    expires_at: "2026-10-25T09:00:00+00:00",
+    failures: 5,
+    ban_number: 1,
+    country_code: "RU",
+    hostname: "scanner.example.net",
+    ended_at: null,
+    end_reason: null,
+    ended_by_name: null,
+    ...over,
+  };
+}
+
+export function attack(over: Partial<AttackItem> = {}): AttackItem {
+  return {
+    username: "admin",
+    started_at: "2026-10-24T09:00:00+00:00",
+    ended_at: null,
+    failures: 14,
+    ip_count: 4,
+    countries: ["RU", "CN"],
+    end_reason: null,
+    active: true,
+    ...over,
+  };
+}
 
 export interface FakeHass {
   hass: HomeAssistant;

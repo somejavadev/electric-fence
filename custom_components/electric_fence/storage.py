@@ -29,11 +29,12 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # A `LoginFilter.result` for failed and blocked attempts together.
 FAILED_OR_BLOCKED: Final = "failed_or_blocked"
 _MAX_LIMIT = 500
+_AND = " AND "
 
 _VACUUM_FRACTION = 0.2
 
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     url TEXT,
     mfa_module TEXT,
     confirmed INTEGER NOT NULL DEFAULT 1,
-    count INTEGER NOT NULL DEFAULT 1
+    count INTEGER NOT NULL DEFAULT 1,
+    new_country INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_login_ts ON login_attempts (ts);
 CREATE INDEX IF NOT EXISTS idx_login_result_ts ON login_attempts (result, ts);
@@ -83,10 +85,71 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
+_PROTECTION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    banned_at TEXT NOT NULL,
+    expires_at TEXT,
+    failures INTEGER NOT NULL,
+    ban_number INTEGER NOT NULL,
+    country_code TEXT,
+    hostname TEXT,
+    ended_at TEXT,
+    end_reason TEXT,
+    ended_by_user_id TEXT,
+    ended_by_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ban_ip_at ON bans (ip, banned_at);
+CREATE INDEX IF NOT EXISTS idx_ban_ended ON bans (ended_at);
+CREATE TABLE IF NOT EXISTS attacks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    failures INTEGER NOT NULL DEFAULT 0,
+    ip_count INTEGER NOT NULL DEFAULT 0,
+    countries_json TEXT NOT NULL DEFAULT '[]',
+    end_reason TEXT,
+    ended_by_user_id TEXT,
+    ended_by_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_attack_ended ON attacks (ended_at);
+CREATE TABLE IF NOT EXISTS known_countries (
+    user_id TEXT NOT NULL,
+    country_code TEXT NOT NULL,
+    PRIMARY KEY (user_id, country_code)
+);
+"""
+
+_SEED_COUNTRIES = (
+    "INSERT OR IGNORE INTO known_countries (user_id, country_code) "
+    "SELECT DISTINCT user_id, country_code FROM login_attempts "
+    "WHERE result = 'success' AND user_id IS NOT NULL AND country_code IS NOT NULL;"
+)
+
+_ADD_NEW_COUNTRY = (
+    "ALTER TABLE login_attempts ADD COLUMN new_country INTEGER NOT NULL DEFAULT 0;"
+)
+
+
+def _migration_v1(db: sqlite3.Connection) -> str:
+    """Return the v1 to v2 script; user_version is set inside its transaction."""
+    columns = {r[1] for r in db.execute("PRAGMA table_info(login_attempts)")}
+    return (
+        "BEGIN;"
+        + ("" if "new_country" in columns else _ADD_NEW_COUNTRY)
+        + _PROTECTION_SCHEMA
+        + _SEED_COUNTRIES
+        + f"PRAGMA user_version = {int(SCHEMA_VERSION)};"
+        + "COMMIT;"
+    )
+
+
 _LOGIN_COLUMNS = (
     "id, ts, result, reason, username_typed, user_exists, user_id, provider, ip, "
     "country_code, hostname, source, client_id, client_name, user_agent, url, "
-    "mfa_module, confirmed, count"
+    "mfa_module, confirmed, count, new_country"
 )
 _CHANGE_COLUMNS = (
     "id, ts, kind, action, target_id, target_name, details_json, "
@@ -103,11 +166,12 @@ class StoreSchemaTooNewError(Exception):
         self.version = version
 
 
-def _check_version(db: sqlite3.Connection) -> None:
-    """Raise StoreSchemaTooNewError for a schema newer than SCHEMA_VERSION."""
+def _check_version(db: sqlite3.Connection) -> int:
+    """Return the schema version; raise StoreSchemaTooNewError if too new."""
     version = int(db.execute("PRAGMA user_version").fetchone()[0])
     if version > SCHEMA_VERSION:
         raise StoreSchemaTooNewError(version)
+    return version
 
 
 def _to_text(ts: datetime) -> str:
@@ -136,6 +200,7 @@ class LoginFilter:
     country_code: str | None = None
     since: datetime | None = None
     until: datetime | None = None
+    new_country: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +237,41 @@ class LoginRow:
     mfa_module: str | None
     confirmed: bool
     count: int
+    new_country: bool
+
+
+@dataclass(frozen=True)
+class BanRow:
+    """A stored IP ban."""
+
+    id: int
+    ip: str
+    banned_at: datetime
+    expires_at: datetime | None
+    failures: int
+    ban_number: int
+    country_code: str | None
+    hostname: str | None
+    ended_at: datetime | None
+    end_reason: str | None
+    ended_by_user_id: str | None
+    ended_by_name: str | None
+
+
+@dataclass(frozen=True)
+class AttackRow:
+    """A stored username attack."""
+
+    id: int
+    username: str
+    started_at: datetime
+    ended_at: datetime | None
+    failures: int
+    ip_count: int
+    countries: list[str]
+    end_reason: str | None
+    ended_by_user_id: str | None
+    ended_by_name: str | None
 
 
 @dataclass(frozen=True)
@@ -220,6 +320,7 @@ def _login_row(r: Sequence[Any]) -> LoginRow:
         mfa_module=r[16],
         confirmed=bool(r[17]),
         count=r[18],
+        new_country=bool(r[19]),
     )
 
 
@@ -246,6 +347,52 @@ def _change_row(r: Sequence[Any]) -> ChangeRow:
     )
 
 
+_BAN_COLUMNS = (
+    "id, ip, banned_at, expires_at, failures, ban_number, country_code, hostname, "
+    "ended_at, end_reason, ended_by_user_id, ended_by_name"
+)
+_ATTACK_COLUMNS = (
+    "id, username, started_at, ended_at, failures, ip_count, countries_json, "
+    "end_reason, ended_by_user_id, ended_by_name"
+)
+
+
+def _optional_from_text(text: str | None) -> datetime | None:
+    return _from_text(text) if text is not None else None
+
+
+def _ban_row(r: Sequence[Any]) -> BanRow:
+    return BanRow(
+        id=r[0],
+        ip=r[1],
+        banned_at=_from_text(r[2]),
+        expires_at=_optional_from_text(r[3]),
+        failures=r[4],
+        ban_number=r[5],
+        country_code=r[6],
+        hostname=r[7],
+        ended_at=_optional_from_text(r[8]),
+        end_reason=r[9],
+        ended_by_user_id=r[10],
+        ended_by_name=r[11],
+    )
+
+
+def _attack_row(r: Sequence[Any]) -> AttackRow:
+    return AttackRow(
+        id=r[0],
+        username=r[1],
+        started_at=_from_text(r[2]),
+        ended_at=_optional_from_text(r[3]),
+        failures=r[4],
+        ip_count=r[5],
+        countries=[str(c) for c in json.loads(r[6])],
+        end_reason=r[7],
+        ended_by_user_id=r[8],
+        ended_by_name=r[9],
+    )
+
+
 def _login_values(a: LoginAttempt) -> tuple[Any, ...]:
     return (
         _to_text(a.ts),
@@ -266,6 +413,7 @@ def _login_values(a: LoginAttempt) -> tuple[Any, ...]:
         a.mfa_module,
         1 if a.confirmed else 0,
         a.count,
+        1 if a.new_country else 0,
     )
 
 
@@ -292,6 +440,26 @@ def _time_clauses(
     if until is not None:
         where.append("ts <= ?")
         params.append(_to_text(until))
+
+
+def read_active_ban_ips(path: Path) -> list[str]:
+    """Return the addresses of the active bans in a closed database.
+
+    Opened read-only, so nothing is created or migrated; [] without a
+    database or a bans table.
+    """
+    if not path.is_file():
+        return []
+    db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        if not db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bans'"
+        ).fetchone():
+            return []
+        rows = db.execute("SELECT ip FROM bans WHERE ended_at IS NULL").fetchall()
+    finally:
+        db.close()
+    return [str(r[0]) for r in rows]
 
 
 class FenceStore:
@@ -322,9 +490,16 @@ class FenceStore:
                 self._path, check_same_thread=False, isolation_level=None
             )
             try:
-                _check_version(db)
+                version = _check_version(db)
                 db.execute("PRAGMA journal_mode = WAL")
-                db.executescript(_SCHEMA)
+                if version == 1:
+                    try:
+                        db.executescript(_migration_v1(db))
+                    except BaseException:
+                        with contextlib.suppress(sqlite3.Error):
+                            db.execute("ROLLBACK")
+                        raise
+                db.executescript(_SCHEMA + _PROTECTION_SCHEMA)
                 db.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                     ("schema_version", str(SCHEMA_VERSION)),
@@ -360,8 +535,8 @@ class FenceStore:
                     "INSERT INTO login_attempts (ts, result, reason, username_typed, "
                     "user_exists, user_id, provider, ip, country_code, hostname, "
                     "source, client_id, client_name, user_agent, url, mfa_module, "
-                    "confirmed, count) VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "confirmed, count, new_country) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     logins,
                 )
                 db.executemany(
@@ -400,13 +575,15 @@ class FenceStore:
         if f.country_code is not None:
             where.append("country_code = ?")
             params.append(f.country_code)
+        if f.new_country:
+            where.append("new_country = 1")
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
             where.append("(ts, id) < (SELECT ts, id FROM login_attempts WHERE id = ?)")
             params.append(before_id)
         sql = f"SELECT {_LOGIN_COLUMNS} FROM login_attempts"  # noqa: S608
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " WHERE " + _AND.join(where)
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         params.append(max(1, min(limit, _MAX_LIMIT)))
         with self._lock:
@@ -435,7 +612,7 @@ class FenceStore:
             params.append(before_id)
         sql = f"SELECT {_CHANGE_COLUMNS} FROM settings_changes"  # noqa: S608
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " WHERE " + _AND.join(where)
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         params.append(max(1, min(limit, _MAX_LIMIT)))
         with self._lock:
@@ -560,7 +737,7 @@ class FenceStore:
         with self._lock:
             db = self._conn()
             total = 0
-            for table in ("login_attempts", "settings_changes"):
+            for table in ("login_attempts", "settings_changes", "bans", "attacks"):
                 total += db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
             deleted = 0
             db.execute("BEGIN")
@@ -568,6 +745,11 @@ class FenceStore:
                 for table in ("login_attempts", "settings_changes"):
                     deleted += db.execute(
                         f"DELETE FROM {table} WHERE ts < ?",  # noqa: S608
+                        (text,),
+                    ).rowcount
+                for table in ("bans", "attacks"):
+                    deleted += db.execute(
+                        f"DELETE FROM {table} WHERE ended_at < ?",  # noqa: S608
                         (text,),
                     ).rowcount
                 db.execute("COMMIT")
@@ -581,6 +763,208 @@ class FenceStore:
                 except sqlite3.Error:
                     _LOGGER.debug("VACUUM failed after purge")
         return deleted
+
+    def _write(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
+        """Run one statement in its own transaction and return the cursor."""
+        with self._lock:
+            db = self._conn()
+            db.execute("BEGIN")
+            try:
+                cursor = db.execute(sql, params)
+                db.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
+                raise
+            return cursor
+
+    def _read(self, sql: str, params: Sequence[Any] = ()) -> list[Any]:
+        with self._lock:
+            return self._conn().execute(sql, params).fetchall()
+
+    def add_ban(
+        self,
+        ip: str,
+        banned_at: datetime,
+        expires_at: datetime | None,
+        failures: int,
+        ban_number: int,
+        country_code: str | None,
+        hostname: str | None,
+    ) -> int:
+        """Record a ban and return its id."""
+        cursor = self._write(
+            "INSERT INTO bans (ip, banned_at, expires_at, failures, ban_number, "
+            "country_code, hostname) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                ip,
+                _to_text(banned_at),
+                _to_text(expires_at) if expires_at is not None else None,
+                failures,
+                ban_number,
+                country_code,
+                hostname,
+            ),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def end_ban(
+        self,
+        ban_id: int,
+        ended_at: datetime,
+        end_reason: Literal["expired", "unbanned", "removed"],
+        by_user_id: str | None,
+        by_name: str | None,
+    ) -> None:
+        """Mark a ban as ended."""
+        self._write(
+            "UPDATE bans SET ended_at = ?, end_reason = ?, ended_by_user_id = ?, "
+            "ended_by_name = ? WHERE id = ?",
+            (_to_text(ended_at), end_reason, by_user_id, by_name, ban_id),
+        )
+
+    def active_bans(self) -> list[BanRow]:
+        """Return the bans that have not ended, oldest first."""
+        rows = self._read(
+            f"SELECT {_BAN_COLUMNS} FROM bans "  # noqa: S608
+            "WHERE ended_at IS NULL ORDER BY banned_at, id"
+        )
+        return [_ban_row(r) for r in rows]
+
+    def query_bans(
+        self, *, active: bool, limit: int = 50, before_id: int | None = None
+    ) -> list[BanRow]:
+        """Return active or ended bans, newest first, with keyset paging."""
+        where = ["ended_at IS NULL" if active else "ended_at IS NOT NULL"]
+        params: list[Any] = []
+        if before_id is not None:
+            where.append("id < ?")
+            params.append(before_id)
+        params.append(max(1, min(limit, _MAX_LIMIT)))
+        rows = self._read(
+            f"SELECT {_BAN_COLUMNS} FROM bans WHERE "  # noqa: S608
+            + _AND.join(where)
+            + " ORDER BY id DESC LIMIT ?",
+            params,
+        )
+        return [_ban_row(r) for r in rows]
+
+    def count_bans_since(self, since: datetime) -> int:
+        """Return the number of bans made since a time."""
+        row = self._read(
+            "SELECT COUNT(*) FROM bans WHERE banned_at >= ?", (_to_text(since),)
+        )[0]
+        return int(row[0])
+
+    def count_ip_bans_since(self, ip: str, since: datetime) -> int:
+        """Return the number of bans of an IP since a time."""
+        row = self._read(
+            "SELECT COUNT(*) FROM bans WHERE ip = ? AND banned_at >= ?",
+            (ip, _to_text(since)),
+        )[0]
+        return int(row[0])
+
+    def add_attack(self, username: str, started_at: datetime) -> int:
+        """Record the start of a username attack and return its id."""
+        cursor = self._write(
+            "INSERT INTO attacks (username, started_at) VALUES (?, ?)",
+            (username, _to_text(started_at)),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def update_attack(
+        self, attack_id: int, failures: int, ip_count: int, countries: list[str]
+    ) -> None:
+        """Update the running totals of an attack."""
+        self._write(
+            "UPDATE attacks SET failures = ?, ip_count = ?, countries_json = ? "
+            "WHERE id = ?",
+            (failures, ip_count, json.dumps(countries), attack_id),
+        )
+
+    def end_attack(
+        self,
+        attack_id: int,
+        ended_at: datetime,
+        end_reason: Literal["quiet", "ended_by_user"],
+        by_user_id: str | None,
+        by_name: str | None,
+    ) -> None:
+        """Mark an attack as ended."""
+        self._write(
+            "UPDATE attacks SET ended_at = ?, end_reason = ?, ended_by_user_id = ?, "
+            "ended_by_name = ? WHERE id = ?",
+            (_to_text(ended_at), end_reason, by_user_id, by_name, attack_id),
+        )
+
+    def end_open_attacks(self, ended_at: datetime) -> int:
+        """End every attack still open as quiet; return how many."""
+        cursor = self._write(
+            "UPDATE attacks SET ended_at = ?, end_reason = 'quiet' "
+            "WHERE ended_at IS NULL",
+            (_to_text(ended_at),),
+        )
+        return cursor.rowcount
+
+    def query_attacks(self, *, active: bool, limit: int = 50) -> list[AttackRow]:
+        """Return active or ended attacks, newest first."""
+        condition = "ended_at IS NULL" if active else "ended_at IS NOT NULL"
+        rows = self._read(
+            f"SELECT {_ATTACK_COLUMNS} FROM attacks "  # noqa: S608
+            f"WHERE {condition} ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, _MAX_LIMIT)),),
+        )
+        return [_attack_row(r) for r in rows]
+
+    def note_country(self, user_id: str, country_code: str) -> bool:
+        """Record a country for a user; True when it is new to a known user."""
+        with self._lock:
+            db = self._conn()
+            db.execute("BEGIN")
+            try:
+                known = db.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(country_code = ?), 0) "
+                    "FROM known_countries WHERE user_id = ?",
+                    (country_code, user_id),
+                ).fetchone()
+                db.execute(
+                    "INSERT OR IGNORE INTO known_countries (user_id, country_code) "
+                    "VALUES (?, ?)",
+                    (user_id, country_code),
+                )
+                db.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
+                raise
+        return bool(known[0]) and not known[1]
+
+    def forget_user_countries(self, user_id: str) -> None:
+        """Forget every known country of a user."""
+        self._write("DELETE FROM known_countries WHERE user_id = ?", (user_id,))
+
+    def clear_countries(self) -> int:
+        """Forget every known country and return how many rows were removed."""
+        return self._write("DELETE FROM known_countries").rowcount
+
+    def known_countries(self, user_id: str) -> list[str]:
+        """Return the known countries of a user, sorted."""
+        rows = self._read(
+            "SELECT country_code FROM known_countries WHERE user_id = ? "
+            "ORDER BY country_code",
+            (user_id,),
+        )
+        return [r[0] for r in rows]
+
+    def last_success_ips_since(self, since: datetime) -> dict[str, datetime]:
+        """Return each IP's latest successful login at or after a time."""
+        rows = self._read(
+            "SELECT ip, MAX(ts) FROM login_attempts "
+            "WHERE result = ? AND confirmed = 1 AND ip IS NOT NULL AND ts >= ? "
+            "GROUP BY ip",
+            (str(LoginResult.SUCCESS), _to_text(since)),
+        )
+        return {r[0]: _from_text(r[1]) for r in rows}
 
     def stats(self) -> StoreStats:
         """Return row counts and the database size on disk."""

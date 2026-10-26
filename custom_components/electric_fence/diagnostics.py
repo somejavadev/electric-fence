@@ -45,6 +45,20 @@ def _geo(runtime: Runtime) -> dict[str, Any]:
     }
 
 
+def _protection(runtime: Runtime) -> dict[str, Any]:
+    """Return counts only: never an address or a username."""
+    bans, guard = runtime.bans, runtime.username_guard
+    try:
+        return {
+            "available": bans is not None and bans.available,
+            "unavailable_reason": bans.unavailable_reason if bans else "not_loaded",
+            "active_bans": len(bans.active()) if bans else 0,
+            "active_attacks": len(guard.active_attacks()) if guard else 0,
+        }
+    except Exception as err:  # noqa: BLE001
+        return {"error": type(err).__name__}
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> dict[str, Any]:
@@ -88,5 +102,6 @@ async def async_get_config_entry_diagnostics(
         },
         "store": store,
         "geo": _geo(runtime),
+        "protection": _protection(runtime),
         "ha_version": runtime.ha_version,
     }

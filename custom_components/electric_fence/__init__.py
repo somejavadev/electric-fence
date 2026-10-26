@@ -16,12 +16,14 @@ from homeassistant.const import (
 from homeassistant.core import Event, HassJob, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
+from .alerts import Alerter
 from .attribution import AttributionCollector
 from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
@@ -30,16 +32,31 @@ from .collectors.core_config import CoreConfigCollector
 from .collectors.login import LoginCollector
 from .collectors.system_settings import SystemSettingsCollector
 from .collectors.users import UserCollector
-from .const import DOMAIN, MIN_HA_VERSION
+from .const import DOMAIN, MIN_HA_VERSION, SIGNAL_SETTINGS_UPDATED
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
 from .notifier import Notifier
 from .panel import async_register_panel, async_unregister_panel
-from .repairs import async_clear_schema_too_new, async_report_schema_too_new
+from .protection.backend import CoreBanBackend
+from .protection.bans import BanManager
+from .protection.network import normalise_ip
+from .protection.policy import IpPolicy
+from .protection.throttle import UsernameGuard
+from .repairs import (
+    async_clear_disabled_collector,
+    async_clear_ip_ban_disabled,
+    async_clear_schema_too_new,
+    async_report_schema_too_new,
+)
 from .runtime import Runtime
 from .settings import Settings
-from .storage import SCHEMA_VERSION, FenceStore, StoreSchemaTooNewError
+from .storage import (
+    SCHEMA_VERSION,
+    FenceStore,
+    StoreSchemaTooNewError,
+    read_active_ban_ips,
+)
 from .websocket_api import async_end_subscriptions, async_register_commands
 from .worker import FenceWorker
 
@@ -53,7 +70,7 @@ DB_FILENAME = "electric_fence.db"
 DATA_DIRNAME = "electric_fence"
 PURGE_INTERVAL = timedelta(hours=24)
 FIRST_PURGE_DELAY = timedelta(minutes=5)
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 # Each collector task appends its class here.
 COLLECTOR_TYPES: list[type[BaseCollector]] = [
@@ -175,6 +192,35 @@ async def async_setup_entry(
     entry.async_on_unload(worker.add_listener(notifier.on_record))
     entry.async_on_unload(lambda: async_end_subscriptions(hass, entry.entry_id))
 
+    alerter = Alerter(hass, runtime)
+    runtime.alerts = alerter
+    entry.async_on_unload(alerter.async_stop)
+
+    bans = BanManager(hass, runtime, CoreBanBackend(hass))
+    runtime.bans = bans
+    entry.async_on_unload(bans.async_stop)
+    await bans.async_start()
+
+    ip_policy = IpPolicy(hass, runtime)
+    runtime.ip_policy = ip_policy
+    try:
+        trusted = await hass.async_add_executor_job(
+            store.last_success_ips_since,
+            dt_util.utcnow() - settings.trusted_window,
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not load trusted addresses: %s", type(err).__name__
+        )
+    else:
+        ip_policy.seed_trusted(trusted)
+    entry.async_on_unload(worker.add_listener(ip_policy.on_record))
+
+    username_guard = UsernameGuard(hass, runtime)
+    runtime.username_guard = username_guard
+    await username_guard.async_start()
+    entry.async_on_unload(worker.add_listener(username_guard.on_record))
+
     for collector_type in COLLECTOR_TYPES:
         collector = collector_type(hass, runtime)
         runtime.collectors.append(collector)
@@ -270,6 +316,7 @@ async def async_apply_settings(
             await async_purge(hass, runtime)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Electric Fence purge failed: %s", type(err).__name__)
+    async_dispatcher_send(hass, SIGNAL_SETTINGS_UPDATED)
 
 
 async def async_unload_entry(
@@ -289,6 +336,11 @@ async def async_unload_entry(
 
 async def _async_stop_recording(runtime: Runtime) -> None:
     """Uninstall collectors in reverse, then stop (flush) the worker."""
+    # First, so no new attempt is delayed. Attempts waiting in the slow-down
+    # are released and continue with Core's step on the next loop iteration;
+    # uninstalling the hook below doesn't affect calls already inside it.
+    if runtime.username_guard is not None:
+        runtime.username_guard.async_stop()
     for collector in reversed(runtime.collectors):
         collector.uninstall()
     runtime.collectors.clear()
@@ -308,8 +360,34 @@ def _remove_data(config_dir: Path) -> None:
     shutil.rmtree(storage / DATA_DIRNAME, ignore_errors=True)
 
 
+async def _async_lift_own_bans(hass: HomeAssistant) -> None:
+    """Lift Electric Fence's active bans in Core; other bans stay. Never raises."""
+    try:
+        ips = await hass.async_add_executor_job(read_active_ban_ips, _db_path(hass))
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not read its bans on removal: %s",
+            type(err).__name__,
+        )
+        return
+    backend = CoreBanBackend(hass)
+    for ip in ips:
+        if (addr := normalise_ip(ip)) is None:
+            continue
+        try:
+            await backend.async_remove(addr)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not lift a ban on removal: %s",
+                type(err).__name__,
+            )
+
+
 async def async_remove_entry(
     hass: HomeAssistant, entry: ElectricFenceConfigEntry
 ) -> None:
-    """Delete the database and GeoIP files when the integration is removed."""
+    """Lift our bans, then delete the database and GeoIP files."""
+    await _async_lift_own_bans(hass)
+    async_clear_disabled_collector(hass, "protection")
+    async_clear_ip_ban_disabled(hass)
     await hass.async_add_executor_job(_remove_data, Path(hass.config.config_dir))

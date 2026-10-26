@@ -16,6 +16,8 @@ from homeassistant.util import dt as dt_util
 
 from .geo.base import classify_ip
 from .models import LoginResult, Source
+from .protection.backend import HEALTH_IP_BAN_DISABLED
+from .protection.network import http_config
 from .runtime import Runtime
 from .shapes import iso
 from .storage import FenceStore, LoginFilter, LoginRow
@@ -31,10 +33,6 @@ STORAGE_ERROR_WINDOW = timedelta(hours=1)
 _PROXY_SCAN_ROWS = 5000
 _PAGE = 500
 
-# Core keeps the running HTTP config in its HTTP config store
-# (`homeassistant.components.http.config.DATA_STORE`, key "http"). It is read
-# by duck typing, so a missing or changed store only makes the value unknown.
-_HTTP_STORE_KEY = "http"
 _CONF_USE_X_FORWARDED_FOR = "use_x_forwarded_for"
 
 
@@ -51,7 +49,10 @@ async def async_check(
         return [await _admins_without_mfa(hass)]
 
     async def auto_ban() -> list[PostureItem]:
-        return [_auto_ban_off(hass)]
+        return [_auto_ban_off(hass, runtime)]
+
+    async def ip_ban() -> list[PostureItem]:
+        return [_ip_ban_disabled(runtime)]
 
     async def proxy() -> list[PostureItem]:
         return [await _proxy_suspected(hass, store)]
@@ -68,6 +69,7 @@ async def async_check(
     checks: list[tuple[str, Callable[[], Awaitable[list[PostureItem]]]]] = [
         ("admins_without_mfa", admins),
         ("auto_ban_off", auto_ban),
+        ("ip_ban_disabled", ip_ban),
         ("proxy_suspected", proxy),
         ("geoip_missing", geoip),
         ("collector_disabled", collectors),
@@ -83,8 +85,9 @@ async def async_check(
     return items
 
 
-async def _admins_without_mfa(hass: HomeAssistant) -> PostureItem:
-    users = [
+async def async_admins_without_mfa(hass: HomeAssistant) -> list[dict[str, str | None]]:
+    """Return the active, non-system admins that have no MFA module enabled."""
+    return [
         {"id": user.id, "name": user.name}
         for user in await hass.auth.async_get_users()
         if user.is_active
@@ -92,16 +95,33 @@ async def _admins_without_mfa(hass: HomeAssistant) -> PostureItem:
         and not user.system_generated
         and not await hass.auth.async_get_enabled_mfa(user)
     ]
+
+
+async def _admins_without_mfa(hass: HomeAssistant) -> PostureItem:
+    users = await async_admins_without_mfa(hass)
     return _item("admins_without_mfa", "warning" if users else "ok", users=users)
 
 
-def _auto_ban_off(hass: HomeAssistant) -> PostureItem:
+def _auto_ban_off(hass: HomeAssistant, runtime: Runtime) -> PostureItem:
     app = getattr(getattr(hass, "http", None), "app", None)
     threshold = app.get(KEY_LOGIN_THRESHOLD) if isinstance(app, Mapping) else None
     if not isinstance(threshold, int):
         threshold = None
-    off = threshold is None or threshold < 1
-    return _item("auto_ban_off", "warning" if off else "ok", threshold=threshold)
+    bans = runtime.bans
+    electric_fence = runtime.settings.auto_ban and bans is not None and bans.available
+    off = not electric_fence and (threshold is None or threshold < 1)
+    return _item(
+        "auto_ban_off",
+        "warning" if off else "ok",
+        threshold=threshold,
+        electric_fence=electric_fence,
+    )
+
+
+def _ip_ban_disabled(runtime: Runtime) -> PostureItem:
+    bans = runtime.bans
+    disabled = bans is not None and bans.backend.health() == HEALTH_IP_BAN_DISABLED
+    return _item("ip_ban_disabled", "warning" if disabled else "ok")
 
 
 def use_x_forwarded_for(hass: HomeAssistant) -> bool | None:
@@ -109,18 +129,8 @@ def use_x_forwarded_for(hass: HomeAssistant) -> bool | None:
 
     None when it can't be told (no HTTP config store, or an unknown layout).
     """
-    store = hass.data.get(_HTTP_STORE_KEY)
-    active = getattr(store, "active_config_type", None)
-    if active is None:
-        return None
-    active = str(active)
-    if active in ("default", "default_legacy_port"):
-        # The built-in default config has no proxy settings.
-        return False
-    if active not in ("stable", "pending"):
-        return None
-    conf = getattr(store, active, None)
-    if not isinstance(conf, Mapping):
+    conf = http_config(hass)
+    if conf is None:
         return None
     value = conf.get(_CONF_USE_X_FORWARDED_FOR, False)
     return value if isinstance(value, bool) else None

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.electric_fence import notifier as notifier_module
+from custom_components.electric_fence.alerts import Alerter
 from custom_components.electric_fence.models import (
     ChangeAction,
     ChangeKind,
@@ -26,6 +27,7 @@ from custom_components.electric_fence.models import (
 )
 from custom_components.electric_fence.notifier import (
     NOTIFICATION_ID,
+    REASON_TEXT,
     Notifier,
     build_message,
     country_text,
@@ -78,7 +80,9 @@ def store(tmp_path: Path) -> Iterator[FenceStore]:
 async def notifier(hass: HomeAssistant, store: FenceStore) -> Notifier:
     """Return a notifier on a real store, with notifications set up."""
     assert await async_setup_component(hass, "persistent_notification", {})
-    return Notifier(hass, make_runtime(hass, store))
+    runtime = make_runtime(hass, store)
+    runtime.alerts = Alerter(hass, runtime)
+    return Notifier(hass, runtime)
 
 
 def notification(hass: HomeAssistant) -> str | None:
@@ -274,6 +278,45 @@ async def test_settings_changed_event_system_has_null_actor(
     assert notification(hass) is None
 
 
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ({"user_exists": False}, "ho•••"),
+        ({}, "ho•••"),
+        ({"user_exists": "yes"}, "ho•••"),
+        ({"user_exists": True}, "hostile-secret"),
+    ],
+)
+async def test_settings_changed_event_masks_attacked_username(
+    hass: HomeAssistant,
+    notifier: Notifier,
+    details: dict[str, object],
+    expected: str,
+) -> None:
+    """An attacked username is shown in full only for an existing user."""
+    events = async_capture_events(hass, "electric_fence_settings_changed")
+    notifier.on_record(
+        SettingsChange(
+            ts=dt_util.utcnow(),
+            kind=ChangeKind.LOGIN_PROTECTION,
+            action=ChangeAction.ATTACK_STARTED,
+            target_id=None,
+            target_name="hostile-secret",
+            details=details,
+            actor_user_id=None,
+            actor_name=None,
+            actor_ip=None,
+        )
+    )
+    await hass.async_block_till_done()
+    assert events[0].data["target_name"] == expected
+
+
+def test_throttled_reason_text() -> None:
+    """A refused attempt reads as too many attempts."""
+    assert REASON_TEXT[LoginReason.THROTTLED] == "too many attempts"
+
+
 async def test_notification_text_masks_and_counts(
     hass: HomeAssistant, notifier: Notifier, store: FenceStore
 ) -> None:
@@ -382,6 +425,7 @@ async def test_notification_off_creates_nothing(
     """With notifications off, events still fire and no notification exists."""
     assert await async_setup_component(hass, "persistent_notification", {})
     runtime = make_runtime(hass, store)
+    runtime.alerts = Alerter(hass, runtime)
     runtime.settings = Settings(notify_failed_login=False)
     notifier = Notifier(hass, runtime)
     events = async_capture_events(hass, "electric_fence_login_failed")
@@ -585,3 +629,49 @@ async def test_event_changed_ignores_non_list(
     )
     await hass.async_block_till_done()
     assert events[0].data["changed"] == []
+
+
+async def test_new_country_event(hass: HomeAssistant, notifier: Notifier) -> None:
+    """A confirmed new-country login fires its event with the count."""
+    user = await create_hass_user(hass, "alice", "pw-123456")
+    events = async_capture_events(hass, "electric_fence_new_country_login")
+    ok = attempt(
+        result=LoginResult.SUCCESS,
+        reason=LoginReason.OK,
+        user_exists=UserExists.YES,
+        user_id=user.id,
+        new_country=True,
+        known_countries_before=2,
+    )
+    notifier.on_record(ok)
+    notifier.on_record(replace(ok, confirmed=False))
+    notifier.on_record(replace(ok, new_country=False))
+    await hass.async_block_till_done()
+    assert [e.data for e in events] == [
+        {
+            "user_id": user.id,
+            "username": "alice",
+            "ip": "203.0.113.7",
+            "country": "RU",
+            "hostname": "host.example.net",
+            "previous_countries_count": 2,
+        }
+    ]
+
+
+async def test_new_country_calls_alerts(hass: HomeAssistant, store: FenceStore) -> None:
+    """The alerts sender is called when present; its errors are contained."""
+    alerts = Mock()
+    alerts.new_country.side_effect = RuntimeError("boom")
+    runtime = make_runtime(hass, store)
+    runtime.alerts = alerts
+    notifier = Notifier(hass, runtime)
+    ok = attempt(
+        result=LoginResult.SUCCESS,
+        reason=LoginReason.OK,
+        user_id="u1",
+        new_country=True,
+    )
+    notifier.on_record(ok)
+    await hass.async_block_till_done()
+    alerts.new_country.assert_called_once_with(ok)

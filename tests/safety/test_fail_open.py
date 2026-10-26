@@ -40,7 +40,10 @@ from custom_components.electric_fence.collectors.core_config import CoreConfigCo
 from custom_components.electric_fence.collectors.login import LoginCollector
 from custom_components.electric_fence.collectors.users import UserCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
+from custom_components.electric_fence.models import LoginReason, LoginResult
 from custom_components.electric_fence.notifier import Notifier
+from custom_components.electric_fence.protection.policy import IpPolicy
+from custom_components.electric_fence.protection.throttle import UsernameGuard
 from custom_components.electric_fence.sensor import FailedLoginsSensor
 from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.worker import FenceWorker
@@ -86,6 +89,9 @@ CASES: dict[str, Patches] = {
     "users_credentials": ((UserCollector, "_record_credential_change"),),
     "attribution_enter": ((ActionScope, "__init__"),),
     "attribution_exit": ((ActionScope, "close"),),
+    "username_gate": ((UsernameGuard, "async_enter"),),
+    "ip_policy": ((IpPolicy, "on_attempt"),),
+    "username_guard_attempt": ((UsernameGuard, "on_attempt"),),
     "worker_submit": ((FenceWorker, "submit"),),
     "worker_confirm": ((FenceWorker, "confirm_success"),),
     "notifier_on_record": ((Notifier, "on_record"),),
@@ -488,3 +494,26 @@ async def test_failing_entry_point_is_reached(env: Env, case: str) -> None:
         return
     missing = sorted(_expected_keys(case) - {k for k, n in calls.items() if n > 0})
     assert not missing, (missing, calls)
+
+
+async def test_gate_error_fails_open(env: Env) -> None:
+    """With the slow-down failing during an attack, the login still succeeds."""
+    await _setup_fence(env.hass)
+    entry = env.hass.config_entries.async_loaded_entries(DOMAIN)[0]
+    guard = entry.runtime_data.username_guard
+    for i in range(10):
+        guard.on_attempt(
+            "alice",
+            f"198.51.100.{i % 3 + 1}",
+            LoginResult.FAILED,
+            LoginReason.WRONG_PASSWORD,
+        )
+    assert guard.active_attacks()
+    with patch.object(
+        UsernameGuard, "async_enter", side_effect=RuntimeError("fail-open test")
+    ) as enter:
+        step, status, token, api_status, _ = await _successful_login(env)
+    assert enter.called
+    assert step["type"] == "create_entry"
+    assert (status, api_status) == (200, 200)
+    assert token["token_type"] == "Bearer"

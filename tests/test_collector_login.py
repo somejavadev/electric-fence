@@ -2,12 +2,15 @@
 
 # ruff: noqa: SLF001
 
+import asyncio
+from collections.abc import Iterator
 from ipaddress import ip_address
+import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
-from aiohttp import web
+from aiohttp import ClientResponse, web
 from aiohttp.test_utils import TestClient
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -18,7 +21,7 @@ from pytest_homeassistant_custom_component.common import (
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.electric_fence import COLLECTOR_TYPES
-from custom_components.electric_fence.collectors.login import LoginCollector
+from custom_components.electric_fence.collectors.login import LoginCollector, _FlowMemo
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.models import (
     LoginReason,
@@ -27,9 +30,20 @@ from custom_components.electric_fence.models import (
     UserExists,
 )
 from custom_components.electric_fence.notifier import EVENT_LOGIN_FAILED
+from custom_components.electric_fence.protection import throttle as throttle_module
+from custom_components.electric_fence.protection.policy import IpPolicy
+from custom_components.electric_fence.protection.throttle import (
+    BASE_DELAY,
+    MAX_WAITING,
+    THROTTLE_MESSAGE,
+    Refused,
+    UsernameGuard,
+)
 from custom_components.electric_fence.settings import Settings
 from homeassistant.auth import auth_manager_from_config
 from homeassistant.auth.models import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
+from homeassistant.auth.providers.homeassistant import HassAuthProvider
+from homeassistant.components.http.ban import KEY_BAN_MANAGER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, UnknownFlow, UnknownHandler
 from homeassistant.helpers.http import current_request
@@ -41,6 +55,7 @@ from tests.helpers import (
     dump_db,
     flush_worker,
     login_flow,
+    setup_forwarded_http,
     store_rows,
 )
 
@@ -905,21 +920,532 @@ async def test_records_carry_enum_values(
     assert submitted[0].flow_id is not None
 
 
-async def test_will_block_mirrors_worker_rules(
+async def test_block_reason_mirrors_worker_rules(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
-    """The request mark predicts the worker's block rules, from memory."""
+    """The block prediction follows the worker's block rules, from memory."""
     collector = _collector(hass)
     alice = await create_hass_user(hass, "alice", "right")
     credentials = alice.credentials[0]
-    assert not collector._will_block(None, Source.REMOTE)
-    assert not collector._will_block(Mock(id="unlinked"), Source.REMOTE)
-    assert not collector._will_block(credentials, Source.REMOTE)
+    assert collector._block_reason(None, Source.REMOTE) is None
+    assert collector._block_reason(Mock(id="unlinked"), Source.REMOTE) is None
+    assert collector._block_reason(credentials, Source.REMOTE) is None
     await hass.auth.async_update_user(alice, local_only=True)
-    assert not collector._will_block(credentials, Source.LOCAL)
-    assert collector._will_block(credentials, Source.REMOTE)
+    assert collector._block_reason(credentials, Source.LOCAL) is None
+    assert (
+        collector._block_reason(credentials, Source.REMOTE)
+        is LoginReason.BLOCKED_LOCAL_ONLY
+    )
     with patch(
         "custom_components.electric_fence.collectors.login.auth_users",
         return_value=None,
     ):
-        assert not collector._will_block(credentials, Source.REMOTE)
+        assert collector._block_reason(credentials, Source.REMOTE) is None
+
+
+FORWARDED_IP = "203.0.113.9"
+FAIL_EXISTS = (LoginResult.FAILED, LoginReason.WRONG_PASSWORD, UserExists.YES)
+BLOCKED_LOCAL = (LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY, UserExists.YES)
+BLOCKED_INACTIVE = (LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE, UserExists.YES)
+XFF = {"X-Forwarded-For": FORWARDED_IP}
+ATTACK_IPS = ("198.51.100.1", "198.51.100.2", "198.51.100.3")
+
+
+def _guard(hass: HomeAssistant) -> UsernameGuard:
+    guard = _collector(hass).runtime.username_guard
+    assert guard is not None
+    return guard
+
+
+def _policy(hass: HomeAssistant) -> IpPolicy:
+    policy = _collector(hass).runtime.ip_policy
+    assert policy is not None
+    return policy
+
+
+def _attack(hass: HomeAssistant, username: str = "alice") -> UsernameGuard:
+    """Start an attack on `username` from three outside addresses."""
+    guard = _guard(hass)
+    for i in range(10):
+        guard.on_attempt(
+            username,
+            ATTACK_IPS[i % len(ATTACK_IPS)],
+            LoginResult.FAILED,
+            LoginReason.WRONG_PASSWORD,
+        )
+    assert [a.username for a in guard.active_attacks()] == [username]
+    return guard
+
+
+@pytest.fixture
+def sleeps() -> Iterator[list[float]]:
+    """Record the slow-down delays instead of sleeping."""
+    durations: list[float] = []
+
+    async def fake(delay: float) -> None:
+        durations.append(delay)
+
+    with patch.object(throttle_module, "_sleep", fake):
+        yield durations
+
+
+async def _start_flow(client: Client) -> str:
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers=XFF,
+    )
+    assert resp.status == 200
+    return str((await resp.json())["flow_id"])
+
+
+async def _step(
+    client: Client, flow_id: str, username: str, password: str
+) -> ClientResponse:
+    return await client.post(
+        f"/auth/login_flow/{flow_id}",
+        json={"client_id": CLIENT_ID, "username": username, "password": password},
+        headers=XFF,
+    )
+
+
+async def test_refused_returns_403_message(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+    sleeps: list[float],
+) -> None:
+    """With the queue full, the step is refused with a 403 the frontend shows."""
+    await setup_forwarded_http(hass)
+    await create_hass_user(hass, "alice", "right")
+    await _setup(hass, monkeypatch)
+    guard = _attack(hass)
+    attack = guard._attacks["alice"]
+    attack.waiting = MAX_WAITING
+    client = await hass_client_no_auth()
+    flow_id = await _start_flow(client)
+
+    with patch.object(
+        HassAuthProvider, "async_validate_login", autospec=True
+    ) as validate:
+        resp = await _step(client, flow_id, " Alice ", "right")
+    assert resp.status == 403
+    assert await resp.json() == {"message": THROTTLE_MESSAGE}
+    validate.assert_not_called()
+    assert sleeps == []
+
+    # Counted as a failure by both policies.
+    assert attack.failures == 11
+    assert len(_policy(hass)._failures[FORWARDED_IP]) == 1
+    await flush_worker(hass)
+    (row,) = store_rows(hass)
+    assert (row.result, row.reason, row.username_typed, row.ip, row.source) == (
+        "failed",
+        "throttled",
+        " Alice ",
+        FORWARDED_IP,
+        "remote",
+    )
+    assert row.user_exists == "yes"
+    assert row.url == f"/auth/login_flow/{flow_id}"
+
+    # Core's in-progress mark is cleared: the same flow goes on once there's room.
+    attack.waiting = 0
+    resp = await _step(client, flow_id, "alice", "right")
+    assert resp.status == 200
+    assert (await resp.json())["type"] == "create_entry"
+    assert sleeps == [BASE_DELAY * 2]
+
+
+async def test_slowdown_before_core(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, sleeps: list[float]
+) -> None:
+    """During an attack the delay runs before Core's step, then the login goes on."""
+    await create_hass_user(hass, "alice", "right")
+    _attack(hass)
+    order: list[str] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        order.append("sleep")
+
+    original = HassAuthProvider.async_validate_login
+
+    async def validate(self: HassAuthProvider, username: str, password: str) -> None:
+        order.append("core")
+        await original(self, username, password)
+
+    flow = await hass.auth.login_flow.async_init(
+        ("homeassistant", None), context={"ip_address": ip_address(FORWARDED_IP)}
+    )
+    request = Mock(remote=FORWARDED_IP, path="/auth/login_flow/f", headers={})
+    token = current_request.set(request)
+    try:
+        with (
+            patch.object(throttle_module, "_sleep", fake_sleep),
+            patch.object(HassAuthProvider, "async_validate_login", validate),
+        ):
+            result = await hass.auth.login_flow.async_configure(
+                flow["flow_id"], {"username": "alice", "password": "right"}
+            )
+    finally:
+        current_request.reset(token)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert sleeps == [BASE_DELAY]
+    assert order == ["sleep", "core"]
+    # The slot was released: the next attempt doesn't wait for a lock.
+    assert not _guard(hass)._attacks["alice"].lock.locked()
+
+
+async def test_no_slowdown_outside_requests(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, sleeps: list[float]
+) -> None:
+    """Calls outside an HTTP request (other integrations, tests) never wait."""
+    await create_hass_user(hass, "alice", "right")
+    _attack(hass)
+    flow = await hass.auth.login_flow.async_init(
+        ("homeassistant", None), context={"ip_address": ip_address(FORWARDED_IP)}
+    )
+    with patch.object(UsernameGuard, "async_enter") as enter:
+        result = await hass.auth.login_flow.async_configure(
+            flow["flow_id"], {"username": "alice", "password": "right"}
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    enter.assert_not_called()
+    assert sleeps == []
+
+
+async def test_policy_fed(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Five wrong passwords from one outside address ban it through Core."""
+    await setup_forwarded_http(hass)
+    await create_hass_user(hass, "alice", "right")
+    await _setup(hass, monkeypatch)
+    client = await hass_client_no_auth()
+    for _ in range(5):
+        result = await login_flow(client, "alice", "wrong", headers=XFF)
+        assert result["errors"] == {"base": "invalid_auth"}
+    await hass.async_block_till_done()
+    assert ip_address(FORWARDED_IP) in hass.http.app[KEY_BAN_MANAGER].ip_bans_lookup
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers=XFF,
+    )
+    assert resp.status == 403
+
+
+async def test_observe_feeds_policies(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Every queued attempt reaches both policies; a blocked success is BLOCKED."""
+    # The first user is the owner, who can't be deactivated.
+    await create_hass_user(hass, "owner", "right")
+    alice = await create_hass_user(hass, "alice", "right")
+    collector = _collector(hass)
+    runtime = collector.runtime
+    info = collector._flow_info_from(
+        {"handler": ("homeassistant", None), "context": {"ip_address": None}}
+    )
+    request = Mock(remote=FORWARDED_IP, path="/auth/login_flow/f", headers={})
+    token = current_request.set(request)
+    try:
+        with (
+            patch.object(runtime.ip_policy, "on_attempt") as ip_attempt,
+            patch.object(runtime.username_guard, "on_attempt") as name_attempt,
+        ):
+            collector._observe(
+                "f",
+                info,
+                {"username": " Alice "},
+                {"type": FlowResultType.FORM, "errors": {"base": "invalid_auth"}},
+            )
+            await hass.auth.async_update_user(alice, local_only=True)
+            collector._observe(
+                "g",
+                info,
+                {"username": "alice"},
+                {
+                    "type": FlowResultType.CREATE_ENTRY,
+                    "result": alice.credentials[0],
+                },
+            )
+            await hass.auth.async_update_user(alice, local_only=False, is_active=False)
+            collector._observe(
+                "h",
+                info,
+                {"username": "alice"},
+                {
+                    "type": FlowResultType.CREATE_ENTRY,
+                    "result": alice.credentials[0],
+                },
+            )
+            await hass.auth.async_update_user(alice, is_active=True)
+            collector._observe(
+                "i",
+                info,
+                {"username": "alice"},
+                {
+                    "type": FlowResultType.CREATE_ENTRY,
+                    "result": alice.credentials[0],
+                },
+            )
+    finally:
+        current_request.reset(token)
+    assert [c.args for c in ip_attempt.call_args_list] == [
+        (FORWARDED_IP, LoginResult.FAILED, LoginReason.WRONG_PASSWORD),
+        (FORWARDED_IP, LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY),
+        (FORWARDED_IP, LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE),
+        (FORWARDED_IP, LoginResult.SUCCESS, LoginReason.OK),
+    ]
+    assert [c.args for c in name_attempt.call_args_list] == [
+        (" Alice ", FORWARDED_IP, *FAIL_EXISTS),
+        ("alice", FORWARDED_IP, *BLOCKED_LOCAL),
+        ("alice", FORWARDED_IP, *BLOCKED_INACTIVE),
+        ("alice", FORWARDED_IP, LoginResult.SUCCESS, LoginReason.OK, UserExists.YES),
+    ]
+
+
+async def test_policies_counted_when_record_fails(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Both policies count the attempt even when building the record raises.
+
+    Also when the block lookup raises, and when one policy raises.
+    """
+    collector = _collector(hass)
+    runtime = collector.runtime
+    request = Mock(remote=FORWARDED_IP, path="/auth/login_flow/f", headers={})
+    token = current_request.set(request)
+    form = {"type": FlowResultType.FORM, "errors": {"base": "invalid_auth"}}
+    try:
+        with (
+            patch.object(runtime.ip_policy, "on_attempt") as ip_attempt,
+            patch.object(runtime.username_guard, "on_attempt") as name_attempt,
+        ):
+            with patch.object(runtime.worker, "submit", side_effect=RuntimeError):
+                collector._observe("f", None, {"username": "bob"}, form)
+            with patch.object(collector, "_block_reason", side_effect=RuntimeError):
+                collector._observe(
+                    "g",
+                    None,
+                    {"username": "bob"},
+                    {"type": FlowResultType.CREATE_ENTRY},
+                )
+            ip_attempt.side_effect = RuntimeError
+            collector._observe("h", None, {"username": "bob"}, form)
+    finally:
+        current_request.reset(token)
+    assert [c.args[1:] for c in ip_attempt.call_args_list] == [
+        (LoginResult.FAILED, LoginReason.INVALID_CREDENTIALS),
+        (LoginResult.SUCCESS, LoginReason.OK),
+        (LoginResult.FAILED, LoginReason.INVALID_CREDENTIALS),
+    ]
+    assert len(name_attempt.call_args_list) == 3
+
+
+async def test_observe_without_policies(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Attempts are still queued when the policies are missing."""
+    collector = _collector(hass)
+    runtime = collector.runtime
+    monkeypatch_values = (runtime.ip_policy, runtime.username_guard)
+    runtime.ip_policy = runtime.username_guard = None
+    submitted: list[Any] = []
+    try:
+        with patch.object(runtime.worker, "submit", submitted.append):
+            collector._observe(
+                "f",
+                None,
+                {"username": "a"},
+                {"type": FlowResultType.FORM, "errors": {"base": "invalid_auth"}},
+            )
+    finally:
+        runtime.ip_policy, runtime.username_guard = monkeypatch_values
+    assert len(submitted) == 1
+
+
+async def test_gate_uses_flow_memo_username(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A step without a username (MFA code) is gated by the flow's username."""
+    collector = _collector(hass)
+    collector._flows["f"] = _FlowMemo(username="alice")
+    info = collector._flow_info_from(
+        {"handler": None, "context": {"ip_address": ip_address(FORWARDED_IP)}}
+    )
+    original = AsyncMock(return_value={"type": FlowResultType.FORM})
+    wrapper = collector._wrap_configure(original)
+    request = Mock(remote="127.0.0.1", path="/auth/login_flow/f", headers={})
+    token = current_request.set(request)
+    try:
+        with (
+            patch.object(collector, "_flow_info", return_value=info),
+            patch.object(
+                UsernameGuard, "async_enter", AsyncMock(return_value=None)
+            ) as enter,
+        ):
+            await wrapper("f", {"code": "123456"})
+            await wrapper("g", None)
+            await wrapper(5)
+    finally:
+        current_request.reset(token)
+    assert [c.args for c in enter.call_args_list] == [
+        ("alice", FORWARDED_IP),
+        (None, FORWARDED_IP),
+        (None, FORWARDED_IP),
+    ]
+
+
+async def test_gate_ip_from_request(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Without flow details, the gate takes the IP from the request."""
+    collector = _collector(hass)
+    original = AsyncMock(return_value={"type": FlowResultType.FORM})
+    wrapper = collector._wrap_configure(original)
+    request = Mock(remote=FORWARDED_IP, path="/auth/login_flow/f", headers={})
+    token = current_request.set(request)
+    try:
+        with patch.object(
+            UsernameGuard, "async_enter", AsyncMock(return_value=None)
+        ) as enter:
+            await wrapper("unknown", {"username": "bob"})
+    finally:
+        current_request.reset(token)
+    enter.assert_awaited_once_with("bob", FORWARDED_IP)
+
+
+async def test_gate_without_guard(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """With no username guard the step goes straight to Core."""
+    collector = _collector(hass)
+    runtime = collector.runtime
+    guard, runtime.username_guard = runtime.username_guard, None
+    original = AsyncMock(return_value={"type": FlowResultType.FORM})
+    wrapper = collector._wrap_configure(original)
+    token = current_request.set(Mock(remote=FORWARDED_IP, path="/", headers={}))
+    try:
+        assert await wrapper("f", {"username": "bob"}) == {"type": FlowResultType.FORM}
+    finally:
+        current_request.reset(token)
+        runtime.username_guard = guard
+
+
+@pytest.mark.parametrize("error", [RuntimeError("boom"), ValueError()])
+async def test_gate_error_goes_to_core(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    error: Exception,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An error in the gate is logged without details; Core's step still runs."""
+    collector = _collector(hass)
+    original = AsyncMock(return_value={"type": FlowResultType.FORM})
+    wrapper = collector._wrap_configure(original)
+    token = current_request.set(Mock(remote=FORWARDED_IP, path="/", headers={}))
+    try:
+        with patch.object(UsernameGuard, "async_enter", side_effect=error):
+            assert await wrapper("f", {"username": "secret-name"}) == {
+                "type": FlowResultType.FORM
+            }
+    finally:
+        current_request.reset(token)
+    original.assert_awaited_once()
+    assert "secret-name" not in caplog.text
+    assert type(error).__name__ in caplog.text
+
+
+async def test_slot_released_when_core_raises(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Core's exception passes through unchanged and the slot is released."""
+    collector = _collector(hass)
+    slot = Mock()
+    original = AsyncMock(side_effect=UnknownFlow)
+    wrapper = collector._wrap_configure(original)
+    token = current_request.set(Mock(remote=FORWARDED_IP, path="/", headers={}))
+    try:
+        with (
+            patch.object(UsernameGuard, "async_enter", AsyncMock(return_value=slot)),
+            pytest.raises(UnknownFlow),
+        ):
+            await wrapper("f", {"username": "bob"})
+    finally:
+        current_request.reset(token)
+    slot.release.assert_called_once_with()
+
+
+async def test_slot_release_error_keeps_result(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A failing release never replaces Core's result."""
+    collector = _collector(hass)
+    slot = Mock()
+    slot.release.side_effect = RuntimeError
+    result = {"type": FlowResultType.FORM}
+    wrapper = collector._wrap_configure(AsyncMock(return_value=result))
+    token = current_request.set(Mock(remote=FORWARDED_IP, path="/", headers={}))
+    try:
+        with patch.object(UsernameGuard, "async_enter", AsyncMock(return_value=slot)):
+            assert await wrapper("f", {"username": "bob"}) is result
+    finally:
+        current_request.reset(token)
+
+
+async def test_gate_cancellation_propagates(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A cancelled wait is not swallowed, and Core's step doesn't run."""
+    collector = _collector(hass)
+    original = AsyncMock()
+    wrapper = collector._wrap_configure(original)
+    token = current_request.set(Mock(remote=FORWARDED_IP, path="/", headers={}))
+    try:
+        with (
+            patch.object(
+                UsernameGuard,
+                "async_enter",
+                AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await wrapper("f", {"username": "bob"})
+    finally:
+        current_request.reset(token)
+    original.assert_not_awaited()
+
+
+async def test_refused_record_error_still_403(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """If recording the refusal fails, the 403 is still returned."""
+    collector = _collector(hass)
+    original = AsyncMock()
+    wrapper = collector._wrap_configure(original)
+    token = current_request.set(Mock(remote=FORWARDED_IP, path="/", headers={}))
+    try:
+        with (
+            patch.object(UsernameGuard, "async_enter", side_effect=Refused),
+            patch.object(collector, "_observe_refused", side_effect=RuntimeError),
+            pytest.raises(web.HTTPForbidden) as err,
+        ):
+            await wrapper("f", {"username": "bob"})
+    finally:
+        current_request.reset(token)
+    assert json.loads(err.value.text or "") == {"message": THROTTLE_MESSAGE}
+    assert err.value.content_type == "application/json"
+    original.assert_not_awaited()

@@ -23,6 +23,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .. import attribution
+from ..failopen import reraise
 from ..hooks import wrap_async_method
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..privacy import sanitise_text
@@ -164,7 +165,18 @@ class UserCollector(BaseCollector):
         if not isinstance(user_id, str):
             return
         old = self._users.pop(user_id, None)
+        self.hass.async_create_task(
+            self._forget_countries(user_id), "electric_fence forget countries"
+        )
         self._record(ChangeAction.REMOVED, user_id, old.name if old else None, {})
+
+    async def _forget_countries(self, user_id: str) -> None:
+        try:
+            await self.hass.async_add_executor_job(
+                self.runtime.store.forget_user_countries, user_id
+            )
+        except Exception as err:  # noqa: BLE001
+            self.guard.call(reraise, err)
 
     # Provider wrappers.
 

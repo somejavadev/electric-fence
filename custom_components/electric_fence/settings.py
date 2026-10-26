@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from datetime import timedelta
 import math
 from typing import Any, Literal
 
@@ -18,24 +19,52 @@ class Settings:
     maxmind_license_key: str | None = None
     reverse_dns: bool = True
     record_values: bool = False
+    auto_ban: bool = True
+    ban_threshold: int = 5
+    ban_window_minutes: int = 15
+    ban_hours: int = 24
+    ban_repeat_offenders: bool = False
+    username_protection: bool = True
+    attack_threshold: int = 10
+    attack_min_ips: int = 3
+    attack_window_minutes: int = 15
+    notify_ip_banned: bool = True
+    notify_username_attack: bool = True
+    notify_new_country: bool = True
+    notify_ban_ended: bool = False
+    notify_targets: tuple[str, ...] = ()
+
+    @property
+    def trusted_window(self) -> timedelta:
+        """Return how long after a success an IP is never auto-banned."""
+        return timedelta(hours=self.ban_hours or 24)
 
     @classmethod
     def from_options(cls, options: Mapping[str, Any]) -> Settings:
         """Build settings from stored options.
 
         Unknown keys are ignored. A value of the wrong type or out of range
-        falls back to its default; retention is clamped to 1..3650.
+        falls back to its default; numbers are clamped to their range.
         """
         d = cls()
-        retention = options.get("retention_days", d.retention_days)
-        if (
-            isinstance(retention, bool)
-            or not isinstance(retention, int | float)
-            or not math.isfinite(retention)
-        ):
-            retention = d.retention_days
-        else:
-            retention = min(max(int(retention), 1), 3650)
+
+        def number(key: str, low: int, high: int) -> int:
+            value = options.get(key, getattr(d, key))
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+            ):
+                value = getattr(d, key)
+            return min(max(int(value), low), high)
+
+        def targets() -> tuple[str, ...]:
+            value = options.get("notify_targets")
+            if not isinstance(value, list | tuple):
+                return d.notify_targets
+            return tuple(
+                v for v in value if isinstance(v, str) and v.startswith("notify.")
+            )
 
         def flag(key: str) -> bool:
             value = options.get(key)
@@ -52,12 +81,26 @@ class Settings:
         return cls(
             notify_failed_login=flag("notify_failed_login"),
             ha_login_notification=choice("ha_login_notification", ("replace", "keep")),
-            retention_days=retention,
+            retention_days=number("retention_days", 1, 3650),
             geoip_provider=choice("geoip_provider", ("dbip_lite", "maxmind", "none")),
             maxmind_account_id=text("maxmind_account_id"),
             maxmind_license_key=text("maxmind_license_key"),
             reverse_dns=flag("reverse_dns"),
             record_values=flag("record_values"),
+            auto_ban=flag("auto_ban"),
+            ban_threshold=number("ban_threshold", 1, 100),
+            ban_window_minutes=number("ban_window_minutes", 1, 1440),
+            ban_hours=number("ban_hours", 0, 8760),
+            ban_repeat_offenders=flag("ban_repeat_offenders"),
+            username_protection=flag("username_protection"),
+            attack_threshold=number("attack_threshold", 2, 1000),
+            attack_min_ips=number("attack_min_ips", 1, 100),
+            attack_window_minutes=number("attack_window_minutes", 1, 1440),
+            notify_ip_banned=flag("notify_ip_banned"),
+            notify_username_attack=flag("notify_username_attack"),
+            notify_new_country=flag("notify_new_country"),
+            notify_ban_ended=flag("notify_ban_ended"),
+            notify_targets=targets(),
         )
 
     def to_options(self) -> dict[str, Any]:

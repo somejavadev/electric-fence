@@ -9,6 +9,8 @@ import type { ActivityFilters } from "../src/views/ef-activity.ts";
 import { EfAudit, matchesChange } from "../src/views/ef-audit.ts";
 import type { AuditFilters } from "../src/views/ef-audit.ts";
 import { EfSettings } from "../src/views/ef-settings.ts";
+import { EfChangeRow } from "../src/components/ef-change-row.ts";
+import { changeSentence } from "../src/strings.ts";
 import { EfUsers } from "../src/views/ef-users.ts";
 import { LIVE_CAP, REFRESH_DELAY_MS } from "../src/views/live-view.ts";
 import type { LoginItem, Status, UserItem } from "../src/types.ts";
@@ -392,8 +394,10 @@ describe("ef-settings", () => {
       once: true,
     });
     const el = await mount<EfSettings>("ef-settings", withStatus(status()));
-    const button = el.shadowRoot?.querySelector("button");
-    expect(button?.textContent.trim()).toBe("Open settings");
+    const button = [...(el.shadowRoot?.querySelectorAll("button") ?? [])].find(
+      (b) => b.textContent.trim() === "Open settings",
+    );
+    expect(button).toBeDefined();
     button?.click();
     expect(location.pathname).toBe(
       "/config/integrations/integration/electric_fence",
@@ -472,6 +476,8 @@ describe("audit details use the real backend shapes", () => {
       "Analytics",
       "Logging",
       "Recorder",
+      "IP bans",
+      "Login protection",
     ]);
   });
 
@@ -974,5 +980,263 @@ describe("ef-login-row", () => {
     expect(unconfirmed.querySelector(".details")?.textContent).toContain(
       "Unconfirmed",
     );
+  });
+});
+
+describe("protection in Activity", () => {
+  async function row(item: Partial<LoginItem>): Promise<ShadowRoot> {
+    const el = document.createElement("ef-login-row");
+    el.hass = fakeApi({}).hass;
+    el.variant = item.result === "success" ? "success" : "failed";
+    el.detailed = true;
+    el.item = login(item);
+    document.body.append(el);
+    await el.updateComplete;
+    return el.shadowRoot as ShadowRoot;
+  }
+
+  const tags = (root: ShadowRoot) =>
+    [...root.querySelectorAll(".tag")].map((t) => t.textContent.trim());
+
+  it("activity new country tag", async () => {
+    const root = await row({
+      result: "success",
+      reason: "ok",
+      confirmed: true,
+      new_country: true,
+      country_code: "BR",
+    });
+    expect(tags(root)).toContain("New country");
+    root.querySelector<HTMLButtonElement>("button.toggle")?.click();
+    await (root.host as EfLoginRow).updateComplete;
+    const details = root.querySelector(".details") as HTMLElement;
+    expect(details.textContent).toMatch(/Country\s*BR\s*New country/);
+    expect(details.querySelector("ef-flag")).not.toBeNull();
+    expect(tags(await row({ new_country: false }))).not.toContain(
+      "New country",
+    );
+  });
+
+  it("throttled reason label", async () => {
+    const root = await row({ reason: "throttled" });
+    expect(tags(root)).toContain("Too many attempts");
+  });
+});
+
+describe("Users details show flags", () => {
+  it("puts a flag next to the last login country", async () => {
+    const fake = fakeApi({ users: { items: [user()] } });
+    const el = await mount<EfUsers>("ef-users", fake);
+    el.shadowRoot?.querySelector<HTMLButtonElement>("button.user")?.click();
+    await settle(el);
+    const line = el.shadowRoot?.querySelector("dialog p.last-login");
+    const flag = line?.querySelector("ef-flag") as unknown as {
+      code: string;
+    } | null;
+    expect(flag?.code).toBe("RU");
+  });
+});
+
+describe("protection in Settings", () => {
+  const rows = (root: ShadowRoot) =>
+    Object.fromEntries(
+      [...root.querySelectorAll("tr")].map((tr) => [
+        tr.querySelector("th")?.textContent.trim(),
+        tr.querySelector("td")?.textContent.replace(/\s+/g, " ").trim(),
+      ]),
+    );
+
+  it("shows the ban, username and notification settings read-only", async () => {
+    const s = status();
+    s.settings.notify_targets = ["notify.mobile_app_anna", "notify.bo"];
+    s.settings.ban_hours = 0;
+    const el = await mount<EfSettings>("ef-settings", fakeApi({ status: s }));
+    const root = el.shadowRoot as ShadowRoot;
+    const headings = [...root.querySelectorAll("section h2")].map((h) =>
+      h.textContent.trim(),
+    );
+    expect(headings).toEqual(
+      expect.arrayContaining([
+        "Bans",
+        "Username protection",
+        "Notifications",
+        "Known countries",
+      ]),
+    );
+    const r = rows(root);
+    expect(r["Ban automatically"]).toBe("On");
+    expect(r["Ban after"]).toBe("5 failed attempts within 15 min");
+    expect(r["Ban length"]).toBe("Permanent");
+    expect(r["Lengthen bans for repeat offenders"]).toBe("Off");
+    expect(r["Protect usernames"]).toBe("On");
+    expect(r["Slow down after"]).toBe(
+      "10 failed attempts from at least 3 addresses within 15 min",
+    );
+    expect(r["IP address banned"]).toBe("On");
+    expect(r["Ban ended"]).toBe("Off");
+    expect(r["Login from a new country"]).toBe("On");
+    expect(r["Username under attack"]).toBe("On");
+    expect(r["Phone notifications"]).toBe("notify.mobile_app_anna, notify.bo");
+    expect(root.querySelector("input, select, textarea")).toBeNull();
+  });
+
+  it("shows ban length in hours and no phone targets as None", async () => {
+    const el = await mount<EfSettings>(
+      "ef-settings",
+      fakeApi({ status: status() }),
+    );
+    const r = rows(el.shadowRoot as ShadowRoot);
+    expect(r["Ban length"]).toBe("24 h");
+    expect(r["Phone notifications"]).toBe("None");
+  });
+
+  it("clears known countries only after confirming", async () => {
+    const fake = fakeApi({ status: status(), clear_countries: { cleared: 4 } });
+    const el = await mount<EfSettings>("ef-settings", fake);
+    const root = el.shadowRoot as ShadowRoot;
+    const button = [...root.querySelectorAll("button")].find(
+      (b) => b.textContent.trim() === "Clear known countries",
+    );
+    button?.click();
+    await settle(el);
+    expect(fake.of("clear_countries")).toHaveLength(0);
+    const confirmEl = root.querySelector("ef-confirm-dialog") as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await confirmEl.updateComplete;
+    const confirm = confirmEl.shadowRoot as ShadowRoot;
+    expect(confirm.querySelector("dialog")?.open).toBe(true);
+    confirm.querySelector<HTMLButtonElement>("button.confirm")?.click();
+    await settle(el);
+    await settle(el);
+    expect(fake.of("clear_countries")).toEqual([
+      { type: "electric_fence/clear_countries" },
+    ]);
+    expect(root.querySelector("ef-confirm-dialog")).toBeNull();
+    expect(root.querySelector("[role=status]")?.textContent).toContain(
+      "Known countries cleared",
+    );
+  });
+});
+
+describe("protection changes in the Audit", () => {
+  const ipBan = (action: string, details: Record<string, unknown> = {}) =>
+    change({
+      kind: "ip_ban",
+      action,
+      target_id: "203.0.113.9",
+      target_name: null,
+      details,
+      actor_ip: null,
+    });
+  const guard = (action: string, details: Record<string, unknown> = {}) =>
+    change({
+      kind: "login_protection",
+      action,
+      target_id: null,
+      target_name: "admin",
+      details,
+      actor_ip: null,
+    });
+
+  it.each([
+    [ipBan("banned"), "banned 203.0.113.9"],
+    [ipBan("unbanned"), "unbanned 203.0.113.9"],
+    [ipBan("expired"), "ban of 203.0.113.9 expired"],
+    [ipBan("removed"), "ban of 203.0.113.9 was removed from ip_bans.yaml"],
+    [guard("attack_started"), "username admin came under attack"],
+    [guard("attack_ended"), "attack on admin ended"],
+    [guard("slowdown_ended"), "ended the slow-down for admin"],
+    [
+      change({
+        kind: "login_protection",
+        action: "countries_cleared",
+        target_id: null,
+        target_name: null,
+      }),
+      "cleared known login countries",
+    ],
+  ])("protection sentence %#", (item, sentence) => {
+    expect(changeSentence(item)).toBe(sentence);
+  });
+
+  async function row(item: ReturnType<typeof change>): Promise<ShadowRoot> {
+    const el = document.createElement("ef-change-row");
+    el.hass = fakeApi({}).hass;
+    el.item = item;
+    el.details = true;
+    document.body.append(el);
+    await el.updateComplete;
+    return el.shadowRoot as ShadowRoot;
+  }
+
+  it("shows the ban's details", async () => {
+    const root = await row(
+      ipBan("banned", {
+        failures: 5,
+        expires_at: "2026-10-25T09:00:00+00:00",
+        ban_number: 2,
+      }),
+    );
+    const text = root.querySelector(".details")?.textContent ?? "";
+    expect(text).toMatch(/Failed attempts:\s*5/);
+    expect(text).toMatch(/Expires:\s*Oct 25, 2026/);
+    expect(text).toMatch(/Ban number:\s*2/);
+    const never = await row(
+      ipBan("banned", { failures: 5, expires_at: null, ban_number: 4 }),
+    );
+    expect(never.querySelector(".details")?.textContent).toMatch(
+      /Expires:\s*Never/,
+    );
+  });
+
+  it("shows the attack's details", async () => {
+    const root = await row(
+      guard("slowdown_ended", {
+        failures: 14,
+        ip_count: 4,
+        countries: ["CN", "RU"],
+        reason: "ended_by_user",
+      }),
+    );
+    const text = root.querySelector(".details")?.textContent ?? "";
+    expect(text).toMatch(/Failed attempts:\s*14/);
+    expect(text).toMatch(/Addresses:\s*4/);
+    expect(text).toMatch(/Countries:\s*CN, RU/);
+    expect(text).toMatch(/How it ended:\s*Ended by a user/);
+  });
+
+  it("shows no unknown IP chip for protection changes", async () => {
+    expect((await row(ipBan("unbanned"))).textContent).not.toContain(
+      "unknown IP",
+    );
+    expect((await row(guard("attack_started"))).textContent).not.toContain(
+      "unknown IP",
+    );
+    expect((await row(change({ actor_ip: null }))).textContent).toContain(
+      "unknown IP",
+    );
+    expect(EfChangeRow).toBeTruthy();
+  });
+
+  it("the Audit list shows the details lines too", async () => {
+    const fake = fakeApi({
+      changes: {
+        items: [
+          {
+            ...ipBan("banned", {
+              failures: 5,
+              expires_at: null,
+              ban_number: 1,
+            }),
+            id: 9,
+          },
+        ],
+        next_before_id: null,
+      },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", fake);
+    expect(el.shadowRoot?.textContent).toMatch(/Ban number:\s*1/);
   });
 });

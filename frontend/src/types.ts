@@ -31,7 +31,8 @@ export type LoginReason =
   | "wrong_2fa_code"
   | "invalid_token"
   | "blocked_inactive_user"
-  | "blocked_local_only";
+  | "blocked_local_only"
+  | "throttled";
 
 export type Source = "local" | "remote" | "cloud";
 
@@ -60,6 +61,8 @@ export interface LoginItem {
   mfa_module: string | null;
   confirmed: boolean;
   count: number;
+  /** A confirmed success from a country this user never logged in from. */
+  new_country: boolean;
 }
 
 export type KnownChangeKind =
@@ -71,7 +74,9 @@ export type KnownChangeKind =
   | "network"
   | "analytics"
   | "logger"
-  | "recorder";
+  | "recorder"
+  | "ip_ban"
+  | "login_protection";
 
 /** A kind from a newer or older database may be any string. */
 export type ChangeKind = KnownChangeKind | (string & Record<never, never>);
@@ -89,6 +94,13 @@ export type ChangeAction =
   | "confirmed"
   | "purged"
   | "withdrawn"
+  | "banned"
+  | "unbanned"
+  | "expired"
+  | "attack_started"
+  | "attack_ended"
+  | "slowdown_ended"
+  | "countries_cleared"
   | (string & Record<never, never>);
 
 /** A stored settings change. A null `actor_user_id` means System. */
@@ -123,8 +135,16 @@ export type PostureItem =
       "admins_without_mfa",
       { users: { id: string; name: string | null }[] }
     >
-  /** `threshold: null` means ban handling is off entirely. */
-  | PostureBase<"auto_ban_off", { threshold: number | null }>
+  /**
+   * `threshold` is Core's own login limit (null: off); `electric_fence` is
+   * whether Electric Fence's auto-ban is on and can ban.
+   */
+  | PostureBase<
+      "auto_ban_off",
+      { threshold: number | null; electric_fence: boolean }
+    >
+  /** Core's IP ban is off, so nothing can be banned. */
+  | PostureBase<"ip_ban_disabled", Record<string, never>>
   | PostureBase<
       "proxy_suspected",
       {
@@ -184,11 +204,69 @@ export interface GeoStatus {
   attribution: string | null;
 }
 
+export type BanSource = "electric_fence" | "other";
+
+export type BanEndReason = "expired" | "unbanned" | "removed";
+
+/** An IP ban, active or ended. "other" bans have no counts. */
+export interface BanItem {
+  ip: string;
+  source: BanSource;
+  banned_at: string;
+  /** Null: permanent. */
+  expires_at: string | null;
+  failures: number | null;
+  ban_number: number | null;
+  country_code: string | null;
+  /** Raw text from reverse DNS: render as text only. */
+  hostname: string | null;
+  ended_at: string | null;
+  end_reason: BanEndReason | null;
+  /** Who unbanned it; null when not by a user. */
+  ended_by_name: string | null;
+}
+
+export type BanState = "active" | "history";
+
+/** `reason` says why bans cannot be applied right now. */
+export interface BansPage extends Page<BanItem> {
+  available: boolean;
+  reason:
+    | "not_loaded"
+    | "contracts"
+    | "ip_ban_disabled"
+    | "backend_error"
+    | (string & {})
+    | null;
+}
+
+/** A username under attack. */
+export interface AttackItem {
+  /** Raw attacker-controlled text: render as text only. */
+  username: string;
+  started_at: string;
+  ended_at: string | null;
+  failures: number;
+  ip_count: number;
+  countries: string[];
+  end_reason: "quiet" | "ended_by_user" | null;
+  active: boolean;
+}
+
+export interface Protection {
+  available: boolean;
+  active_bans: number;
+  bans_24h: number;
+  /** Active attacks only. */
+  attacks: AttackItem[];
+}
+
 export interface Overview {
   failed_24h: { count: number; items: LoginItem[] };
   changes_7d: { count: number; items: ChangeItem[] };
   recent_success: { items: LoginItem[] };
   posture: PostureItem[];
+  protection: Protection;
 }
 
 /** A `result` filter: one result, or failed and blocked together. */
@@ -230,6 +308,23 @@ export interface Status {
     geoip_provider: GeoProvider;
     maxmind_account_id: string | null;
     reverse_dns: boolean;
+    record_values: boolean;
+    auto_ban: boolean;
+    ban_threshold: number;
+    ban_window_minutes: number;
+    /** 0 means bans never expire. */
+    ban_hours: number;
+    ban_repeat_offenders: boolean;
+    username_protection: boolean;
+    attack_threshold: number;
+    attack_min_ips: number;
+    attack_window_minutes: number;
+    notify_ip_banned: boolean;
+    notify_username_attack: boolean;
+    notify_new_country: boolean;
+    notify_ban_ended: boolean;
+    /** Notify entity IDs. */
+    notify_targets: string[];
     maxmind_license_key_set: boolean;
   };
   geo: GeoStatus | null;

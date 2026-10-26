@@ -4,8 +4,10 @@
 
 from dataclasses import fields, replace
 from datetime import date, timedelta
+from ipaddress import ip_address
 import json
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
@@ -27,7 +29,8 @@ from custom_components.electric_fence.models import (
     Source,
     UserExists,
 )
-from custom_components.electric_fence.storage import ChangeRow, LoginRow
+from custom_components.electric_fence.protection.throttle import AttackView
+from custom_components.electric_fence.storage import ChangeFilter, ChangeRow, LoginRow
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from tests.helpers import create_hass_user, flush_worker, login_flow
@@ -42,7 +45,18 @@ COMMANDS = (
     "electric_fence/users",
     "electric_fence/status",
     "electric_fence/subscribe",
+    "electric_fence/bans",
+    "electric_fence/unban",
+    "electric_fence/attacks",
+    "electric_fence/end_slowdown",
+    "electric_fence/clear_countries",
 )
+ARGS: dict[str, dict[str, Any]] = {
+    "electric_fence/bans": {"state": "active"},
+    "electric_fence/unban": {"ip": "203.0.113.9"},
+    "electric_fence/attacks": {"state": "active"},
+    "electric_fence/end_slowdown": {"username": "admin"},
+}
 
 
 def attempt(**kw: Any) -> LoginAttempt:
@@ -129,7 +143,7 @@ async def test_non_admin_rejected(
     hass_admin_user.groups = []
     client = await hass_ws_client(hass)
     for cmd in COMMANDS:
-        msg = await call(client, cmd)
+        msg = await call(client, cmd, **ARGS.get(cmd, {}))
         assert not msg["success"], cmd
         assert msg["error"]["code"] == "unauthorized", cmd
 
@@ -139,7 +153,7 @@ async def test_not_loaded(hass: HomeAssistant, ws: MockHAClientWebSocket) -> Non
     for entry in hass.config_entries.async_entries("electric_fence"):
         assert await hass.config_entries.async_unload(entry.entry_id)
     for cmd in COMMANDS:
-        msg = await call(ws, cmd)
+        msg = await call(ws, cmd, **ARGS.get(cmd, {}))
         assert not msg["success"], cmd
         assert msg["error"]["code"] == "not_loaded", cmd
 
@@ -181,7 +195,13 @@ async def test_overview_shape_and_counts(
 
     res = await result(ws, "electric_fence/overview")
 
-    assert set(res) == {"failed_24h", "changes_7d", "recent_success", "posture"}
+    assert set(res) == {
+        "failed_24h",
+        "changes_7d",
+        "recent_success",
+        "posture",
+        "protection",
+    }
     failed = res["failed_24h"]
     # 6 single rows, one merged row of 3, one blocked; the 2-day-old row is out.
     assert failed["count"] == 10
@@ -514,7 +534,7 @@ async def test_status_redacts_license_key(
     assert res["settings"]["maxmind_license_key_set"] is True
     assert res["settings"]["maxmind_account_id"] == "123456"
     assert res["settings"]["retention_days"] == 90
-    assert res["version"] == "0.1.1"
+    assert res["version"] == "0.2.0"
     assert set(res["geo"]) == {"provider", "db_date", "last_error", "attribution"}
     names = [c["name"] for c in res["collectors"]]
     assert names == [c.name for c in runtime.collectors]
@@ -712,3 +732,291 @@ async def test_subscribe_ends_for_deactivated_admin(
     worker.submit(attempt())
     await flush_worker(hass)
     assert len(worker._listeners) == before
+
+
+BAN_KEYS = {
+    "ip",
+    "source",
+    "banned_at",
+    "expires_at",
+    "failures",
+    "ban_number",
+    "country_code",
+    "hostname",
+    "ended_at",
+    "end_reason",
+    "ended_by_name",
+}
+ATTACK_KEYS = {
+    "username",
+    "started_at",
+    "ended_at",
+    "failures",
+    "ip_count",
+    "countries",
+    "end_reason",
+    "active",
+}
+
+
+async def test_bans_lists_both_sources(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Active bans hold Electric Fence's and others; history pages the store."""
+    runtime = setup_entry.runtime_data
+    bans = runtime.bans
+    assert bans is not None
+    assert await bans.async_ban("203.0.113.9", 5, "RU", "bad.example")
+    await bans.backend.async_add(ip_address("203.0.113.50"))
+    assert await bans.async_ban("203.0.113.10", 5, None, None)
+    await bans.async_unban("203.0.113.10", "u1", "Alice")
+    await flush_worker(hass)
+
+    res = await result(ws, "electric_fence/bans", state="active")
+    assert res["available"] is True
+    assert res["reason"] is None
+    assert res["next_before_id"] is None
+    by_ip = {i["ip"]: i for i in res["items"]}
+    assert set(by_ip) == {"203.0.113.9", "203.0.113.50"}
+    ours, other = by_ip["203.0.113.9"], by_ip["203.0.113.50"]
+    assert set(ours) == BAN_KEYS
+    assert ours["source"] == "electric_fence"
+    assert ours["country_code"] == "RU"
+    assert ours["failures"] == 5
+    assert ours["ended_at"] is None
+    assert other["source"] == "other"
+    assert other["failures"] is None
+    assert other["expires_at"] is None
+
+    res = await result(ws, "electric_fence/bans", state="history", limit=1)
+    assert [i["ip"] for i in res["items"]] == ["203.0.113.10"]
+    item = res["items"][0]
+    assert set(item) == BAN_KEYS
+    assert item["end_reason"] == "unbanned"
+    assert item["ended_by_name"] == "Alice"
+    assert item["ended_at"] is not None
+    assert res["next_before_id"] is not None
+    res = await result(
+        ws,
+        "electric_fence/bans",
+        state="history",
+        limit=1,
+        before_id=res["next_before_id"],
+    )
+    assert res["items"] == []
+
+
+async def test_bans_unavailable(
+    setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Without a ban manager the list is empty with a reason."""
+    setup_entry.runtime_data.bans = None
+    res = await result(ws, "electric_fence/bans", state="active")
+    assert res == {
+        "available": False,
+        "reason": "not_loaded",
+        "items": [],
+        "next_before_id": None,
+    }
+    res = await result(ws, "electric_fence/bans", state="history")
+    assert res["available"] is False
+    assert res["items"] == []
+
+
+async def test_bans_backend_unavailable_reason(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """A manager that can't ban says why, and still lists what it has."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    bans.backend.health = lambda: "ip_ban_disabled"  # type: ignore[method-assign]
+    res = await result(ws, "electric_fence/bans", state="active")
+    assert res["available"] is False
+    assert res["reason"] == "ip_ban_disabled"
+
+
+async def test_unban_requires_admin(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """A user who is not an admin cannot unban."""
+    hass_admin_user.groups = []
+    client = await hass_ws_client(hass)
+    msg = await call(client, "electric_fence/unban", ip="203.0.113.9")
+    assert not msg["success"]
+    assert msg["error"]["code"] == "unauthorized"
+
+
+async def test_unban_audited_with_actor(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    hass_admin_user: MockUser,
+) -> None:
+    """An unban lifts the ban and records the admin as the actor."""
+    bans = setup_entry.runtime_data.bans
+    assert bans is not None
+    assert await bans.async_ban("203.0.113.9", 5, None, None)
+
+    res = await result(ws, "electric_fence/unban", ip="203.0.113.9")
+    assert res == {"unbanned": True}
+    assert await result(ws, "electric_fence/unban", ip="203.0.113.9") == {
+        "unbanned": False
+    }
+    await flush_worker(hass)
+
+    rows = await hass.async_add_executor_job(
+        lambda: setup_entry.runtime_data.store.query_changes(
+            ChangeFilter(kind=ChangeKind.IP_BAN)
+        )
+    )
+    unbanned = [r for r in rows if r.action == ChangeAction.UNBANNED]
+    assert len(unbanned) == 1
+    assert unbanned[0].actor_name == hass_admin_user.name
+    assert unbanned[0].actor_user_id == hass_admin_user.id
+
+
+async def test_unban_not_loaded_managers(
+    setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Mutations answer not_loaded when the managers are missing."""
+    runtime = setup_entry.runtime_data
+    runtime.bans = None
+    runtime.username_guard = None
+    for cmd in ("unban", "end_slowdown", "attacks"):
+        args = {"ip": "203.0.113.9"} if cmd == "unban" else {"username": "x"}
+        if cmd == "attacks":
+            msg = await call(ws, f"electric_fence/{cmd}", state="active")
+            assert msg["success"]
+            assert msg["result"] == {"items": []}
+            continue
+        msg = await call(ws, f"electric_fence/{cmd}", **args)
+        assert not msg["success"]
+        assert msg["error"]["code"] == "not_loaded"
+
+
+async def test_attacks_active_and_history(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Active attacks come from memory; history from the store."""
+    runtime = setup_entry.runtime_data
+    guard = runtime.username_guard
+    assert guard is not None
+    started = dt_util.utcnow()
+    guard.active_attacks = lambda: [  # type: ignore[method-assign]
+        AttackView("admin", started, 12, 4, ["RU", "CN"], 3)
+    ]
+    res = await result(ws, "electric_fence/attacks", state="active")
+    assert len(res["items"]) == 1
+    item = res["items"][0]
+    assert set(item) == ATTACK_KEYS
+    assert item["active"] is True
+    assert item["ended_at"] is None
+    assert item["end_reason"] is None
+    assert item["countries"] == ["RU", "CN"]
+    assert item["ip_count"] == 4
+
+    store_ = runtime.store
+
+    def seed() -> None:
+        attack_id = store_.add_attack("old", started - timedelta(hours=2))
+        store_.end_attack(attack_id, started - timedelta(hours=1), "quiet", None, None)
+
+    await hass.async_add_executor_job(seed)
+    res = await result(ws, "electric_fence/attacks", state="history")
+    assert [i["username"] for i in res["items"]] == ["old"]
+    assert res["items"][0]["active"] is False
+    assert res["items"][0]["end_reason"] == "quiet"
+    assert set(res["items"][0]) == ATTACK_KEYS
+
+
+async def test_end_slowdown(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    hass_admin_user: MockUser,
+) -> None:
+    """The username is mapped to its key and the admin is the actor."""
+    guard = setup_entry.runtime_data.username_guard
+    assert guard is not None
+    end = AsyncMock(return_value=True)
+    guard.async_end = end  # type: ignore[method-assign]
+
+    res = await result(ws, "electric_fence/end_slowdown", username="  Admin ")
+    assert res == {"ended": True}
+    end.assert_awaited_once_with("admin", hass_admin_user.id, hass_admin_user.name)
+
+    end.return_value = False
+    res = await result(ws, "electric_fence/end_slowdown", username="ghost")
+    assert res == {"ended": False}
+
+
+async def test_clear_countries(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    hass_admin_user: MockUser,
+) -> None:
+    """Known countries are forgotten and the admin's action is audited."""
+    store_ = setup_entry.runtime_data.store
+    await hass.async_add_executor_job(store_.note_country, "u1", "DE")
+    await hass.async_add_executor_job(store_.note_country, "u2", "FR")
+
+    res = await result(ws, "electric_fence/clear_countries")
+    assert res == {"cleared": 2}
+    assert await hass.async_add_executor_job(store_.known_countries, "u1") == []
+    await flush_worker(hass)
+
+    rows = await hass.async_add_executor_job(
+        lambda: store_.query_changes(ChangeFilter(kind=ChangeKind.LOGIN_PROTECTION))
+    )
+    assert [r.action for r in rows] == [ChangeAction.COUNTRIES_CLEARED]
+    assert rows[0].actor_name == hass_admin_user.name
+    assert rows[0].details == {"cleared": 2}
+
+
+async def test_overview_protection(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """The overview carries protection counts and the active attacks."""
+    runtime = setup_entry.runtime_data
+    assert runtime.bans is not None
+    assert await runtime.bans.async_ban("203.0.113.9", 5, None, None)
+    assert runtime.username_guard is not None
+    started = dt_util.utcnow()
+    runtime.username_guard.active_attacks = lambda: [  # type: ignore[method-assign]
+        AttackView("admin", started, 12, 4, ["RU"], None)
+    ]
+
+    res = await result(ws, "electric_fence/overview")
+    prot = res["protection"]
+    assert prot["available"] is True
+    assert prot["active_bans"] == 1
+    assert prot["bans_24h"] == 1
+    assert [a["username"] for a in prot["attacks"]] == ["admin"]
+    assert set(prot["attacks"][0]) == ATTACK_KEYS
+    assert {"failed_24h", "changes_7d", "recent_success", "posture"} <= set(res)
+
+    runtime.bans = None
+    runtime.username_guard = None
+    res = await result(ws, "electric_fence/overview")
+    assert res["protection"] == {
+        "available": False,
+        "active_bans": 0,
+        "bans_24h": 0,
+        "attacks": [],
+    }
+
+
+async def test_status_notify_targets_is_list(
+    setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """Status settings include the protection fields; targets are a list."""
+    runtime = setup_entry.runtime_data
+    runtime.settings = replace(runtime.settings, notify_targets=("notify.phone",))
+    res = await result(ws, "electric_fence/status")
+    assert res["settings"]["notify_targets"] == ["notify.phone"]
+    assert res["settings"]["auto_ban"] is True
+    assert res["settings"]["ban_threshold"] == 5

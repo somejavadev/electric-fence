@@ -16,6 +16,16 @@ from .const import DOMAIN
 from .models import LoginAttempt, LoginResult, Record
 from .notifier import display_username
 from .privacy import inline_text
+from .sensor_protection import (
+    ActiveBansSensor,
+    AdminsWithoutMfaSensor,
+    AttackedUsernamesSensor,
+    Bans24hSensor,
+    GeoipUpdatedSensor,
+    LastBanSensor,
+    LastFailedLoginSensor,
+    LastNewCountryLoginSensor,
+)
 from .storage import FenceStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,7 +50,19 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the sensor."""
-    async_add_entities([FailedLoginsSensor(entry)])
+    async_add_entities(
+        [
+            FailedLoginsSensor(entry),
+            ActiveBansSensor(entry),
+            Bans24hSensor(entry),
+            AttackedUsernamesSensor(entry),
+            LastFailedLoginSensor(entry),
+            LastBanSensor(entry),
+            LastNewCountryLoginSensor(entry),
+            AdminsWithoutMfaSensor(entry),
+            GeoipUpdatedSensor(entry),
+        ]
+    )
 
 
 class FailedLoginsSensor(SensorEntity):
@@ -51,7 +73,7 @@ class FailedLoginsSensor(SensorEntity):
     _attr_should_poll = False
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "attempts"
-    _unrecorded_attributes = frozenset({"last_username", "last_ip"})
+    _unrecorded_attributes = frozenset({"last_username", "last_ip", "last_country"})
 
     def __init__(self, entry: ElectricFenceConfigEntry) -> None:
         """Initialise the sensor."""
