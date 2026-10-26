@@ -862,22 +862,91 @@ async def test_update_entity_install_all(
     assert sorted(r.target_id or "" for r in rows) == ["core_mosquitto", "core_ssh"]
 
 
-async def test_late_update_contract_failure_disables(
+async def test_late_update_contract_failure_skips_only_update_entities(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    entity_registry: er.EntityRegistry,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing `update` contract when it loads skips only update.install."""
+    monkeypatch.setitem(
+        CONTRACTS,
+        "hassio_update_install",
+        Contract("hassio_update_install", "apps_update_install", lambda _hass: "moved"),
+    )
+    app = entity_registry.async_get_or_create(
+        "update", "hassio", "core_ssh_version_latest"
+    )
+    hass.states.async_set(app.entity_id, "on")
+    calls = await _fake_update_component(hass)
+    collector = _collector(entry)
+    assert collector.is_installed is True
+    assert collector.disabled_reason == ["update entities: moved"]
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, "collector_disabled_apps_update_install")
+    assert issues.async_get_issue(DOMAIN, "collector_disabled_apps") is None
+    await hass.services.async_call(
+        "update", "install", {"entity_id": app.entity_id}, blocking=True
+    )
+    assert len(calls) == 1
+    assert await _rows(hass) == []
+    await _api(hass, hass_ws_client, "/addons/core_ssh/start")
+    assert [r.action for r in await _rows(hass)] == [A.STARTED]
+
+
+async def test_update_contract_failure_at_install_keeps_collector(
+    hass: HomeAssistant,
+    send: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `update` already loaded, a failing contract skips only its source.
+
+    A later setup with the contract passing clears its repair.
+    """
+    monkeypatch.setitem(
+        CONTRACTS,
+        "hassio_update_install",
+        Contract("hassio_update_install", "apps_update_install", lambda _hass: "moved"),
+    )
+    await _fake_update_component(hass)
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    found = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    found.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(found.entry_id)
+    await hass.async_block_till_done()
+    collector = _collector(found)
+    assert collector.is_installed is True
+    assert collector.disabled_reason == ["update entities: moved"]
+    issue = "collector_disabled_apps_update_install"
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue)
+    monkeypatch.undo()
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    collector.uninstall()
+    assert collector.install() is True
+    assert collector.disabled_reason == []
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue) is None
+
+
+async def test_part_install_error_skips_only_that_part(
     hass: HomeAssistant,
     entry: MockConfigEntry,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failing `update` contract when it loads disables the collector."""
-    monkeypatch.setitem(
-        CONTRACTS,
-        "hassio_update_install",
-        Contract("hassio_update_install", "apps", lambda _hass: "install moved"),
-    )
-    await _fake_update_component(hass)
+    """A source whose wrapping raises is skipped with the error's type."""
     collector = _collector(entry)
-    assert collector.is_installed is False
-    assert collector.disabled_reason == ["install moved"]
-    assert ir.async_get(hass).async_get_issue(DOMAIN, "collector_disabled_apps")
+    collector.uninstall()
+
+    def broken() -> None:
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(collector, "_wrap_addon_manager", broken)
+    assert collector.install() is True
+    assert collector.disabled_reason == ["app manager: install raised RuntimeError"]
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, "collector_disabled_apps_addon_manager"
+    )
 
 
 async def test_handler_error_after_read_answered(
@@ -1219,4 +1288,193 @@ async def test_record_failure_is_contained(
         Mock(),
         apps._Before(),  # noqa: SLF001
     )
+    assert await _rows(hass) == []
+
+
+def _manager(hass: HomeAssistant, slug: str = "core_zwave_js") -> Any:
+    from homeassistant.components.hassio.addon_manager import AddonManager  # noqa: PLC0415
+
+    return AddonManager(hass, Mock(), "Z-Wave JS", slug)
+
+
+async def test_addon_manager_changes_recorded_as_system(
+    hass: HomeAssistant, entry: MockConfigEntry, client: Mock
+) -> None:
+    """Core's own AddonManager calls are recorded once each, as System."""
+    client.store.install_addon = AsyncMock()
+    client.addons.uninstall_addon = AsyncMock()
+    manager = _manager(hass)
+    client.addons.addon_info.return_value = _info(name="Z-Wave JS", version="1.0")
+    await manager.async_install_addon()
+    await manager.async_start_addon()
+    await manager.async_restart_addon()
+    await manager.async_stop_addon()
+    await manager.async_uninstall_addon()
+    rows = await _rows(hass)
+    assert [r.action for r in rows] == [
+        A.INSTALLED,
+        A.STARTED,
+        A.RESTARTED,
+        A.STOPPED,
+        A.UNINSTALLED,
+    ]
+    for row in rows:
+        assert (row.actor_user_id, row.actor_name, row.actor_ip) == (None, None, None)
+        assert row.target_id == "core_zwave_js"
+        assert row.target_name == "Z-Wave JS"
+
+
+async def test_addon_manager_update_and_options(
+    hass: HomeAssistant, entry: MockConfigEntry, client: Mock
+) -> None:
+    """An update records its versions; options follow `record_values`."""
+    client.store.addon_availability = AsyncMock()
+    client.backups.partial_backup = AsyncMock()
+    client.addons.set_addon_options = AsyncMock()
+    manager = _manager(hass)
+    current = SimpleNamespace(
+        **vars(_info(version="1.0")),
+        update_available=True,
+        available=True,
+        hostname=None,
+        state="started",
+    )
+    client.addons.addon_info.side_effect = [current, current, _info(version="2.0")]
+    await manager.async_update_addon()
+    _set_record_values(entry, True)
+    client.addons.addon_info.side_effect = [
+        _info(options={"network_key": "old", "log": "info"}),
+        _info(options={"network_key": "new", "log": "debug"}),
+    ]
+    await manager.async_set_addon_options({"network_key": "new", "log": "debug"})
+    update, options = await _rows(hass)
+    assert update.action == A.UPDATED
+    assert update.details == {"version_before": "1.0", "version_after": "2.0"}
+    assert options.action == A.OPTIONS_CHANGED
+    assert options.details["changed"] == ["options"]
+    values = options.details["values"]["options"]
+    assert values["before"]["network_key"] == {"hidden": True}
+    assert values["after"]["log"] == "debug"
+
+
+async def test_addon_manager_failure_not_recorded(
+    hass: HomeAssistant, entry: MockConfigEntry, client: Mock
+) -> None:
+    """A failing call raises Core's error unchanged and records nothing."""
+    from aiohasupervisor import SupervisorError  # noqa: PLC0415
+
+    from homeassistant.components.hassio.addon_manager import AddonError  # noqa: PLC0415
+
+    client.addons.start_addon.side_effect = SupervisorError("down")
+    with pytest.raises(AddonError):
+        await _manager(hass).async_start_addon()
+    assert await _rows(hass) == []
+
+
+async def test_addon_manager_without_slug_passes_through(
+    hass: HomeAssistant, entry: MockConfigEntry, client: Mock
+) -> None:
+    """A manager without a text slug goes straight to Core, unrecorded."""
+    manager = _manager(hass)
+    manager.addon_slug = None
+    await manager.async_start_addon()
+    client.addons.start_addon.assert_awaited_once()
+    assert await _rows(hass) == []
+
+
+async def test_addon_manager_restored_on_unload(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Unloading puts Core's AddonManager methods back."""
+    from homeassistant.components.hassio.addon_manager import AddonManager  # noqa: PLC0415
+
+    wrapped = AddonManager.async_start_addon
+    assert getattr(wrapped, "__wrapped__", None) is not None
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert AddonManager.async_start_addon is not wrapped
+    assert "async_start_addon" in vars(AddonManager)
+
+
+async def test_addon_manager_contract_failure_skips_only_it(
+    hass: HomeAssistant,
+    send: AsyncMock,
+    client: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing AddonManager contract leaves Core's class untouched."""
+    from homeassistant.components.hassio.addon_manager import AddonManager  # noqa: PLC0415
+
+    monkeypatch.setitem(
+        CONTRACTS,
+        "hassio_addon_manager",
+        Contract("hassio_addon_manager", "apps_addon_manager", lambda _hass: "gone"),
+    )
+    original = vars(AddonManager)["async_start_addon"]
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    found = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    found.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(found.entry_id)
+    await hass.async_block_till_done()
+    collector = _collector(found)
+    assert collector.is_installed is True
+    assert collector.disabled_reason == ["app manager: gone"]
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, "collector_disabled_apps_addon_manager"
+    )
+    assert vars(AddonManager)["async_start_addon"] is original
+    await _manager(hass).async_start_addon()
+    assert await _rows(hass) == []
+
+
+async def test_sync_handler_error_ends_in_flight_mark(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's handler raising at once still ends the mark, with no window."""
+    marks: list[tuple[str, bool]] = []
+
+    class Watcher:
+        def begin_core_change(self, slug: str, action: ChangeAction) -> str:
+            return slug
+
+        def end_core_change(self, mark: str, *, success: bool) -> None:
+            marks.append((mark, success))
+
+    monkeypatch.setattr(entry.runtime_data, "app_watcher", Watcher())
+    handlers = hass.data[WEBSOCKET_API_DOMAIN]
+    wrapper, schema = handlers["supervisor/api"]
+    original = Mock(side_effect=RuntimeError("boom"))
+    wrap = _collector(entry)._wrap_api  # noqa: SLF001
+    handlers["supervisor/api"] = (wrap(original), schema)
+    response = await _api(hass, hass_ws_client, "/addons/core_ssh/start")
+    assert response["success"] is False
+    original.assert_called_once()
+    assert marks == [("core_ssh", False)]
+    assert await _rows(hass) == []
+    handlers["supervisor/api"] = (wrapper, schema)
+
+
+async def test_unwatchable_call_keeps_no_mark(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a result watch, Core still answers and no mark is left."""
+    marks: list[tuple[str, bool]] = []
+
+    class Watcher:
+        def begin_core_change(self, slug: str, action: ChangeAction) -> str:
+            return slug
+
+        def end_core_change(self, mark: str, *, success: bool) -> None:
+            marks.append((mark, success))
+
+    monkeypatch.setattr(entry.runtime_data, "app_watcher", Watcher())
+    monkeypatch.setattr(apps, "ResultWatch", Mock(side_effect=RuntimeError))
+    response = await _api(hass, hass_ws_client, "/addons/core_ssh/start")
+    assert response["success"] is True
+    assert marks == [("core_ssh", False)]
     assert await _rows(hass) == []

@@ -490,16 +490,24 @@ class ResultWatch:
 
     The first answer for our message ID decides: a result calls `on_success`
     (inside the guard, before the result is forwarded); an error (by
-    `send_error`, `async_handle_exception` or an error message) means no
-    success. Answers are always forwarded unchanged.
+    `send_error`, `async_handle_exception` or an error message) calls
+    `on_failure`, if given. Answers are always forwarded unchanged.
     """
 
-    __slots__ = ("_connection", "_decided", "_guard", "_msg_id", "_on_success")
+    __slots__ = (
+        "_connection",
+        "_decided",
+        "_guard",
+        "_msg_id",
+        "_on_failure",
+        "_on_success",
+    )
 
     _connection: ActiveConnection
     _decided: bool
     _guard: FailOpen
     _msg_id: int
+    _on_failure: Callable[[], None] | None
     _on_success: Callable[[], None]
 
     def __init__(
@@ -508,12 +516,14 @@ class ResultWatch:
         msg_id: int,
         on_success: Callable[[], None],
         guard: FailOpen,
+        on_failure: Callable[[], None] | None = None,
     ) -> None:
         """Watch `connection` for the answer to message `msg_id`."""
         set_own = object.__setattr__
         set_own(self, "_connection", connection)
         set_own(self, "_msg_id", msg_id)
         set_own(self, "_on_success", on_success)
+        set_own(self, "_on_failure", on_failure)
         set_own(self, "_guard", guard)
         set_own(self, "_decided", False)
 
@@ -544,6 +554,8 @@ class ResultWatch:
         object.__setattr__(self, "_decided", True)
         if success:
             self._guard.call(self._on_success)
+        elif self._on_failure is not None:
+            self._guard.call(self._on_failure)
 
     def _check_message(self, msg: Any) -> None:
         """Decide on a result or error message for our ID sent as a message."""

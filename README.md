@@ -181,7 +181,12 @@ described in [Privacy](#privacy).
 - **Where it listens.** Changes are recorded from the Supervisor WebSocket
   commands, the app actions (`hassio.addon_start` and friends), and the app
   update entities, with the user and IP address behind them. A change is
-  recorded only once Supervisor reports it succeeded. The `/api/hassio` REST
+  recorded only once Supervisor reports it succeeded.
+- **Integrations that manage their own app.** Z-Wave JS, Matter, OpenThread
+  Border Router, the Home Assistant hardware integrations and others install,
+  start, update and configure their app through Home Assistant's app manager.
+  Those changes are recorded as **System**, with the option names (and values
+  when **Record before and after values** is on). The `/api/hassio` REST
   proxy can't make app changes: Home Assistant only lets admins reach backups,
   logs, the changelog and the docs there.
 - **Outside Home Assistant.** A change made from the command line, on the host
@@ -191,7 +196,10 @@ described in [Privacy](#privacy).
   collapse into one record that lists the apps. Options changed outside are
   recorded without values, as a hash only, whatever **Record before and after
   values** says. A change already recorded from Home Assistant isn't recorded
-  twice.
+  twice, and neither are the steps Supervisor reports while it carries the
+  change out: an update or restart stops and starts the app, and those stops
+  and starts aren't recorded as outside changes while Home Assistant's call
+  runs or in the two minutes after it succeeds.
 - **System.** Supervisor's automatic updates of apps with auto update on show
   as **System**. Watchdog restarts show as **Outside Home Assistant**, because
   Supervisor doesn't tell Home Assistant they were the watchdog.

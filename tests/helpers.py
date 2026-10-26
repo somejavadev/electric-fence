@@ -355,6 +355,7 @@ async def setup_fake_hassio(
     """
     from homeassistant.components import hassio  # noqa: PLC0415
     from homeassistant.components.hassio import (  # noqa: PLC0415
+        addon_manager,
         const,
         services,
         update_helper,
@@ -371,5 +372,6 @@ async def setup_fake_hassio(
     services.async_register_app_services(hass, client)
     monkeypatch.setattr(hassio, "get_supervisor_client", lambda _hass: client)
     monkeypatch.setattr(update_helper, "get_supervisor_client", lambda _hass: client)
+    monkeypatch.setattr(addon_manager, "get_supervisor_client", lambda _hass: client)
     hass.config.components.add("hassio")
     return send

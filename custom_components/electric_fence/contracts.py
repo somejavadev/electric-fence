@@ -3,7 +3,9 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import inspect
+import logging
 import re
+from types import SimpleNamespace
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -628,12 +630,13 @@ def _check_hassio_addon_services(hass: HomeAssistant) -> str | None:
 def _check_hassio_update_install(hass: HomeAssistant) -> str | None:
     """`update.install` is wrappable; app update entities keep their unique ID.
 
-    Checked once `update` is loaded. The unique ID is `<slug>_<key>` with
-    the key `version_latest` (`app_slug_from_unique_id`).
+    Checked once `update` is loaded. The unique ID must be `<slug>` plus
+    `APP_UPDATE_SUFFIX` (`app_slug_from_unique_id`), checked on a real app
+    update entity built for a made-up app.
     """
     if _not_supervisor(hass):
         return None
-    from .collectors.apps import APP_UPDATE_SUFFIX, UPDATE, UPDATE_INSTALL  # noqa: PLC0415
+    from .collectors.apps import UPDATE, UPDATE_INSTALL, app_slug_from_unique_id  # noqa: PLC0415
 
     if UPDATE not in hass.config.components:
         return None
@@ -642,17 +645,20 @@ def _check_hassio_update_install(hass: HomeAssistant) -> str | None:
         return "update.install is not registered"
     if reason := _service_reason(hass, UPDATE, UPDATE_INSTALL, ()):
         return reason
-    from homeassistant.components.hassio import entity, update  # noqa: PLC0415
+    from homeassistant.components.hassio import update  # noqa: PLC0415
 
-    key = getattr(getattr(update, "ENTITY_DESCRIPTION", None), "key", None)
-    if f"_{key}" != APP_UPDATE_SUFFIX:
-        return f"hassio update entity key is not {APP_UPDATE_SUFFIX[1:]!r}"
+    probe = "electric_fence_probe"
     try:
-        source = inspect.getsource(entity.HassioAddonEntity.__init__)
-    except OSError, TypeError:
-        return "the HassioAddonEntity source is unavailable"
-    if 'f"{addon.addon.slug}_{entity_description.key}"' not in source:
-        return "HassioAddonEntity no longer builds its unique ID from slug and key"
+        entity = update.SupervisorAddonUpdateEntity(
+            coordinator=object(),  # type: ignore[arg-type]
+            entity_description=update.ENTITY_DESCRIPTION,
+            addon=SimpleNamespace(addon=SimpleNamespace(slug=probe)),  # type: ignore[arg-type]
+        )
+        unique_id = entity.unique_id
+    except Exception as err:  # noqa: BLE001
+        return f"a hassio app update entity can't be built: {type(err).__name__}"
+    if not isinstance(unique_id, str) or app_slug_from_unique_id(unique_id) != probe:
+        return "hassio app update entities have a new unique ID shape"
     return None
 
 
@@ -681,10 +687,53 @@ for _name, _check in (
     ("supervisor_ws_api", _check_supervisor_ws_api),
     ("hassio_update_addon_ws", _check_hassio_update_addon_ws),
     ("hassio_addon_services", _check_hassio_addon_services),
-    ("hassio_update_install", _check_hassio_update_install),
     ("supervisor_client", _check_supervisor_client),
 ):
     register_contract(Contract(_name, "apps", _check))
+
+register_contract(
+    Contract(
+        "hassio_update_install", "apps_update_install", _check_hassio_update_install
+    )
+)
+
+
+def _check_hassio_addon_manager(hass: HomeAssistant) -> str | None:
+    """Core's `AddonManager` keeps the methods wrapped and its `addon_slug`."""
+    if _not_supervisor(hass):
+        return None
+    from homeassistant.components.hassio import addon_manager  # noqa: PLC0415
+
+    from .collectors.apps import MANAGER_METHODS  # noqa: PLC0415
+
+    cls = getattr(addon_manager, "AddonManager", None)
+    if not isinstance(cls, type):
+        return "hassio AddonManager is missing"
+    self_only: list[tuple[str, str, Any]] = [("self", _POS, _EMPTY)]
+    for method in MANAGER_METHODS:
+        expected = self_only
+        if method == "async_set_addon_options":
+            expected = [*self_only, ("config", _POS, _EMPTY)]
+        label = f"AddonManager.{method}"
+        if reason := _params_reason(
+            label, getattr(cls, method, None), expected, coro=True
+        ):
+            return reason
+    try:
+        manager = cls(
+            hass, logging.getLogger(__name__), "probe", "electric_fence_probe"
+        )
+        slug = manager.addon_slug
+    except Exception as err:  # noqa: BLE001
+        return f"hassio AddonManager can't be built: {type(err).__name__}"
+    if slug != "electric_fence_probe":
+        return "hassio AddonManager.addon_slug is not the app's slug"
+    return None
+
+
+register_contract(
+    Contract("hassio_addon_manager", "apps_addon_manager", _check_hassio_addon_manager)
+)
 
 
 def _check_hassio_rest_proxy(hass: HomeAssistant) -> str | None:

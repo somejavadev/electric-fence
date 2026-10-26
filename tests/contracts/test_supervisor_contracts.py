@@ -5,7 +5,6 @@ and `update` component are registered for real; only the Supervisor
 client is a stand-in.
 """
 
-import inspect
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +19,7 @@ from custom_components.electric_fence.collectors.apps import (
 )
 from custom_components.electric_fence.contracts import CONTRACTS, check_contracts
 from homeassistant.components.hassio import (
+    addon_manager as hassio_addon_manager,
     entity as hassio_entity,
     http as hassio_http,
     update as hassio_update,
@@ -36,9 +36,14 @@ NAMES = (
     "supervisor_ws_api",
     "hassio_update_addon_ws",
     "hassio_addon_services",
-    "hassio_update_install",
     "supervisor_client",
 )
+# Contracts with a group of their own: a failure skips only their source.
+PART_GROUPS = {
+    "hassio_update_install": "apps_update_install",
+    "hassio_addon_manager": "apps_addon_manager",
+    "hassio_rest_proxy": "apps_rest_proxy",
+}
 
 
 def _check(hass: HomeAssistant, name: str) -> str | None:
@@ -60,12 +65,22 @@ async def test_contracts_pass_against_core(
         assert CONTRACTS[name].collector == "apps", name
         assert _check(hass, name) is None, name
     assert check_contracts(hass, "apps") == []
-    assert CONTRACTS["hassio_rest_proxy"].collector == "apps_rest_proxy"
-    assert check_contracts(hass, "apps_rest_proxy") == []
+    for name, group in PART_GROUPS.items():
+        assert CONTRACTS[name].collector == group, name
+        assert check_contracts(hass, group) == [], name
 
 
 async def test_update_contract_waits_for_update(hass: HomeAssistant) -> None:
     """Before `update` loads, its contract has nothing to check."""
+    assert "update" not in hass.config.components
+    assert _check(hass, "hassio_update_install") is None
+
+
+async def test_update_contract_waits_for_update_on_supervisor(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Supervisor too, nothing is checked until `update` loads."""
+    await setup_fake_hassio(hass, supervisor_client(), monkeypatch)
     assert "update" not in hass.config.components
     assert _check(hass, "hassio_update_install") is None
 
@@ -166,22 +181,22 @@ async def test_services_contract_fails_on_wrong_shape(
 async def test_update_install_contract_fails(
     hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A missing `update.install`, or a new unique ID shape, fails."""
+    """A missing `update.install`, or a new unique ID shape, fails.
+
+    The shape is checked on a real entity, so any way Core changes it shows.
+    """
+    shape = "hassio app update entities have a new unique ID shape"
     monkeypatch.setattr(
         hassio_update,
         "ENTITY_DESCRIPTION",
         SimpleNamespace(key="latest"),
     )
-    assert _check(hass, "hassio_update_install") == (
-        "hassio update entity key is not 'version_latest'"
-    )
+    assert _check(hass, "hassio_update_install") == shape
     monkeypatch.undo()
     monkeypatch.setattr(
         hassio_entity.HassioAddonEntity, "__init__", lambda self, *a, **k: None
     )
-    assert _check(hass, "hassio_update_install") == (
-        "HassioAddonEntity no longer builds its unique ID from slug and key"
-    )
+    assert _check(hass, "hassio_update_install") == shape
     monkeypatch.undo()
     hass.services.async_remove("update", "install")
     assert _check(hass, "hassio_update_install") == "update.install is not registered"
@@ -286,18 +301,67 @@ async def test_update_install_contract_fails_when_not_a_service(
     assert _check(hass, "hassio_update_install") == "update.install is not a Service"
 
 
-async def test_update_install_contract_fails_without_source(
+async def test_update_install_contract_fails_when_entity_cannot_be_built(
     hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the entity's source can't be read, the contract fails."""
+    """If an app update entity can't be built, the contract fails."""
 
-    def unreadable(_obj: object) -> str:
-        raise OSError
+    def broken(self: object, *args: object, **kwargs: object) -> None:
+        raise TypeError
 
-    monkeypatch.setattr(inspect, "getsource", unreadable)
+    monkeypatch.setattr(hassio_update.SupervisorAddonUpdateEntity, "__init__", broken)
     assert _check(hass, "hassio_update_install") == (
-        "the HassioAddonEntity source is unavailable"
+        "a hassio app update entity can't be built: TypeError"
     )
+
+
+async def test_addon_manager_contract_fails(
+    hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing or reshaped AddonManager fails its own contract."""
+    name = "hassio_addon_manager"
+    cls = hassio_addon_manager.AddonManager
+
+    async def no_config(self: object) -> None:
+        """Take no options."""
+
+    monkeypatch.setattr(cls, "async_set_addon_options", no_config)
+    assert _check(hass, name) == (
+        "AddonManager.async_set_addon_options has an unexpected signature"
+    )
+    monkeypatch.undo()
+    monkeypatch.setattr(cls, "async_start_addon", lambda self: None)
+    assert _check(hass, name) == (
+        "AddonManager.async_start_addon is not a coroutine function"
+    )
+    monkeypatch.undo()
+
+    def broken(self: object, *args: object) -> None:
+        raise RuntimeError
+
+    monkeypatch.setattr(cls, "__init__", broken)
+    assert _check(hass, name) == "hassio AddonManager can't be built: RuntimeError"
+    monkeypatch.undo()
+
+    def other_slug(
+        self: Any, hass: object, logger: object, name: str, slug: str
+    ) -> None:
+        self.addon_slug = name
+
+    monkeypatch.setattr(cls, "__init__", other_slug)
+    assert _check(hass, name) == (
+        "hassio AddonManager.addon_slug is not the app's slug"
+    )
+    monkeypatch.undo()
+    monkeypatch.delattr(hassio_addon_manager, "AddonManager")
+    assert _check(hass, name) == "hassio AddonManager is missing"
+
+
+async def test_addon_manager_contract_passes_off_supervisor(
+    hass: HomeAssistant,
+) -> None:
+    """Off Supervisor, the AddonManager contract has nothing to check."""
+    assert _check(hass, "hassio_addon_manager") is None
 
 
 async def test_supervisor_client_contract_fails_on_missing_pieces(

@@ -6,6 +6,14 @@ poll: on each Supervisor event about apps or the store (debounced), and
 every 15 minutes. Changes Core made are recorded by the app collector,
 which tells the watcher (`note_core_change`), so they aren't recorded twice.
 
+Supervisor reports the steps of a change while Core's call still runs: an
+update stops the app, writes the version and starts it again, and the call
+answers only after the start. So the collector marks a call in flight
+before Core's handler runs (`begin_core_change`) and ends it with Core's
+answer (`end_core_change`). While in flight, and for 120 s after a success,
+the change and the steps it implies (`covered_actions`) are not recorded as
+outside. A failed call leaves nothing behind.
+
 Attribution, never guessed: an update of an app with auto-update on is
 System; everything else is Outside. Supervisor's watchdog restarts can't
 be told apart: its `app_restart_after_problem` job is internal, so Core
@@ -76,6 +84,22 @@ _STARTED: Final = "started"
 _STOPPED: Final = "stopped"
 _STATE_ACTIONS: Final = {_STARTED: ChangeAction.STARTED, _STOPPED: ChangeAction.STOPPED}
 _BURST_ACTIONS: Final = frozenset({ChangeAction.STARTED, ChangeAction.STOPPED})
+# The state changes Supervisor makes on the way to these changes.
+_IMPLIED: Final = {
+    action: frozenset({action, *_BURST_ACTIONS})
+    for action in (
+        ChangeAction.UPDATED,
+        ChangeAction.REBUILT,
+        ChangeAction.RESTARTED,
+        ChangeAction.INSTALLED,
+        ChangeAction.UNINSTALLED,
+    )
+}
+
+
+def covered_actions(action: ChangeAction) -> frozenset[ChangeAction]:
+    """Return the outside actions a Core change of this kind accounts for."""
+    return _IMPLIED.get(action, frozenset({action}))
 
 
 @dataclass(frozen=True)
@@ -210,6 +234,15 @@ class _Seen:
     at: datetime
 
 
+@dataclass(frozen=True, eq=False)
+class InFlight:
+    """A Core call that is changing an app, until Core answers."""
+
+    slug: str
+    action: ChangeAction
+    since: datetime
+
+
 class OutsideAppWatcher:
     """Record app changes Supervisor reports that Core didn't make."""
 
@@ -222,6 +255,7 @@ class OutsideAppWatcher:
         self._repos: set[str] | None = None
         self._core: dict[tuple[str, ChangeAction], datetime] = {}
         self._pending: dict[tuple[str, ChangeAction], datetime] = {}
+        self._in_flight: list[InFlight] = []
         self._bursts: dict[ChangeAction, list[_Seen]] = {}
         self._burst_timers: dict[ChangeAction, CALLBACK_TYPE] = {}
         self._lock = asyncio.Lock()
@@ -337,10 +371,41 @@ class OutsideAppWatcher:
             self._pending[key] = at
         self._prune(dt_util.utcnow())
 
+    @callback
+    def begin_core_change(
+        self, slug: str | None, action: ChangeAction
+    ) -> InFlight | None:
+        """Mark a Core call about to change an app; end it with `end_core_change`."""
+        if slug is None:
+            return None
+        mark = InFlight(slug, action, dt_util.utcnow())
+        self._in_flight.append(mark)
+        return mark
+
+    @callback
+    def end_core_change(self, mark: InFlight | None, *, success: bool) -> None:
+        """End an in-flight mark; a success suppresses for 120 s more."""
+        if mark is None:
+            return
+        self._in_flight = [m for m in self._in_flight if m is not mark]
+        if success:
+            self._note_covered(mark.slug, mark.action, dt_util.utcnow())
+
+    def _note_covered(
+        self, slug: str, action: ChangeAction, at: datetime, *, steps_only: bool = False
+    ) -> None:
+        for covered in covered_actions(action):
+            if steps_only and covered == action:
+                continue
+            key = (slug, covered)
+            self._core[key] = max(at, self._core.get(key, at))
+
     def _prune(self, now: datetime) -> None:
         core_cutoff, pending_cutoff = now - SUPPRESS_WINDOW, now - PENDING_WINDOW
         self._core = {k: v for k, v in self._core.items() if v >= core_cutoff}
         self._pending = {k: v for k, v in self._pending.items() if v >= pending_cutoff}
+        # A call Core never answered (a lost connection) stops suppressing.
+        self._in_flight = [m for m in self._in_flight if m.since >= pending_cutoff]
 
     @callback
     def _on_supervisor_event(self, event: Any) -> None:
@@ -427,10 +492,21 @@ class OutsideAppWatcher:
         self.runtime.store.save_app_repositories(repos)
 
     def _suppressed(self, diff: AppDiff, now: datetime) -> bool:
-        """Return True for a diff Core recorded; consumes a pending note."""
+        """Return True for a diff Core made or is making; consumes a pending note."""
         if diff.slug is None:
             return False
         if self._pending.pop((diff.slug, diff.action), None) is not None:
+            # Done now: its last steps (the start) may still follow, but a
+            # second update is a change of its own.
+            self._note_covered(diff.slug, diff.action, now, steps_only=True)
+            return True
+        if any(
+            mark.slug == diff.slug and diff.action in covered_actions(mark.action)
+            for mark in self._in_flight
+        ) or any(
+            slug == diff.slug and diff.action in covered_actions(action)
+            for slug, action in self._pending
+        ):
             return True
         covering = [diff.action]
         if diff.action in _BURST_ACTIONS:

@@ -8,6 +8,17 @@ Supervisor or Core reports success:
 - The `hassio/update/addon` WebSocket command.
 - The `hassio.addon_*` and `hassio.app_*` start, stop and restart services.
 - `update.install` on an app's update entity (wrapped once `update` loads).
+- Core's own `AddonManager` (Z-Wave JS, Matter, OTBR, the hardware
+  integrations, ...), which calls the Supervisor client directly. Its
+  changes are System unless an admin action that implies them is running
+  (`credited_actor`).
+
+The update entities and `AddonManager` have their own contract groups: a
+failing one skips only that source, with its own repair issue.
+
+Every classified call is marked in flight on the outside watcher before
+Core's handler runs, and ended with Core's answer, so the steps Supervisor
+reports while the call runs aren't recorded as outside changes.
 
 Core's `/api/hassio` REST proxy is not a source: it only lets admins reach
 backups, logs, changelogs and documentation, so it refuses every app change.
@@ -53,12 +64,13 @@ from homeassistant.helpers.service import async_extract_entity_ids
 from homeassistant.setup import ATTR_COMPONENT, EventComponentLoaded
 from homeassistant.util import dt as dt_util
 
-from ..contracts import CONTRACTS, check_contracts
+from ..attribution import credited_actor
+from ..contracts import check_contracts
 from ..failopen import reraise
-from ..hooks import ServiceHandler, wrap_service, wrap_ws_command
+from ..hooks import ServiceHandler, wrap_async_method, wrap_service, wrap_ws_command
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..redact import HIDDEN, diff_details, redact_value
-from ..repairs import async_report_disabled_collector
+from ..repairs import async_clear_disabled_collector, async_report_disabled_collector
 from .base import BaseCollector
 from .system_settings import Actor, ResultWatch, call_actor, ws_actor
 
@@ -73,7 +85,13 @@ UPDATE_INSTALL: Final = "install"
 # The rest proxy contract has its own group: a failure raises the repair
 # issue but keeps the collector (see `AppCollector.install`).
 REST_CONTRACT_GROUP: Final = "apps_rest_proxy"
-_UPDATE_CONTRACT: Final = "hassio_update_install"
+# Each skips only its own source when it fails, with its own repair issue.
+UPDATE_CONTRACT_GROUP: Final = "apps_update_install"
+MANAGER_CONTRACT_GROUP: Final = "apps_addon_manager"
+_PART_LABELS: Final = {
+    UPDATE_CONTRACT_GROUP: "update entities",
+    MANAGER_CONTRACT_GROUP: "app manager",
+}
 
 # Service name -> (the `call.data` field with the slug, action).
 APP_SERVICES: Final[dict[str, tuple[str, ChangeAction]]] = {
@@ -83,6 +101,18 @@ APP_SERVICES: Final[dict[str, tuple[str, ChangeAction]]] = {
     "app_start": ("app", ChangeAction.STARTED),
     "app_stop": ("app", ChangeAction.STOPPED),
     "app_restart": ("app", ChangeAction.RESTARTED),
+}
+
+# Core's `hassio.addon_manager.AddonManager` methods -> action. Only
+# `async_set_addon_options` takes an argument (the options).
+MANAGER_METHODS: Final[dict[str, ChangeAction]] = {
+    "async_install_addon": ChangeAction.INSTALLED,
+    "async_uninstall_addon": ChangeAction.UNINSTALLED,
+    "async_update_addon": ChangeAction.UPDATED,
+    "async_start_addon": ChangeAction.STARTED,
+    "async_stop_addon": ChangeAction.STOPPED,
+    "async_restart_addon": ChangeAction.RESTARTED,
+    "async_set_addon_options": ChangeAction.OPTIONS_CHANGED,
 }
 
 # Core's app update entities have unique ID `<slug>_version_latest`; Core,
@@ -293,6 +323,9 @@ def _safe_url(url: str | None) -> str | None:
     return shown if isinstance(shown, str) else None
 
 
+type _Finish = Callable[[bool], None]
+
+
 @dataclass
 class _Before:
     """What was read from Supervisor before the call."""
@@ -312,21 +345,44 @@ class AppCollector(BaseCollector):
         self._loaded_unsub: CALLBACK_TYPE | None = None
         self._update_wrapped = False
         self._rest_reasons: list[str] = []
+        self._part_reasons: dict[str, list[str]] = {}
 
     def install(self) -> bool:
         """Install on Supervisor installs only; else return False, untouched.
 
         A failing rest proxy contract keeps the collector installed and
         raises its repair issue with the reasons (prefixed "rest proxy: ").
+        A failing update entity or app manager contract skips only that
+        source and raises that group's own repair issue.
         """
         if not is_hassio(self.hass):
             return False
         if not super().install():
             return False
-        if self._rest_reasons:
-            self.disabled_reason = [f"rest proxy: {r}" for r in self._rest_reasons]
-            async_report_disabled_collector(self.hass, self.name, self.disabled_reason)
+        self._report_parts()
         return True
+
+    def _report_parts(self) -> None:
+        reasons = [f"rest proxy: {r}" for r in self._rest_reasons]
+        if reasons:
+            async_report_disabled_collector(self.hass, self.name, reasons)
+        for group, label in _PART_LABELS.items():
+            if part := self._part_reasons.get(group):
+                async_report_disabled_collector(self.hass, group, part)
+                reasons.extend(f"{label}: {r}" for r in part)
+            else:
+                async_clear_disabled_collector(self.hass, group)
+        self.disabled_reason = reasons
+
+    def _install_part(self, group: str, wrap: Callable[[], None]) -> None:
+        """Wrap one source if its contracts hold; else note why not."""
+        if reasons := check_contracts(self.hass, group):
+            self._part_reasons[group] = reasons
+            return
+        try:
+            wrap()
+        except Exception as err:  # noqa: BLE001
+            self._part_reasons[group] = [f"install raised {type(err).__name__}"]
 
     def _install(self) -> None:
         # The contracts passed: the commands and services are registered.
@@ -342,8 +398,10 @@ class AppCollector(BaseCollector):
                     self.hass, HASSIO, service, self._wrap_app_service(key, action)
                 )
             )
+        self._part_reasons = {}
+        self._install_part(MANAGER_CONTRACT_GROUP, self._wrap_addon_manager)
         if UPDATE in self.hass.config.components:
-            self._wrap_update_install()
+            self._install_part(UPDATE_CONTRACT_GROUP, self._wrap_update_install)
         else:
             self._loaded_unsub = self.hass.bus.async_listen(
                 EVENT_COMPONENT_LOADED,
@@ -371,14 +429,8 @@ class AppCollector(BaseCollector):
             self.guard.call(self._install_update_late)
 
     def _install_update_late(self) -> None:
-        reason = CONTRACTS[_UPDATE_CONTRACT].check(self.hass)
-        if reason is not None:
-            # Same outcome as a contract failing at install.
-            self.uninstall()
-            self.disabled_reason = [reason]
-            async_report_disabled_collector(self.hass, self.name, [reason])
-            return
-        self._wrap_update_install()
+        self._install_part(UPDATE_CONTRACT_GROUP, self._wrap_update_install)
+        self._report_parts()
 
     def _wrap_update_install(self) -> None:
         if self._update_wrapped:
@@ -450,9 +502,12 @@ class AppCollector(BaseCollector):
         if actor is None:
             return original(hass, connection, msg)
         if not self._needs_before(op):
-            return original(
-                hass, self._watched(op, actor, _Before(), connection, msg), msg
-            )
+            target, finish = self._watched(op, actor, _Before(), connection, msg)
+            try:
+                return original(hass, target, msg)
+            except Exception:
+                self._finish(finish, success=False)
+                raise
         task = self._read_then_call(op, actor, original, hass, connection, msg)
         try:
             hass.async_create_task(task, "electric_fence app change", eager_start=True)
@@ -477,7 +532,7 @@ class AppCollector(BaseCollector):
         finally:
             # Core's handler runs whatever the read did, and its errors are
             # answered as Core's dispatcher would.
-            target = self._watched(op, actor, before, connection, msg)
+            target, _finish = self._watched(op, actor, before, connection, msg)
             try:
                 original(hass, target, msg)
             except Exception as err:  # noqa: BLE001
@@ -490,16 +545,47 @@ class AppCollector(BaseCollector):
         before: _Before,
         connection: ActiveConnection,
         msg: dict[str, Any],
-    ) -> ActiveConnection:
-        """Return the connection to give Core's handler: a watch, if possible."""
+    ) -> tuple[ActiveConnection, _Finish | None]:
+        """Return the connection to give Core's handler (a watch, if possible).
+
+        Marks the call in flight; the watch ends the mark with Core's answer.
+        """
+        finish = self.guard.call(self._begin, op)
 
         def on_success() -> None:
+            self._finish(finish, success=True)
             self._schedule_after(op, actor, before)
 
+        def on_failure() -> None:
+            self._finish(finish, success=False)
+
         watch = self.guard.call(
-            ResultWatch, connection, msg["id"], on_success, self.guard
+            ResultWatch, connection, msg["id"], on_success, self.guard, on_failure
         )
-        return connection if watch is None else cast(ActiveConnection, watch)
+        if watch is None:
+            # Core's answer can't be seen: nothing is recorded, nothing kept.
+            self._finish(finish, success=False)
+            return connection, None
+        return cast(ActiveConnection, watch), finish
+
+    def _begin(self, op: AppOp) -> _Finish | None:
+        """Mark an app change in flight on the outside watcher.
+
+        Returns the function that ends the mark (on that same watcher).
+        """
+        watcher = self.runtime.app_watcher
+        if watcher is None or op.slug is None:
+            return None
+        mark = watcher.begin_core_change(op.slug, op.action)
+
+        def finish(success: bool) -> None:
+            watcher.end_core_change(mark, success=success)
+
+        return finish
+
+    def _finish(self, finish: _Finish | None, *, success: bool) -> None:
+        if finish is not None:
+            self.guard.call(finish, success)
 
     # Services.
 
@@ -509,7 +595,17 @@ class AppCollector(BaseCollector):
         def make(original: ServiceHandler) -> ServiceHandler:
             async def handler(call: ServiceCall) -> Any:
                 pending = self.guard.call(self._service_op, call, key, action)
-                result = await original(call)
+                finish = (
+                    None
+                    if pending is None
+                    else self.guard.call(self._begin, pending[0])
+                )
+                done = False
+                try:
+                    result = await original(call)
+                    done = True
+                finally:
+                    self._finish(finish, success=done)
                 if pending is not None:
                     self.guard.call(self._schedule_after, *pending, _Before())
                 return result
@@ -533,7 +629,14 @@ class AppCollector(BaseCollector):
                 pending = await self._update_entity_before(call)
             except Exception as err:  # noqa: BLE001
                 self.guard.call(reraise, err)
-            result = await original(call)
+            finishes = [self.guard.call(self._begin, op) for op, _, _ in pending]
+            done = False
+            try:
+                result = await original(call)
+                done = True
+            finally:
+                for finish in finishes:
+                    self._finish(finish, success=done)
             for op, actor, before in pending:
                 self.guard.call(self._schedule_after, op, actor, before)
             return result
@@ -590,6 +693,60 @@ class AppCollector(BaseCollector):
             and state.state == STATE_ON
             and (slug := app_slug_from_unique_id(entry.unique_id)) is not None
         ]
+
+    # Core's AddonManager.
+
+    def _wrap_addon_manager(self) -> None:
+        from homeassistant.components.hassio.addon_manager import AddonManager  # noqa: PLC0415
+
+        # On the class: every integration's manager (and subclass) shares
+        # these methods. Restored on uninstall like any other hook.
+        for method, action in MANAGER_METHODS.items():
+            self._handles.append(
+                wrap_async_method(
+                    AddonManager, method, self._wrap_manager_method(action)
+                )
+            )
+
+    def _wrap_manager_method(
+        self, action: ChangeAction
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def make(original: Callable[..., Any]) -> Callable[..., Any]:
+            async def method(manager: Any, *args: Any, **kwargs: Any) -> Any:
+                found = self.guard.call(self._manager_op, manager, action)
+                if found is None:
+                    return await original(manager, *args, **kwargs)
+                op, actor = found
+                before = (
+                    await self._read_before(op) if self._needs_before(op) else _Before()
+                )
+                finish = self.guard.call(self._begin, op)
+                done = False
+                try:
+                    result = await original(manager, *args, **kwargs)
+                    done = True
+                finally:
+                    self._finish(finish, success=done)
+                self.guard.call(self._schedule_after, op, actor, before)
+                return result
+
+            return method
+
+        return make
+
+    @staticmethod
+    def _manager_op(manager: Any, action: ChangeAction) -> tuple[AppOp, Actor] | None:
+        slug = getattr(manager, "addon_slug", None)
+        if not isinstance(slug, str):
+            return None
+        keys = (OPTIONS,) if action == ChangeAction.OPTIONS_CHANGED else ()
+        scope = credited_actor(ChangeKind.APP, action, slug)
+        actor = (
+            Actor(user_id=None, user_name=None, ip=None)
+            if scope is None
+            else Actor(user_id=scope.user_id, user_name=scope.user_name, ip=scope.ip)
+        )
+        return AppOp(action, slug, None, keys), actor
 
     # Reading Supervisor and recording.
 

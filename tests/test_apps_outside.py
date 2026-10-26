@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
+from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.electric_fence.collectors import apps_outside
 from custom_components.electric_fence.collectors.apps_outside import (
@@ -877,3 +878,157 @@ async def test_worker_failure_does_not_escape(
         watcher.runtime.worker, "submit", Mock(side_effect=RuntimeError)
     )
     watcher._submit(A.STARTED, "a", "App a", {}, dt_util.utcnow(), False)  # noqa: SLF001
+
+
+def _send(hass: HomeAssistant) -> AsyncMock:
+    """Return the `send_command` mock Core's `supervisor/api` calls."""
+    from homeassistant.components.hassio.const import DATA_COMPONENT  # noqa: PLC0415
+
+    send: AsyncMock = hass.data[DATA_COMPONENT].send_command
+    return send
+
+
+async def _panel(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, endpoint: str
+) -> dict[str, Any]:
+    ws = await hass_ws_client(hass)
+    await ws.send_json_auto_id(
+        {"type": "supervisor/api", "endpoint": endpoint, "method": "post"}
+    )
+    response: dict[str, Any] = await ws.receive_json()
+    return response
+
+
+async def test_panel_update_polled_mid_call_is_not_outside(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    sup: FakeSupervisor,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Supervisor's stop, version and start during a panel update are not outside.
+
+    Supervisor stops the app, writes the version and starts it again before
+    it answers; polls see each step while Core's call still runs.
+    """
+    watcher = _watcher(entry)
+
+    async def update(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        sup.set("core_ssh", state="stopped")
+        await watcher.poll()
+        sup.set("core_ssh", version="2.0")
+        await watcher.poll()
+        sup.set("core_ssh", state="started")
+        await watcher.poll()
+        return {"result": "ok", "data": {}}
+
+    _send(hass).side_effect = update
+    response = await _panel(hass, hass_ws_client, "/store/addons/core_ssh/update")
+    assert response["success"] is True
+    # The start reported after Core answered, within 120 s.
+    sup.set("core_ssh", state="stopped")
+    await watcher.poll()
+    sup.set("core_ssh", state="started")
+    await watcher.poll()
+    [row] = await _rows(hass, entry)
+    assert row.action == A.UPDATED
+    assert row.actor_user_id is not None
+    assert row.details == {"version_before": "1.0", "version_after": "2.0"}
+
+
+async def test_service_restart_polled_mid_call_is_not_outside(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """A restart's stop and start, seen while the service runs, are not outside."""
+    watcher = _watcher(entry)
+
+    async def restart(_slug: str) -> None:
+        sup.set("core_ssh", state="stopped")
+        await watcher.poll()
+        sup.set("core_ssh", state="started")
+        await watcher.poll()
+
+    sup.client.addons.restart_addon.side_effect = restart
+    await hass.services.async_call(
+        "hassio", "addon_restart", {"addon": "core_ssh"}, blocking=True
+    )
+    [row] = await _rows(hass, entry)
+    assert row.action == A.RESTARTED
+    assert row.actor_name is None
+
+
+async def test_failed_core_call_leaves_no_suppression(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    sup: FakeSupervisor,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """A failed panel or service call leaves nothing that hides outside changes."""
+    from aiohasupervisor import SupervisorError  # noqa: PLC0415
+
+    from homeassistant.components.hassio.handler import HassioAPIError  # noqa: PLC0415
+    from homeassistant.exceptions import HomeAssistantError  # noqa: PLC0415
+
+    watcher = _watcher(entry)
+    seen: list[ChangeAction] = []
+
+    async def failing(*_args: Any, **_kwargs: Any) -> None:
+        # While in flight, the stop is held back.
+        sup.set("core_ssh", state="stopped")
+        await watcher.poll()
+        seen.extend(r.action for r in await _rows(hass, entry))
+        sup.set("core_ssh", state="started")
+        await watcher.poll()
+        raise HassioAPIError("nope")
+
+    _send(hass).side_effect = failing
+    response = await _panel(hass, hass_ws_client, "/addons/core_ssh/restart")
+    assert response["success"] is False
+    sup.client.addons.stop_addon.side_effect = SupervisorError("nope")
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "hassio", "addon_stop", {"addon": "core_ssh"}, blocking=True
+        )
+    assert seen == []
+    sup.set("core_ssh", state="stopped")
+    await watcher.poll()
+    rows = await _rows(hass, entry)
+    # The start seen during the call was held back too; nothing was recorded
+    # for the failed calls, and the stop afterwards is outside.
+    assert [(r.action, r.actor_name) for r in rows] == [(A.STOPPED, OUTSIDE_ACTOR)]
+
+
+async def test_in_flight_mark_expires_and_ignores_other_apps(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """A mark Core never ended stops suppressing after an hour; no slug, no mark."""
+    watcher = _watcher(entry)
+    assert watcher.begin_core_change(None, A.UPDATED) is None
+    watcher.end_core_change(None, success=True)
+    mark = watcher.begin_core_change("core_ssh", A.STARTED)
+    assert mark is not None
+    sup.set("core_mosquitto", state="stopped")
+    sup.set("core_ssh", options={"a": 1})
+    await watcher.poll()
+    assert {(r.target_id, r.action) for r in await _rows(hass, entry)} == {
+        ("core_mosquitto", A.STOPPED),
+        ("core_ssh", A.OPTIONS_CHANGED),
+    }
+    old = replace(mark, since=dt_util.utcnow() - timedelta(hours=2))
+    watcher._in_flight = [old]  # noqa: SLF001
+    sup.set("core_ssh", state="stopped")
+    await watcher.poll()
+    assert [r.action for r in await _rows(hass, entry)][-1] == A.STOPPED
+
+
+async def test_background_update_steps_not_outside(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """While a background update is pending, its stop and start aren't outside."""
+    watcher = _watcher(entry)
+    accepted = dt_util.utcnow() - timedelta(minutes=5)
+    watcher.note_core_change("core_ssh", A.UPDATED, accepted, pending=True)
+    sup.set("core_ssh", state="stopped")
+    await watcher.poll()
+    sup.set("core_ssh", version="2.0", state="started")
+    await watcher.poll()
+    assert await _rows(hass, entry) == []
