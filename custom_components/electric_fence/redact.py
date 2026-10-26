@@ -211,4 +211,5 @@ def hide_named(value: Any) -> Any:
 def shared_details(details: Mapping[str, Any]) -> dict[str, Any]:
     """Return a change's details as sent out: no `values`, redacted, capped."""
     rest = {k: v for k, v in details.items() if k != "values"}
-    return cap_lists(hide_named(rest))
+    shared: dict[str, Any] = cap_lists(hide_named(rest))
+    return shared
