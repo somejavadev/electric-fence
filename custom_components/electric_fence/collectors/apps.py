@@ -34,7 +34,12 @@ from typing import TYPE_CHECKING, Any, Final, cast
 
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.components.websocket_api.const import WebSocketCommandHandler
-from homeassistant.const import ATTR_ENTITY_ID, ENTITY_MATCH_ALL, EVENT_COMPONENT_LOADED
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    ENTITY_MATCH_ALL,
+    EVENT_COMPONENT_LOADED,
+    STATE_ON,
+)
 from homeassistant.core import (
     CALLBACK_TYPE,
     Event,
@@ -52,7 +57,7 @@ from ..contracts import CONTRACTS, check_contracts
 from ..failopen import reraise
 from ..hooks import ServiceHandler, wrap_service, wrap_ws_command
 from ..models import ChangeAction, ChangeKind, SettingsChange
-from ..redact import diff_details, redact_value
+from ..redact import HIDDEN, diff_details, redact_value
 from ..repairs import async_report_disabled_collector
 from .base import BaseCollector
 from .system_settings import Actor, ResultWatch, call_actor, ws_actor
@@ -106,7 +111,8 @@ _SLUG = r"([^/]+)"
 _POST_ROUTES: Final = tuple(
     (re.compile(pattern), action)
     for pattern, action in (
-        (rf"/store/addons/{_SLUG}/install", ChangeAction.INSTALLED),
+        # The frontend installs with the `/addons/<slug>/install` alias.
+        (rf"/(?:store/)?addons/{_SLUG}/install", ChangeAction.INSTALLED),
         (rf"/addons/{_SLUG}/uninstall", ChangeAction.UNINSTALLED),
         (rf"/(?:store/)?addons/{_SLUG}/update", ChangeAction.UPDATED),
         (rf"/addons/{_SLUG}/start", ChangeAction.STARTED),
@@ -124,6 +130,7 @@ _REPOSITORY_ROUTE: Final = re.compile(rf"/store/repositories/{_SLUG}")
 # proxy contract checks Core's proxy lets none of them through.
 APP_CHANGE_PATHS: Final = (
     "store/addons/x/install",
+    "addons/x/install",
     "addons/x/uninstall",
     "store/addons/x/update",
     "addons/x/update",
@@ -160,6 +167,7 @@ _READ_AFTER: Final = frozenset(
     }
 )
 _VERSIONS: Final = frozenset({ChangeAction.INSTALLED, ChangeAction.UPDATED})
+_BACKGROUND: Final = "background"
 _CONFIG: Final = frozenset(
     {ChangeAction.OPTIONS_CHANGED, ChangeAction.SETTINGS_CHANGED}
 )
@@ -174,12 +182,15 @@ class AppOp:
 
     `keys` are the request's fields for an options or settings change;
     empty means unknown (decided from Supervisor's state instead).
+    `background` is an install or update Supervisor answers once it has
+    accepted the job, before it is done.
     """
 
     action: ChangeAction
     slug: str | None
     repository: str | None
     keys: tuple[str, ...]
+    background: bool = False
 
 
 def classify(endpoint: str, method: str, data: dict[str, Any] | None) -> AppOp | None:
@@ -198,7 +209,12 @@ def classify(endpoint: str, method: str, data: dict[str, Any] | None) -> AppOp |
         return None
     for pattern, action in _POST_ROUTES:
         if found := pattern.fullmatch(path):
-            return AppOp(action, found[1], None, ())
+            background = (
+                action in _VERSIONS
+                and data is not None
+                and data.get(_BACKGROUND) is True
+            )
+            return AppOp(action, found[1], None, (), background)
     if found := _OPTIONS_ROUTE.fullmatch(path):
         if data is None:
             return AppOp(ChangeAction.OPTIONS_CHANGED, found[1], None, ())
@@ -241,6 +257,32 @@ def _plain(value: Any) -> Any:
 
 def _snapshot(info: Any, keys: tuple[str, ...]) -> dict[str, Any]:
     return {key: _plain(getattr(info, key, None)) for key in keys}
+
+
+def _password_fields(schema: Any) -> frozenset[str]:
+    """Return the top-level option names whose schema type is a password.
+
+    Supervisor's UI schema marks them `format: password` (`type: password`
+    in older versions).
+    """
+    if not isinstance(schema, list):
+        return frozenset()
+    return frozenset(
+        str(item["name"])
+        for item in schema
+        if isinstance(item, dict)
+        and "name" in item
+        and "password" in (item.get("format"), item.get("type"))
+    )
+
+
+def _mask_options(snapshot: dict[str, Any], secret: frozenset[str]) -> dict[str, Any]:
+    """Return the snapshot with password-typed option values hidden."""
+    options = snapshot.get(OPTIONS)
+    if not secret or not isinstance(options, dict):
+        return snapshot
+    masked = {k: dict(HIDDEN) if k in secret else v for k, v in options.items()}
+    return {**snapshot, OPTIONS: masked}
 
 
 def _safe_url(url: str | None) -> str | None:
@@ -511,11 +553,21 @@ class AppCollector(BaseCollector):
         if not slugs:
             return []
         actor = call_actor(self.hass, call)
-        pending = []
-        for slug in slugs:
-            op = AppOp(ChangeAction.UPDATED, slug, None, ())
-            pending.append((op, actor, await self._read_before(op)))
-        return pending
+        ops = [AppOp(ChangeAction.UPDATED, slug, None, ()) for slug in slugs]
+        reads = [
+            self.hass.async_create_task(
+                self._read_before(op), "electric_fence app read", eager_start=True
+            )
+            for op in ops
+        ]
+        # One timeout for all: the user's update waits at most that long.
+        _done, slow = await asyncio.wait(reads, timeout=READ_TIMEOUT)
+        for task in slow:
+            task.cancel()
+        return [
+            (op, actor, _Before() if read in slow else read.result())
+            for op, read in zip(ops, reads, strict=True)
+        ]
 
     def _update_entity_slugs(
         self, call: ServiceCall, entity_ids: set[str]
@@ -527,10 +579,15 @@ class AppCollector(BaseCollector):
             if every
             else [e for i in sorted(entity_ids) if (e := registry.async_get(i))]
         )
+        # Core installs only on loaded, available entities with an update
+        # (`on`); it skips the others and still succeeds.
         return [
             slug
             for entry in entries
             if entry.platform == HASSIO
+            and entry.disabled_by is None
+            and (state := self.hass.states.get(entry.entity_id)) is not None
+            and state.state == STATE_ON
             and (slug := app_slug_from_unique_id(entry.unique_id)) is not None
         ]
 
@@ -591,7 +648,9 @@ class AppCollector(BaseCollector):
 
     async def _after(self, op: AppOp, actor: Actor, before: _Before) -> None:
         try:
-            after = await self._info(op.slug) if op.action in _READ_AFTER else None
+            # A background job may not be done: its version isn't known yet.
+            reads_after = op.action in _READ_AFTER and not op.background
+            after = await self._info(op.slug) if reads_after else None
             repositories = (
                 await self._repositories()
                 if op.action == ChangeAction.REPOSITORY_ADDED and op.repository is None
@@ -620,10 +679,22 @@ class AppCollector(BaseCollector):
             known = after if after is not None else before.info
             target_name = getattr(known, "name", None) or op.slug
             if action in _VERSIONS:
-                details = {
-                    "version_before": getattr(before.info, "version", None),
-                    "version_after": getattr(after, "version", None),
-                }
+                version_before = getattr(before.info, "version", None)
+                if op.background:
+                    details = {"version_before": version_before, _BACKGROUND: True}
+                else:
+                    version_after = getattr(after, "version", None)
+                    if (
+                        action == ChangeAction.UPDATED
+                        and version_before is not None
+                        and version_before == version_after
+                    ):
+                        # Supervisor answered, but nothing was installed.
+                        return
+                    details = {
+                        "version_before": version_before,
+                        "version_after": version_after,
+                    }
             elif action in _CONFIG:
                 found = self._config_details(op, before.info, after)
                 if found is None:
@@ -654,12 +725,22 @@ class AppCollector(BaseCollector):
         if before is None or after is None:
             return op.action, {"changed": sorted(op.keys)}
         keys = _state_keys(op)
-        details = diff_details(
-            _snapshot(before, keys),
-            _snapshot(after, keys),
-            include_values=self.runtime.settings.record_values,
-        )
+        old, new = _snapshot(before, keys), _snapshot(after, keys)
+        details = diff_details(old, new, include_values=False)
         changed = details["changed"]
+        if changed and self.runtime.settings.record_values:
+            secret = _password_fields(getattr(after, "schema", None)) | (
+                _password_fields(getattr(before, "schema", None))
+            )
+            shown = diff_details(
+                _mask_options(old, secret),
+                _mask_options(new, secret),
+                include_values=True,
+            ).get("values", {})
+            # A change only in a masked password shows as hidden.
+            details["values"] = {
+                name: shown.get(name, dict(HIDDEN)) for name in changed
+            }
         if not changed:
             return None
         if op.keys:

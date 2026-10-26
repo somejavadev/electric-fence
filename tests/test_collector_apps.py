@@ -4,7 +4,9 @@ Core's real `supervisor/api` and `hassio/update/addon` commands and app
 services run against a stand-in Supervisor client (`tests.helpers`).
 """
 
+import asyncio
 from dataclasses import replace
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -206,6 +208,31 @@ _TABLE: list[tuple[str, str, dict[str, Any] | None, AppOp | None]] = [
     ),
     ("GET", "/addons/core_ssh/info", None, None),
     ("POST", "/addons/core_ssh/info", None, None),
+    (
+        "POST",
+        "/addons/core_ssh/install",
+        None,
+        AppOp(A.INSTALLED, "core_ssh", None, ()),
+    ),
+    (
+        "POST",
+        "/store/addons/core_ssh/install",
+        {"background": True},
+        AppOp(A.INSTALLED, "core_ssh", None, (), background=True),
+    ),
+    (
+        "POST",
+        "/store/addons/core_ssh/update",
+        {"background": True, "backup": False},
+        AppOp(A.UPDATED, "core_ssh", None, (), background=True),
+    ),
+    (
+        "POST",
+        "/addons/core_ssh/restart",
+        {"background": True},
+        AppOp(A.RESTARTED, "core_ssh", None, ()),
+    ),
+    ("POST", "/addons/core_ssh/options/validate", {"options": {}}, None),
     ("POST", "/addons/core_ssh/logs", None, None),
     ("GET", "/addons/core_ssh/start", None, None),
     ("GET", "/store/repositories", None, None),
@@ -607,6 +634,8 @@ async def test_update_entity_install_recorded(
         "update", "hassio", "home_assistant_core_version_latest"
     )
     other = entity_registry.async_get_or_create("update", "hacs", "x_version_latest")
+    for found in (app, core, other):
+        hass.states.async_set(found.entity_id, "on")
     calls = await _fake_update_component(hass)
     client.addons.addon_info.side_effect = [_info(version="1.0"), _info(version="2.0")]
     await hass.services.async_call(
@@ -691,18 +720,31 @@ async def test_collector_registered(
 
 
 async def test_unload_restores_core(
-    hass: HomeAssistant, entry: MockConfigEntry, send: AsyncMock
+    hass: HomeAssistant, send: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unloading puts Core's handlers and services back."""
-    from homeassistant.components.hassio import websocket_api as hassio_ws  # noqa: PLC0415
-
+    """Unloading puts Core's very handlers and service jobs back."""
+    calls = await _fake_update_component(hass)
+    assert calls == []
     handlers = hass.data[WEBSOCKET_API_DOMAIN]
-    assert handlers["supervisor/api"][0] is not hassio_ws.websocket_supervisor_api
-    job = hass.services._services["hassio"]["addon_stop"].job  # noqa: SLF001
-    assert await hass.config_entries.async_unload(entry.entry_id)
-    assert handlers["supervisor/api"][0] is hassio_ws.websocket_supervisor_api
-    assert handlers["hassio/update/addon"][0] is hassio_ws.websocket_update_addon
-    assert hass.services._services["hassio"]["addon_stop"].job is not job  # noqa: SLF001
+    commands = ("supervisor/api", "hassio/update/addon")
+    services = hass.services._services  # noqa: SLF001
+    keys = [("hassio", name) for name in apps.APP_SERVICES] + [("update", "install")]
+    before_ws = {c: handlers[c] for c in commands}
+    before_jobs = {k: services[k[0]][k[1]].job for k in keys}
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    found = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    found.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(found.entry_id)
+    await hass.async_block_till_done()
+    for command in commands:
+        assert handlers[command][0] is not before_ws[command][0]
+    for key in keys:
+        assert services[key[0]][key[1]].job is not before_jobs[key], key
+    assert await hass.config_entries.async_unload(found.entry_id)
+    for command in commands:
+        assert handlers[command] is before_ws[command]
+    for key in keys:
+        assert services[key[0]][key[1]].job is before_jobs[key], key
 
 
 async def test_failing_contract_disables_only_apps(
@@ -802,13 +844,17 @@ async def test_update_entity_install_all(
 ) -> None:
     """`entity_id: all` updates every app's update entity."""
     for slug in ("core_ssh", "core_mosquitto"):
-        entity_registry.async_get_or_create(
+        found = entity_registry.async_get_or_create(
             "update", "hassio", f"{slug}_version_latest"
         )
+        hass.states.async_set(found.entity_id, "on")
     entity_registry.async_get_or_create(
         "update", "hassio", "home_assistant_os_version_latest"
     )
     await _fake_update_component(hass)
+    client.addons.addon_info.side_effect = [_info(version="1.0")] * 2 + [
+        _info(version="2.0")
+    ] * 2
     await hass.services.async_call(
         "update", "install", {"entity_id": "all"}, blocking=True
     )
@@ -851,3 +897,174 @@ async def test_handler_error_after_read_answered(
     original.assert_called_once()
     assert await _rows(hass) == []
     handlers["supervisor/api"] = (wrapper, schema)
+
+
+async def test_update_entity_skips_unavailable_and_disabled(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Core skips unavailable, disabled and up-to-date entities: no record."""
+    unavailable = entity_registry.async_get_or_create(
+        "update", "hassio", "core_a_version_latest"
+    )
+    hass.states.async_set(unavailable.entity_id, "unavailable")
+    disabled = entity_registry.async_get_or_create(
+        "update",
+        "hassio",
+        "core_b_version_latest",
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    current = entity_registry.async_get_or_create(
+        "update", "hassio", "core_c_version_latest"
+    )
+    hass.states.async_set(current.entity_id, "off")
+    await _fake_update_component(hass)
+    for target in ({"entity_id": "all"}, {"entity_id": unavailable.entity_id}):
+        await hass.services.async_call("update", "install", target, blocking=True)
+    await hass.services.async_call(
+        "update", "install", {"entity_id": disabled.entity_id}, blocking=True
+    )
+    assert await _rows(hass) == []
+    client.addons.addon_info.assert_not_awaited()
+
+
+async def test_update_same_version_not_recorded(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """An update that leaves the version as it was records nothing."""
+    client.addons.addon_info.side_effect = [_info(version="1.0"), _info(version="1.0")]
+    response = await _api(hass, hass_ws_client, "/store/addons/core_ssh/update")
+    assert response["success"] is True
+    assert await _rows(hass) == []
+
+
+async def test_update_entity_reads_concurrently(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    entity_registry: er.EntityRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slow Supervisor reads delay the user's update by one timeout at most."""
+    monkeypatch.setattr(apps, "READ_TIMEOUT", 0.2)
+    for n in range(5):
+        found = entity_registry.async_get_or_create(
+            "update", "hassio", f"core_{n}_version_latest"
+        )
+        hass.states.async_set(found.entity_id, "on")
+    started: list[float] = []
+
+    async def install(call: ServiceCall) -> None:
+        started.append(time.monotonic())
+
+    hass.services.async_register("update", "install", install)
+    hass.config.components.add("update")
+    hass.bus.async_fire("component_loaded", {"component": "update"})
+    await hass.async_block_till_done()
+
+    async def slow(slug: str) -> SimpleNamespace:
+        await asyncio.sleep(5)
+        return _info()
+
+    client.addons.addon_info.side_effect = slow
+    begin = time.monotonic()
+    await hass.services.async_call(
+        "update", "install", {"entity_id": "all"}, blocking=True
+    )
+    assert len(started) == 1
+    # Five sequential reads would take 1 s.
+    assert started[0] - begin < 0.6
+    rows = await _rows(hass)
+    assert len(rows) == 5
+    assert all(
+        r.details == {"version_before": None, "version_after": None} for r in rows
+    )
+
+
+async def test_background_install_recorded_as_accepted(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    hass_ws_client: WebSocketGenerator,
+    hass_admin_user: MockUser,
+) -> None:
+    """A background job is recorded as accepted, never with a version after."""
+    client.addons.addon_info.side_effect = [_info(version="1.0")]
+    await _api(
+        hass,
+        hass_ws_client,
+        "/store/addons/core_ssh/install",
+        data={"background": True},
+    )
+    await _api(
+        hass,
+        hass_ws_client,
+        "/store/addons/core_ssh/update",
+        data={"background": True},
+    )
+    install, update = await _rows(hass)
+    assert install.action == "installed"
+    assert install.details == {"version_before": None, "background": True}
+    assert install.actor_user_id == hass_admin_user.id
+    assert update.action == "updated"
+    assert update.details == {"version_before": "1.0", "background": True}
+    assert client.addons.addon_info.await_count == 1
+
+
+async def test_password_typed_options_masked(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Options the app's schema types as password are hidden too."""
+    _set_record_values(entry, True)
+    schema = [
+        {"name": "mqtt_login", "type": "string", "format": "password"},
+        {"name": "log_level", "type": "string"},
+    ]
+    client.addons.addon_info.side_effect = [
+        _info(options={"mqtt_login": "hunter2", "log_level": "info"}, schema=schema),
+        _info(options={"mqtt_login": "hunter3", "log_level": "debug"}, schema=schema),
+    ]
+    await _api(
+        hass,
+        hass_ws_client,
+        "/addons/core_ssh/options",
+        data={"options": {"mqtt_login": "hunter3", "log_level": "debug"}},
+    )
+    [row] = await _rows(hass)
+    values = row.details["values"]["options"]
+    assert values["after"] == {"mqtt_login": {"hidden": True}, "log_level": "debug"}
+    assert "hunter" not in repr(row.details)
+
+
+async def test_password_only_change_hidden(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    client: Mock,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """A change only in a password-typed option is listed, its values hidden."""
+    _set_record_values(entry, True)
+    schema = [{"name": "login", "type": "password"}]
+    client.addons.addon_info.side_effect = [
+        _info(options={"login": "a"}, schema=schema),
+        _info(options={"login": "b"}, schema=schema),
+    ]
+    await _api(
+        hass,
+        hass_ws_client,
+        "/addons/core_ssh/options",
+        data={"options": {"login": "b"}},
+    )
+    [row] = await _rows(hass)
+    assert row.details == {
+        "changed": ["options"],
+        "values": {"options": {"hidden": True}},
+    }
