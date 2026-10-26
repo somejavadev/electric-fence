@@ -108,7 +108,21 @@ async def test_options_defaults_shown(
         else:
             defaults[str(key)] = key.default()
     expected = Settings().to_options()
-    for k in ("maxmind_account_id", "maxmind_license_key"):
+    # The v0.3 options join the form in a later task.
+    v03 = (
+        "verify_files",
+        "ignored_files",
+        "unmaintained_months",
+        "integration_repairs",
+        "scan_delay_minutes",
+        "forward_enabled",
+        "forward_host",
+        "forward_port",
+        "forward_protocol",
+        "forward_verify_tls",
+        "forward_ca_pem",
+    )
+    for k in ("maxmind_account_id", "maxmind_license_key", *v03):
         del expected[k]
     expected["notify_targets"] = []
     assert defaults == expected

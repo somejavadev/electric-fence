@@ -113,7 +113,7 @@ def test_migrates_v1(tmp_path: Path) -> None:
     store = FenceStore(path)
     store.open()
     with closing(sqlite3.connect(path)) as check:
-        assert check.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 3
     rows = store.query_logins(LoginFilter())
     assert [r.new_country for r in rows] == [False]
     assert store.note_country("u1", "NL") is False
@@ -139,7 +139,7 @@ def test_migrates_v1_with_column_already_added(tmp_path: Path) -> None:
     store.open()
     store.close()
     with closing(sqlite3.connect(path)) as check:
-        assert check.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_failed_migration_rolls_back(tmp_path: Path) -> None:
@@ -173,7 +173,7 @@ def test_reopen_after_migration_keeps_countries(tmp_path: Path) -> None:
 
 def test_schema_version() -> None:
     """The schema version is 2."""
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
 
 
 def test_note_country_first_is_not_new(store: FenceStore) -> None:

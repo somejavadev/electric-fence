@@ -308,13 +308,13 @@ def test_reopen_keeps_data_and_schema_version(tmp_path: Path) -> None:
 
     con = sqlite3.connect(path)
     try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2 == SCHEMA_VERSION
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3 == SCHEMA_VERSION
         assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert (
             con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[
                 0
             ]
-            == "2"
+            == "3"
         )
     finally:
         con.close()

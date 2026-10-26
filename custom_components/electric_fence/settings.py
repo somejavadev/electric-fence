@@ -34,11 +34,29 @@ class Settings:
     notify_new_country: bool = True
     notify_ban_ended: bool = False
     notify_targets: tuple[str, ...] = ()
+    verify_files: bool = True
+    ignored_files: tuple[str, ...] = ()
+    unmaintained_months: int = 4
+    integration_repairs: bool = True
+    scan_delay_minutes: int = 30
+    forward_enabled: bool = False
+    forward_host: str = ""
+    forward_port: int = 514
+    forward_protocol: Literal["tcp", "udp", "tls"] = "tcp"
+    forward_verify_tls: bool = True
+    forward_ca_pem: str = ""
 
     @property
     def trusted_window(self) -> timedelta:
         """Return how long after a success an IP is never auto-banned."""
         return timedelta(hours=self.ban_hours or 24)
+
+    def ignored_for(self, domain: str) -> frozenset[str]:
+        """Return the relative paths ignored for one integration."""
+        prefix = f"{domain}/"
+        return frozenset(
+            f.removeprefix(prefix) for f in self.ignored_files if f.startswith(prefix)
+        )
 
     @classmethod
     def from_options(cls, options: Mapping[str, Any]) -> Settings:
@@ -67,6 +85,19 @@ class Settings:
                 v for v in value if isinstance(v, str) and v.startswith("notify.")
             )
 
+        def ignored() -> tuple[str, ...]:
+            value = options.get("ignored_files")
+            if isinstance(value, str):
+                value = value.splitlines()
+            if not isinstance(value, list | tuple):
+                return d.ignored_files
+            entries = (v.strip() for v in value if isinstance(v, str))
+            return tuple(
+                e
+                for e in entries
+                if "/" in e and ".." not in e and not e.startswith("/")
+            )
+
         def flag(key: str) -> bool:
             value = options.get(key)
             return value if isinstance(value, bool) else getattr(d, key)
@@ -78,6 +109,10 @@ class Settings:
         def text(key: str) -> str | None:
             value = options.get(key)
             return value if isinstance(value, str) else None
+
+        def string(key: str) -> str:
+            value = options.get(key)
+            return value if isinstance(value, str) else getattr(d, key)
 
         return cls(
             notify_failed_login=flag("notify_failed_login"),
@@ -103,6 +138,17 @@ class Settings:
             notify_new_country=flag("notify_new_country"),
             notify_ban_ended=flag("notify_ban_ended"),
             notify_targets=targets(),
+            verify_files=flag("verify_files"),
+            ignored_files=ignored(),
+            unmaintained_months=number("unmaintained_months", 1, 36),
+            integration_repairs=flag("integration_repairs"),
+            scan_delay_minutes=number("scan_delay_minutes", 1, 1440),
+            forward_enabled=flag("forward_enabled"),
+            forward_host=string("forward_host").strip(),
+            forward_port=number("forward_port", 1, 65535),
+            forward_protocol=choice("forward_protocol", ("tcp", "udp", "tls")),
+            forward_verify_tls=flag("forward_verify_tls"),
+            forward_ca_pem=string("forward_ca_pem"),
         )
 
     def to_options(self) -> dict[str, Any]:
