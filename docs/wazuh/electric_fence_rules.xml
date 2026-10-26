@@ -1,0 +1,85 @@
+<!--
+  Electric Fence rules for Wazuh. Copy to /var/ossec/etc/rules/ and restart the manager.
+  The syslog header is RFC 3164 and its time is UTC without a zone, so use the
+  JSON "ts" field when you need the event time.
+-->
+<group name="electric_fence,">
+    <rule id="100500" level="0">
+      <decoded_as>json</decoded_as>
+      <program_name>^electric_fence$</program_name>
+      <description>Electric Fence event.</description>
+    </rule>
+    <rule id="100501" level="5">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^login_failed$</field>
+      <description>Electric Fence: failed login from $(ip).</description>
+    </rule>
+    <rule id="100502" level="10">
+      <if_matched_sid>100501</if_matched_sid>
+      <same_field>ip</same_field>
+      <frequency>8</frequency>
+      <timeframe>120</timeframe>
+      <description>Electric Fence: repeated failed logins from $(ip).</description>
+    </rule>
+    <rule id="100503" level="8">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^new_country_login$</field>
+      <description>Electric Fence: $(username) logged in from a new country ($(country)).</description>
+    </rule>
+    <rule id="100504" level="7">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="action">^banned$</field>
+      <description>Electric Fence: $(target) was banned.</description>
+    </rule>
+    <rule id="100505" level="8">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="kind">^user$</field>
+      <description>Electric Fence: user change ($(action)) by $(actor_name) from $(actor_ip).</description>
+    </rule>
+    <rule id="100506" level="8">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="actor_kind">^outside$</field>
+      <description>Electric Fence: change made outside Home Assistant ($(kind), $(action)).</description>
+    </rule>
+    <rule id="100507" level="8">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="kind">^app$</field>
+      <field name="action">^installed$</field>
+      <description>Electric Fence: app $(target_name) installed by $(actor_name).</description>
+    </rule>
+    <rule id="100508" level="10">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="kind">^app$</field>
+      <field name="action">^repository_added$</field>
+      <description>Electric Fence: app repository $(target) added by $(actor_name).</description>
+    </rule>
+    <rule id="100509" level="12">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="action">^files_changed$</field>
+      <description>Electric Fence: files of integration $(target_name) changed.</description>
+    </rule>
+    <rule id="100510" level="10">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="action">^removed_from_store$</field>
+      <description>Electric Fence: integration $(target_name) was removed from the Marketplace.</description>
+    </rule>
+    <rule id="100511" level="6">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="action">^archived$</field>
+      <description>Electric Fence: integration $(target_name) is archived.</description>
+    </rule>
+    <rule id="100512" level="3">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <field name="action">^forwarding_recovered$</field>
+      <description>Electric Fence: forwarding recovered.</description>
+    </rule>
+</group>

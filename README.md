@@ -40,6 +40,16 @@ Screenshots are coming.
 - Slows down logins to a username that is being guessed from many addresses.
 - Alerts you when a user logs in from a country they haven't logged in from
   before.
+- Records changes to apps on Supervisor installs: installs, updates, starts,
+  stops, restarts, rebuilds, and changes to their settings (see
+  [App changes](#app-changes-supervisor-installs)).
+- Checks the files of your custom integrations against the official copy, and
+  warns about integrations that are archived, removed from the Marketplace, or
+  no longer maintained (see [Custom integration checks](#custom-integration-checks)).
+- Sends every event to a SIEM such as Wazuh (see
+  [Send events to a SIEM](#send-events-to-a-siem)).
+- Lets you filter the Audit and Activity tabs and download what you see (see
+  [Filter and download](#filter-and-download)).
 - Shows everything in an admin-only panel with Overview, Activity, Users,
   Bans, Audit, and Settings tabs. The panel shows country flags, which are
   bundled with it and loaded from your own Home Assistant.
@@ -91,7 +101,7 @@ The minimum supported version is Home Assistant 2026.11.0.
 Go to **Settings** > **Devices & services** > **Electric Fence**, and select
 the cog (**Configure**) to change these. All of them apply
 immediately, without a restart. The dialog has the general settings below, and
-the **Bans**, **Username protection**, and **Notifications** sections.
+the **Bans**, **Username protection**, **Notifications**, **Integration checks**, and **Log forwarding** sections.
 
 | Setting                            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -135,6 +145,164 @@ audit log, and the entities are unaffected.
 | **Ban ended**                               | A message when a ban expires or is lifted. Off by default.                                                                          |
 | **Phone notifications**                     | Notify entities, such as phones, that also receive these messages.                                                                  |
 
+**Integration checks**
+
+| Setting                | What it does                                                                                                                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verify files**       | Compares installed custom integration files with the official copy, or with a local baseline for hand-copied ones (see [Custom integration checks](#custom-integration-checks)). On by default. |
+| **Create repairs**     | Raises a repair when an integration check finds a problem. Off leaves the audit log, events and forwarding unchanged. On by default.                                                            |
+| **Unmaintained after** | Months without a release before an integration counts as unmaintained, from 1 to 36. The default is 4.                                                                                          |
+| **First scan delay**   | Minutes to wait after startup before the first scan, from 1 to 1440. The default is 30.                                                                                                         |
+| **Ignored files**      | Files the check skips, one per line as `<integration folder>/<path>`, for example `my_integration/data.json`.                                                                                   |
+
+**Log forwarding**
+
+| Setting                    | What it does                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| **Forward events**         | Sends each event to your collector as a syslog message. Off by default.                 |
+| **Host**                   | Host name or IP address of the collector. Required when forwarding is on.               |
+| **Port**                   | From 1 to 65535. The default is 514.                                                    |
+| **Protocol**               | `tcp` (the default), `udp`, or `tls`. Wazuh's own listener accepts TCP and UDP only.    |
+| **Verify the certificate** | Checks the collector's certificate when using TLS. On by default.                       |
+| **CA certificate**         | Optional PEM text of the certificate authority that signed the collector's certificate. |
+
+## App changes (Supervisor installs)
+
+On Home Assistant OS and Supervised installs, Electric Fence records changes
+to apps (add-ons): installs, uninstalls, updates, starts, stops, restarts,
+rebuilds, changes to an app's options, ports and other settings (boot,
+watchdog, auto update, ingress panel, protection mode), and apps repositories
+added or removed. A record holds the app's name and slug, the action, the
+versions before and after an update, and which settings changed. The values
+are stored only when **Record before and after values** is on, redacted as
+described in [Privacy](#privacy).
+
+- **Where it listens.** Changes are recorded from the Supervisor WebSocket
+  commands, the app actions (`hassio.addon_start` and friends), and the app
+  update entities, with the user and IP address behind them. A change is
+  recorded only once Supervisor reports it succeeded. The `/api/hassio` REST
+  proxy can't make app changes: Home Assistant only lets admins reach backups,
+  logs, the changelog and the docs there.
+- **Outside Home Assistant.** A change made from the command line, on the host
+  or in Supervisor itself shows as **Outside Home Assistant**. Electric Fence
+  sees these through Supervisor's events and a comparison of the app list
+  every 15 minutes. Starts and stops in a burst, such as after a reboot,
+  collapse into one record that lists the apps. Options changed outside are
+  recorded without values, as a hash only, whatever **Record before and after
+  values** says. A change already recorded from Home Assistant isn't recorded
+  twice.
+- **System.** Supervisor's automatic updates of apps with auto update on show
+  as **System**. Watchdog restarts show as **Outside Home Assistant**, because
+  Supervisor doesn't tell Home Assistant they were the watchdog.
+- **Background installs and updates** are recorded when Supervisor accepts
+  them.
+- **Not available** on Container and Core installs. The Settings tab shows
+  "Not available on this install type".
+
+## Custom integration checks
+
+Two checks look at the integrations in your `custom_components` folder. Both
+run in the background and never stop Home Assistant from starting.
+
+**File verification** spots an integration whose files no longer match what its
+author published, which may mean someone altered the code.
+
+- For integrations installed from the Marketplace, Electric Fence builds the
+  official file set for the installed version, the way the Marketplace installs
+  it, and compares file by file: matching, changed, missing, or added. After a
+  Marketplace install or update the new files are checked against the new
+  version, so an update isn't flagged, and an install still in progress isn't
+  reported as changed.
+- **Unverified** means Electric Fence has no official copy to compare with,
+  because the integration was copied by hand. The first time it sees one, it
+  records a local baseline (file hashes), and flags any file that changes
+  afterwards. When the integration's `manifest.json` version changes, the
+  baseline is renewed and the audit log says so.
+- **Couldn't check** means the official copy wasn't reachable: no release
+  asset, a 404, an archive over the size limit, a timeout, an install at a
+  commit, or the Marketplace not being set up. It is retried on the next daily
+  scan and never treated as altered.
+- A symlink inside an integration folder is flagged and never followed.
+  Unreadable files are reported as unreadable, not as changed. `__pycache__`
+  and `*.pyc` are always ignored; use **Ignored files** for integrations that
+  write their own files into their folder.
+
+**Integration health** warns about Marketplace integrations whose repository is
+archived, removed from the Marketplace, or not updated in more than 4 months
+(**Unmaintained after**). It uses what the Marketplace already stores, with no
+extra requests. The Marketplace raises its own repair for repositories it has
+removed, so Electric Fence records, forwards and shows those, but doesn't
+raise a second repair.
+
+Findings go to the audit log (when one appears and when it goes away), to the
+events and the SIEM, to the posture warnings on the Overview tab, and, with
+**Create repairs** on, to a repair issue that names the integration and its
+files. Open an integration on the Overview tab to see the status of each file.
+
+**What is sent to GitHub.** Only plain downloads of the public release zip or
+the repository archive for the installed version. That tells GitHub which
+integrations you run, as the Marketplace already does. Nothing about your
+system is sent, and the REST API isn't used. Turn off **Verify files** to stop
+it, which also stops the local baseline.
+
+**Resource use.** The check runs one integration at a time, once a day and once
+after the **First scan delay** following startup (and after a Marketplace
+install or update). Files are hashed as a stream in a background thread. The
+official file hashes are cached per repository and version, so a download only
+happens when the installed version changes. Each archive is limited to 25 MB
+and a 60 second download, and is read in memory without being extracted into
+`custom_components`; Home Assistant's own limits of 50,000 files and 100 MB
+expanded also apply.
+
+## Send events to a SIEM
+
+Electric Fence can forward every event it records to a syslog collector or
+SIEM, starting with [Wazuh](docs/wazuh/README.md). Turn it on in the **Log
+forwarding** section of the settings.
+
+- **What is sent.** Logins (successful and failed), bans, attacks, new-country
+  logins, every audit change with the user and IP behind it, app changes,
+  integration check findings, and forwarding health. Each event is one JSON
+  object (`event_type`, `ts`, and the fields of the event) in a syslog message
+  with an RFC 3164 header (`<PRI>Mmm dd hh:mm:ss HOST electric_fence: {json}`).
+  The syslog time is UTC without a zone, so use the `ts` field in the JSON.
+  The header is RFC 3164 because Wazuh's pre-decoder handles it reliably.
+- **Unmasked.** Usernames and IP addresses go out exactly as recorded, to the
+  collector you choose. **Mask IP addresses in the panel** only affects the
+  panel. Before and after values are included only when **Record before and
+  after values** is on, redacted as in the audit log. Passwords, tokens, keys
+  and coordinates are never sent.
+- **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
+  Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
+  certificate is checked unless you turn that off, and you can paste your own
+  CA certificate.
+- **Reliability.** Forwarding never makes a login wait. If the collector is
+  down or its name doesn't resolve, events queue up to 1,000 and the oldest
+  are dropped first. Reconnects back off from 1 second to 5 minutes, and the
+  queued events are sent in order once it's back. A forwarding sensor and a
+  security warning show the failure.
+
+The [Wazuh page](docs/wazuh/README.md) has the `ossec.conf` listener and a
+sample rules file.
+
+## Filter and download
+
+The **Audit** and **Activity** tabs have a **Filters** button with a count of
+active filters, and a search box. Filtering happens on the server, so large
+histories stay fast.
+
+- **Audit** filters by kind, action, user, IP address, time, and whether to
+  show System changes. **Activity** filters by result (success or failed), user
+  or submitted username, IP address, country, and time.
+- **Search** matches the target, IP address, username and details.
+- Under the menu (**&vellip;**), **Download data** saves the filtered records as
+  CSV or JSON. It exports everything the filters match, not just what's on
+  screen, up to 100,000 rows. The file is built in your browser and contains
+  full, unmasked values, which the file name says (for example
+  `electric-fence-audit-2026-10-26-unmasked.csv`). In the CSV, values that
+  start with `=`, `+`, `-`, `@`, a tab or a carriage return are neutralised so
+  a spreadsheet doesn't run them as formulas, and the file opens as UTF-8.
+
 ## Events
 
 Electric Fence fires these events on the Home Assistant event bus.
@@ -176,13 +344,17 @@ change without a person behind it has no user and shows as **System** in the
 panel.
 
 - `kind` is one of `config_entry`, `user`, `core_config`, `backup`, `http`,
-  `network`, `analytics`, `logger`, `recorder`, `ip_ban`, or
-  `login_protection`.
+  `network`, `analytics`, `logger`, `recorder`, `ip_ban`, `login_protection`,
+  `app`, `files`, `integration_health`, or `forwarding`.
 - `action` is one of `added`, `removed`, `updated`, `reconfigured`,
   `options_changed`, `enabled`, `disabled`, `password_changed`,
   `restore_requested`, `confirmed`, `purged`, `withdrawn`, `banned`,
-  `unbanned`, `expired`, `attack_started`, `attack_ended`, `slowdown_ended`, or
-  `countries_cleared`.
+  `unbanned`, `expired`, `attack_started`, `attack_ended`, `slowdown_ended`,
+  `countries_cleared`, `installed`, `uninstalled`, `started`, `stopped`,
+  `restarted`, `rebuilt`, `settings_changed`, `repository_added`,
+  `repository_removed`, `files_changed`, `files_match`, `baseline_recorded`,
+  `baseline_renewed`, `archived`, `removed_from_store`, `unmaintained`,
+  `recovered`, `forwarding_failed`, or `forwarding_recovered`.
 - For `login_protection`, `target_name` is the attacked username, masked
   unless it belongs to an existing user.
 - `changed` lists the names of the settings that changed, never their values.
@@ -305,8 +477,11 @@ message".
 ## Privacy
 
 Electric Fence stores data on your Home Assistant system only. It sends
-nothing anywhere, apart from downloading the GeoIP database and doing reverse
-DNS lookups. Reverse DNS is on by default. It sends each IP address to the DNS
+nothing anywhere, apart from downloading the GeoIP database, doing reverse DNS
+lookups, downloading public release files from GitHub for the integration
+checks (see [Custom integration checks](#custom-integration-checks)), and
+forwarding events to the SIEM you set up. Forwarding sends usernames and IP
+addresses unmasked to that SIEM. Reverse DNS is on by default. It sends each IP address to the DNS
 resolver your system is configured to use. You can turn it off in the settings.
 
 - **Usernames.** The username someone typed is stored, and shown in full only
@@ -367,7 +542,7 @@ is licensed under
 
 ## Known limits
 
-- Bans are per IP address only. There are no ranges or countries in v0.2.
+- Bans are per IP address only. There are no ranges or countries yet.
 - A ban whose record Electric Fence couldn't store in its database still
   works, but after a restart it shows as **Other** in the Bans tab and never
   expires. A ban that couldn't be written to `ip_bans.yaml` disappears when
@@ -386,7 +561,10 @@ is licensed under
 - The minimum supported version is Home Assistant 2026.11.0. The integration
   refuses to load on betas and development builds below it, including
   `2026.11.0.dev0`.
-- Supervisor features aren't available in the dev container.
+- App auditing needs Supervisor, so it isn't available on Container and Core
+  installs or in the dev container.
+- Watchdog restarts of apps show as **Outside Home Assistant**, since
+  Supervisor doesn't identify them to Home Assistant.
 
 ## Development
 
