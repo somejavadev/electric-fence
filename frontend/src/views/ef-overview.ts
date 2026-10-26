@@ -346,7 +346,7 @@ export class EfOverview extends LitElement {
     void this._refresh(generation);
     void this._subscribe(generation);
     void this._loadStatus(generation);
-    void this._loadIntegrations(generation);
+    void this._watchIntegrations(generation);
   }
 
   /** Only the attribution needs the status; failing here costs nothing. */
@@ -376,8 +376,20 @@ export class EfOverview extends LitElement {
     }
   }
 
+  /** Load, and follow a scan that is already running (a schedule, a tab). */
+  private async _watchIntegrations(generation: number): Promise<void> {
+    await this._loadIntegrations(generation);
+    if (
+      generation === this._generation &&
+      this._integrations?.running === true &&
+      this._scanTimer === undefined
+    ) {
+      this._pollScan(generation, 0);
+    }
+  }
+
   private _retryIntegrations = (): void => {
-    void this._loadIntegrations(this._generation);
+    void this._watchIntegrations(this._generation);
   };
 
   private _checkNow = async (): Promise<void> => {

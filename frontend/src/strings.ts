@@ -35,7 +35,7 @@ export const strings = {
   integrations: {
     checkNow: "Check now",
     started: "Started",
-    recent: "Already ran in the last 5 minutes",
+    recent: "A check is already running or ran in the last 5 minutes",
     scanError: "Could not start the check. Try again.",
     empty: "No custom integrations",
     unavailable: "Integration checks unavailable",

@@ -707,7 +707,7 @@ describe("custom integrations card", () => {
     card(el).querySelector<HTMLButtonElement>("button.check")?.click();
     await settle(el);
     expect(squash(card(el).textContent)).toContain(
-      "Already ran in the last 5 minutes",
+      "A check is already running or ran in the last 5 minutes",
     );
   });
 
@@ -793,6 +793,26 @@ describe("custom integrations card", () => {
     expect(button().disabled).toBe(true);
     running = false;
     await vi.advanceTimersByTimeAsync(10_000);
+    await settle(el);
+    expect(button().disabled).toBe(false);
+  });
+
+  it("follows a scan that is already running when the page opens", async () => {
+    vi.useFakeTimers();
+    let running = true;
+    const { el } = await mountCard(() => ({
+      items: [changed],
+      scanned_at: null,
+      running,
+      available: true,
+    }));
+    const button = () =>
+      card(el).querySelector<HTMLButtonElement>(
+        "button.check",
+      ) as HTMLButtonElement;
+    expect(button().disabled).toBe(true);
+    running = false;
+    await vi.advanceTimersByTimeAsync(2000);
     await settle(el);
     expect(button().disabled).toBe(false);
   });
