@@ -789,15 +789,20 @@ def _check_marketplace_repositories(hass: HomeAssistant) -> str | None:
         repositories = getattr(entry.runtime_data, "repositories", None)
         if repositories is None:
             return "Marketplace manager has no repositories"
-        for method in ("list_all", "is_removed", "removed_repository"):
+        for method in ("is_removed", "removed_repository"):
             if not callable(getattr(repositories, method, None)):
                 return f"Marketplace repositories.{method} is missing"
+        # A property in Core: the list itself, not something to call.
+        if not hasattr(repositories, "list_all"):
+            return "Marketplace repositories.list_all is missing"
+        if callable(repositories.list_all):
+            return "Marketplace repositories.list_all is no longer a property"
         if not hasattr(
             getattr(entry.runtime_data, "common", None), "archived_repositories"
         ):
             return "Marketplace common.archived_repositories is missing"
         try:
-            listed = list(repositories.list_all())
+            listed = list(repositories.list_all)
         except Exception as err:  # noqa: BLE001
             return f"Marketplace repositories.list_all raised {type(err).__name__}"
         for repository in listed:

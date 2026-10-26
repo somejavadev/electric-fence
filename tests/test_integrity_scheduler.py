@@ -845,3 +845,11 @@ def test_signals_known() -> None:
         scheduler.INSTALL_PROGRESS_SIGNAL
         == MarketplaceSignal.REPOSITORY_INSTALL_PROGRESS
     )
+
+
+def test_signals_are_cores_own() -> None:
+    """Both triggers listen on the signals Core's Marketplace sends."""
+    assert scheduler.INSTALLED_SIGNAL == SIGNAL_REPOSITORY_INSTALLED
+    assert scheduler.INSTALL_PROGRESS_SIGNAL == (
+        MarketplaceSignal.REPOSITORY_INSTALL_PROGRESS
+    )

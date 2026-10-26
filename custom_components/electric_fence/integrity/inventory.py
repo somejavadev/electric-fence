@@ -82,7 +82,7 @@ def _marketplace_repositories(hass: HomeAssistant) -> tuple[Any, dict[str, Any]]
         try:
             repos = {
                 r.data.domain: r
-                for r in manager.repositories.list_all()
+                for r in manager.repositories.list_all
                 if r.data.installed
                 and r.data.category == "integration"
                 and r.data.domain
