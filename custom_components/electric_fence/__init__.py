@@ -25,6 +25,7 @@ from homeassistant.util import dt as dt_util
 
 from .alerts import Alerter
 from .attribution import AttributionCollector
+from .collectors.apps import AppCollector
 from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
 from .collectors.config_entries import ConfigEntryCollector
@@ -83,6 +84,7 @@ COLLECTOR_TYPES: list[type[BaseCollector]] = [
     ConfigEntryCollector,
     UserCollector,
     CoreConfigCollector,
+    AppCollector,
 ]
 
 

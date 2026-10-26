@@ -3,6 +3,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import inspect
+import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -542,4 +543,172 @@ def _check_ban_middleware_lookup(hass: HomeAssistant) -> str | None:
 register_contract(Contract("ban_manager", "protection", _check_ban_manager))
 register_contract(
     Contract("ban_middleware_lookup", "protection", _check_ban_middleware_lookup)
+)
+
+
+def _not_supervisor(hass: HomeAssistant) -> bool:
+    """Return True off Supervisor: the app contracts don't apply (they pass)."""
+    return "hassio" not in hass.config.components
+
+
+def _ws_command_reason(
+    hass: HomeAssistant, command: str, fields: tuple[str, ...]
+) -> str | None:
+    """Check a WebSocket command is registered with these message fields."""
+    from homeassistant.components.websocket_api import ActiveConnection  # noqa: PLC0415
+    from homeassistant.components.websocket_api.const import (  # noqa: PLC0415
+        DOMAIN as WEBSOCKET_API_DOMAIN,
+    )
+
+    for attr in _WATCHED_CONNECTION_ATTRS:
+        if not hasattr(ActiveConnection, attr):
+            return f"ActiveConnection.{attr} is missing"
+    handlers = hass.data.get(WEBSOCKET_API_DOMAIN, {})
+    if command not in handlers:
+        return f"WebSocket command not registered: {command}"
+    if (keys := _schema_keys(handlers[command][1])) is None:
+        return f"{command}: the message schema has no field names"
+    if missing := [key for key in fields if key not in keys]:
+        return f"{command}: message fields missing: {', '.join(missing)}"
+    return None
+
+
+def _check_supervisor_ws_api(hass: HomeAssistant) -> str | None:
+    """`supervisor/api` takes `endpoint`, `method` and `data`."""
+    if _not_supervisor(hass):
+        return None
+    return _ws_command_reason(hass, "supervisor/api", ("endpoint", "method", "data"))
+
+
+def _check_hassio_update_addon_ws(hass: HomeAssistant) -> str | None:
+    """`hassio/update/addon` takes the app's slug as `addon`."""
+    if _not_supervisor(hass):
+        return None
+    return _ws_command_reason(hass, "hassio/update/addon", ("addon",))
+
+
+def _service_reason(
+    hass: HomeAssistant, domain: str, service: str, fields: tuple[str, ...]
+) -> str | None:
+    """Check a registered service is Core's `Service` with these fields."""
+    from homeassistant.core import HassJob, Service  # noqa: PLC0415
+
+    name = f"{domain}.{service}"
+    found = getattr(hass.services, "_services", {}).get(domain, {}).get(service)
+    if not isinstance(found, Service):
+        return f"{name} is not a Service"
+    if not isinstance(getattr(found, "job", None), HassJob):
+        return f"{name}: Service.job is not a HassJob"
+    if fields:
+        if (keys := _schema_keys(found.schema)) is None:
+            return f"{name}: the service schema has no field names"
+        if absent := [key for key in fields if key not in keys]:
+            return f"{name}: service fields missing: {', '.join(absent)}"
+    return None
+
+
+def _check_hassio_addon_services(hass: HomeAssistant) -> str | None:
+    """Check the app start, stop and restart services take the slug we read."""
+    if _not_supervisor(hass):
+        return None
+    from .collectors.apps import APP_SERVICES, HASSIO  # noqa: PLC0415
+
+    services = getattr(hass.services, "_services", None)
+    if not isinstance(services, dict):
+        return "ServiceRegistry._services is not a mapping"
+    registered = services.get(HASSIO, {})
+    if missing := [f"{HASSIO}.{s}" for s in APP_SERVICES if s not in registered]:
+        return f"services not registered: {', '.join(missing)}"
+    for service, (key, _action) in APP_SERVICES.items():
+        if reason := _service_reason(hass, HASSIO, service, (key,)):
+            return reason
+    return None
+
+
+def _check_hassio_update_install(hass: HomeAssistant) -> str | None:
+    """`update.install` is wrappable; app update entities keep their unique ID.
+
+    Checked once `update` is loaded. The unique ID is `<slug>_<key>` with
+    the key `version_latest` (`app_slug_from_unique_id`).
+    """
+    if _not_supervisor(hass):
+        return None
+    from .collectors.apps import APP_UPDATE_SUFFIX, UPDATE, UPDATE_INSTALL  # noqa: PLC0415
+
+    if UPDATE not in hass.config.components:
+        return None
+    services = getattr(hass.services, "_services", {})
+    if UPDATE_INSTALL not in services.get(UPDATE, {}):
+        return "update.install is not registered"
+    if reason := _service_reason(hass, UPDATE, UPDATE_INSTALL, ()):
+        return reason
+    from homeassistant.components.hassio import entity, update  # noqa: PLC0415
+
+    key = getattr(getattr(update, "ENTITY_DESCRIPTION", None), "key", None)
+    if f"_{key}" != APP_UPDATE_SUFFIX:
+        return f"hassio update entity key is not {APP_UPDATE_SUFFIX[1:]!r}"
+    try:
+        source = inspect.getsource(entity.HassioAddonEntity.__init__)
+    except OSError, TypeError:
+        return "the HassioAddonEntity source is unavailable"
+    if 'f"{addon.addon.slug}_{entity_description.key}"' not in source:
+        return "HassioAddonEntity no longer builds its unique ID from slug and key"
+    return None
+
+
+def _check_supervisor_client(hass: HomeAssistant) -> str | None:
+    """Check the Supervisor client has the reads the collector makes."""
+    if _not_supervisor(hass):
+        return None
+    from aiohasupervisor import SupervisorClient  # noqa: PLC0415
+    from aiohasupervisor.addons import AddonsClient  # noqa: PLC0415
+    from aiohasupervisor.store import StoreClient  # noqa: PLC0415
+
+    from homeassistant.components import hassio  # noqa: PLC0415
+
+    if not callable(getattr(hassio, "get_supervisor_client", None)):
+        return "hassio.get_supervisor_client is missing"
+    for attr in ("addons", "store"):
+        if not isinstance(getattr(SupervisorClient, attr, None), property):
+            return f"aiohasupervisor SupervisorClient.{attr} is missing"
+    for cls, attr in ((AddonsClient, "addon_info"), (StoreClient, "repositories_list")):
+        if not inspect.iscoroutinefunction(getattr(cls, attr, None)):
+            return f"aiohasupervisor {cls.__name__}.{attr} is missing"
+    return None
+
+
+for _name, _check in (
+    ("supervisor_ws_api", _check_supervisor_ws_api),
+    ("hassio_update_addon_ws", _check_hassio_update_addon_ws),
+    ("hassio_addon_services", _check_hassio_addon_services),
+    ("hassio_update_install", _check_hassio_update_install),
+    ("supervisor_client", _check_supervisor_client),
+):
+    register_contract(Contract(_name, "apps", _check))
+
+
+def _check_hassio_rest_proxy(hass: HomeAssistant) -> str | None:
+    """Core's `/api/hassio` proxy lets no admin reach an app change.
+
+    So the app collector needs no hook there. `HassIOView` checks the path
+    against `PATHS_ADMIN` and refuses anything else.
+    """
+    if _not_supervisor(hass):
+        return None
+    from homeassistant.components.hassio import http  # noqa: PLC0415
+
+    from .collectors.apps import APP_CHANGE_PATHS  # noqa: PLC0415
+
+    allowed = getattr(http, "PATHS_ADMIN", None)
+    if not isinstance(allowed, re.Pattern):
+        return "hassio.http.PATHS_ADMIN is missing"
+    if opened := [path for path in APP_CHANGE_PATHS if allowed.match(path)]:
+        return "the /api/hassio proxy now lets admins reach app changes: " + ", ".join(
+            opened
+        )
+    return None
+
+
+register_contract(
+    Contract("hassio_rest_proxy", "apps_rest_proxy", _check_hassio_rest_proxy)
 )

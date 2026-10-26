@@ -108,6 +108,7 @@ async def test_diagnostics_redacts_and_has_no_personal_data(
         "config_entries",
         "users",
         "core_config",
+        "apps",
     ]
     login = diag["collectors"][0]
     assert login == {"name": "login", "enabled": True, "reason": None, "errors": 0}

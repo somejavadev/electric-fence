@@ -22,9 +22,9 @@ from custom_components.electric_fence import COLLECTOR_TYPES, attribution
 from custom_components.electric_fence.attribution import AttributionCollector
 from custom_components.electric_fence.collectors.system_settings import (
     AREA_SPECS,
+    ResultWatch,
     SystemSettingsCollector,
     WsSpec,
-    _ResultWatch,
     request_params,
 )
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
@@ -777,7 +777,7 @@ async def test_handler_exception_propagates_unchanged(
 
     assert info.value is error
     assert len(calls) == 1
-    assert isinstance(calls[0], _ResultWatch)
+    assert isinstance(calls[0], ResultWatch)
 
 
 async def test_handler_return_value_returned(
@@ -1013,11 +1013,11 @@ def _fake_connection(hass: HomeAssistant, *, user: Any = "admin") -> Mock:
     return connection
 
 
-def _watch(on_success: Any = None) -> tuple[_ResultWatch, Mock, Mock]:
+def _watch(on_success: Any = None) -> tuple[ResultWatch, Mock, Mock]:
     connection = Mock(spec=ActiveConnection)
     on_success = on_success or Mock()
     return (
-        _ResultWatch(connection, 5, on_success, FailOpen("t")),
+        ResultWatch(connection, 5, on_success, FailOpen("t")),
         connection,
         on_success,
     )
@@ -1104,7 +1104,7 @@ def test_watch_success_failing_still_forwards() -> None:
     """`on_success` raising is caught; the result is still sent."""
     guard = FailOpen("t")
     connection = Mock(spec=ActiveConnection)
-    watch = _ResultWatch(connection, 5, Mock(side_effect=RuntimeError), guard)
+    watch = ResultWatch(connection, 5, Mock(side_effect=RuntimeError), guard)
     watch.send_result(5)
     connection.send_result.assert_called_once_with(5, None)
     assert guard.errors == 1

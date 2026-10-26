@@ -4,7 +4,7 @@ Unlike the v0.1 commands, these fire no event afterwards, so the wrapper
 records the change itself. For each command in `WS_SPECS`:
 
 - The spec's reader takes the area's settings before Core's handler runs.
-- Core's handler gets a `_ResultWatch` in place of the connection. When the
+- Core's handler gets a `ResultWatch` in place of the connection. When the
   handler sends its result for the message, the reader runs again and the
   difference is recorded (only setting names unless `record_values` is on).
   An error, an exception or no answer records nothing; so does a success
@@ -478,7 +478,7 @@ SERVICE_AREA_SPECS: tuple[ServiceSpec, ...] = (
 )
 
 
-class _ResultWatch:
+class ResultWatch:
     """An `ActiveConnection` stand-in that watches one message's answer.
 
     Every attribute read, write and delete goes to the real connection, so
@@ -519,6 +519,7 @@ class _ResultWatch:
 
     @property  # type: ignore[misc]
     def __class__(self) -> type:
+        """Report the real connection's class."""
         return ActiveConnection
 
     def __getattr__(self, name: str) -> Any:
@@ -585,29 +586,31 @@ class _ResultWatch:
 
 
 @dataclass(frozen=True, slots=True)
-class _Actor:
+class Actor:
+    """Who made a change: a user and IP, or System (all None)."""
+
     user_id: str | None
     user_name: str | None
     ip: str | None
 
 
-def _actor(connection: ActiveConnection) -> _Actor:
+def ws_actor(connection: ActiveConnection) -> Actor:
     """Return who sent the command (admin commands always have a user)."""
     user = connection.user
-    return _Actor(
+    return Actor(
         user_id=user.id if user is not None else None,
         user_name=user.name if user is not None else None,
         ip=ws_ip(connection),
     )
 
 
-def _call_actor(hass: HomeAssistant, call: ServiceCall) -> _Actor:
+def call_actor(hass: HomeAssistant, call: ServiceCall) -> Actor:
     """Return who called the service: its context's user, else System."""
     if (user_id := call.context.user_id) is None:
-        return _Actor(user_id=None, user_name=None, ip=None)
+        return Actor(user_id=None, user_name=None, ip=None)
     users = auth_users(hass)
     user = users.get(user_id) if users is not None else None
-    return _Actor(
+    return Actor(
         user_id=user_id,
         user_name=user.name if user is not None else None,
         ip=call_ip(user_id),
@@ -770,18 +773,18 @@ class SystemSettingsCollector(BaseCollector):
 
     def _service_before(
         self, spec: ServiceSpec, call: ServiceCall
-    ) -> tuple[_Actor, dict[str, Any]] | None:
+    ) -> tuple[Actor, dict[str, Any]] | None:
         """Read before Core's handler: who calls, and the snapshot."""
         if (found := spec.read(self.hass, call)) is None:
             return None
         # Deep: Core may change nested settings in place.
-        return _call_actor(self.hass, call), copy.deepcopy(dict(found))
+        return call_actor(self.hass, call), copy.deepcopy(dict(found))
 
     def _service_after(
         self,
         spec: ServiceSpec,
         call: ServiceCall,
-        actor: _Actor,
+        actor: Actor,
         before: dict[str, Any],
     ) -> None:
         """Record once Core's handler returned (inside the guard)."""
@@ -815,7 +818,7 @@ class SystemSettingsCollector(BaseCollector):
                 msg: dict[str, Any],
             ) -> None:
                 watch = self.guard.call(self._before, spec, connection, msg)
-                # The watch stands in for the connection (see `_ResultWatch`).
+                # The watch stands in for the connection (see `ResultWatch`).
                 target = connection if watch is None else cast(ActiveConnection, watch)
                 return original(hass, target, msg)
 
@@ -825,14 +828,14 @@ class SystemSettingsCollector(BaseCollector):
 
     def _before(
         self, spec: WsSpec, connection: ActiveConnection, msg: dict[str, Any]
-    ) -> _ResultWatch | None:
+    ) -> ResultWatch | None:
         """Read before Core's handler; return the watch to pass it, if any."""
         found = spec.read(self.hass, msg)
         if found is None:
             return None
         # Deep: Core may change nested settings in place.
         before = copy.deepcopy(dict(found))
-        actor = _actor(connection)
+        actor = ws_actor(connection)
         if spec.record_before:
             # Before Core's `require_admin`: a non-admin is about to be refused.
             user = connection.user
@@ -843,12 +846,12 @@ class SystemSettingsCollector(BaseCollector):
         def on_success() -> None:
             self._after(spec, actor, before, msg)
 
-        return _ResultWatch(connection, msg["id"], on_success, self.guard)
+        return ResultWatch(connection, msg["id"], on_success, self.guard)
 
     def _after(
         self,
         spec: WsSpec,
-        actor: _Actor,
+        actor: Actor,
         before: dict[str, Any],
         msg: dict[str, Any],
     ) -> None:
@@ -876,7 +879,7 @@ class SystemSettingsCollector(BaseCollector):
     def _submit_ws(
         self,
         spec: WsSpec,
-        actor: _Actor,
+        actor: Actor,
         msg: dict[str, Any],
         details: dict[str, Any],
     ) -> None:
@@ -887,7 +890,7 @@ class SystemSettingsCollector(BaseCollector):
         kind: ChangeKind,
         action: ChangeAction,
         target_name: str,
-        actor: _Actor,
+        actor: Actor,
         details: dict[str, Any],
     ) -> None:
         self.runtime.worker.submit(
