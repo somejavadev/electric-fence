@@ -13,6 +13,7 @@ from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.hassio import is_hassio
 from homeassistant.loader import async_get_loaded_integration
 from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
@@ -368,16 +369,16 @@ async def ws_status(
                 "storage_errors": worker.storage_errors,
             },
             "forwarding": _forwarding(runtime),
-            "apps": (
-                "available"
-                if any(
-                    isinstance(c, AppCollector) and c.is_installed
-                    for c in runtime.collectors
-                )
-                else "not_available"
-            ),
+            "apps": _apps_state(hass, runtime),
         },
     )
+
+
+def _apps_state(hass: HomeAssistant, runtime: Runtime) -> str:
+    """Return `available`, `disabled` (contracts turned it off) or `not_available`."""
+    if any(isinstance(c, AppCollector) and c.is_installed for c in runtime.collectors):
+        return "available"
+    return "disabled" if is_hassio(hass) else "not_available"
 
 
 def _forwarding(runtime: Runtime) -> dict[str, Any] | None:

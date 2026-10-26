@@ -156,7 +156,9 @@ Commands::
           forwarding: {state: "connected" | "failing", queued: int,
                        dropped: int, last_error: str | null} | null,
                        # null when forwarding is off
-          apps: "available" | "not_available"}
+          apps: "available" | "disabled" | "not_available"}
+                # disabled: a Supervisor install whose contracts turned the
+                # app collector off (see Repairs)
     electric_fence/subscribe {}  (subscription; result null, then events)
       event {type: "login", item: LoginItem}   # item.id is null
       event {type: "change", item: ChangeItem} # item.id is null

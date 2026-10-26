@@ -416,6 +416,8 @@ export const strings = {
     apps: "Apps",
     appAuditing: "App auditing",
     appsNotAvailable: "Not available on this install type",
+    appsDisabled:
+      "App auditing is turned off because Home Assistant changed (see Repairs)",
     forwarding: "Log forwarding",
     forwardingState: "Forwarding",
     forwardingStates: { connected: "Connected", failing: "Failing" } as Record<

@@ -382,7 +382,8 @@ export interface Status {
   worker: { queued: number; dropped: number; storage_errors: number };
   /** Null while forwarding is off. */
   forwarding: ForwardingStatus | null;
-  apps: "available" | "not_available";
+  /** `disabled`: Supervisor install, turned off by a failed contract. */
+  apps: "available" | "disabled" | "not_available";
 }
 
 export interface ForwardingStatus {

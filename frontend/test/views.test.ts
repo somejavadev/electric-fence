@@ -361,6 +361,15 @@ describe("ef-settings", () => {
     );
   });
 
+  it("says app auditing is turned off when Home Assistant changed", async () => {
+    const s = status();
+    s.apps = "disabled";
+    const el = await mount<EfSettings>("ef-settings", withStatus(s));
+    expect(el.shadowRoot?.textContent).toContain(
+      "App auditing is turned off because Home Assistant changed (see Repairs)",
+    );
+  });
+
   it("shows forwarding state with queued and dropped counts", async () => {
     const s = status();
     s.settings.forward_enabled = true;

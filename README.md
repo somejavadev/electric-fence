@@ -207,6 +207,11 @@ described in [Privacy](#privacy).
   them.
 - **Not available** on Container and Core installs. The Settings tab shows
   "Not available on this install type".
+- **Turned off** when Home Assistant changed in a way Electric Fence doesn't
+  expect. The Settings tab then shows "App auditing is turned off because Home
+  Assistant changed (see Repairs)", and a repair says why. If only the app
+  update entities or the app manager changed, only that source is skipped,
+  with a repair of its own, and the rest keep recording.
 
 ## Custom integration checks
 

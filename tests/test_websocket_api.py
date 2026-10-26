@@ -1179,6 +1179,17 @@ async def test_scan_rate_limited(
     assert scheduler.scan.await_count == 2
 
 
+async def test_status_apps_disabled_on_supervisor(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    ws: MockHAClientWebSocket,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Supervisor, an app collector its contracts turned off is `disabled`."""
+    monkeypatch.setattr(fence_ws, "is_hassio", lambda _hass: True)
+    assert (await result(ws, "electric_fence/status"))["apps"] == "disabled"
+
+
 async def test_status_v03_fields(
     hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
 ) -> None:

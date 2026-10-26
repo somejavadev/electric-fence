@@ -269,7 +269,11 @@ export class EfSettings extends LiveView {
         ${this._table([
           [
             s.appAuditing,
-            status.apps === "not_available" ? s.appsNotAvailable : s.on,
+            status.apps === "not_available"
+              ? s.appsNotAvailable
+              : status.apps === "disabled"
+                ? s.appsDisabled
+                : s.on,
           ],
         ])}
       </section>
