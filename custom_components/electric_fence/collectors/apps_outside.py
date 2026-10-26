@@ -50,6 +50,11 @@ POLL_INTERVAL: Final = timedelta(minutes=15)
 EVENT_DEBOUNCE: Final = 5.0
 BURST_WINDOW: Final = 60.0
 SUPPRESS_WINDOW: Final = timedelta(seconds=120)
+# A Core background install or update is noted when Supervisor accepts it;
+# it suppresses until a poll sees it done, for at most this long.
+PENDING_WINDOW: Final = timedelta(hours=1)
+_PENDING_ACTIONS: Final = frozenset({ChangeAction.INSTALLED, ChangeAction.UPDATED})
+WITH_UPDATE: Final = "with_update"
 
 # Supervisor events (`event`) about apps or the store. Core gets `addon`
 # for an app's state change (`app` with Supervisor's WebSocket v2).
@@ -123,15 +128,12 @@ def _app_diffs(old: AppSnapshot, new: AppSnapshot) -> Iterable[AppDiff]:
         )
     if new.state != old.state and new.state in _STATE_ACTIONS:
         yield AppDiff(new.slug, name, _STATE_ACTIONS[new.state], {})
-    # An update fills in the new version's option defaults; that is part of
-    # the update, not an options change.
-    if old.options_hash != new.options_hash and not version_changed:
-        yield AppDiff(
-            new.slug,
-            name,
-            ChangeAction.OPTIONS_CHANGED,
-            {"changed": ["options"], "outside": True},
-        )
+    if old.options_hash != new.options_hash:
+        details: dict[str, Any] = {"changed": ["options"], "outside": True}
+        if version_changed:
+            # May be only the new version's option defaults; see `_poll_once`.
+            details[WITH_UPDATE] = True
+        yield AppDiff(new.slug, name, ChangeAction.OPTIONS_CHANGED, details)
     changed = sorted(
         key
         for key in old.settings.keys() | new.settings.keys()
@@ -219,6 +221,7 @@ class OutsideAppWatcher:
         self._apps: dict[str, AppSnapshot] | None = None
         self._repos: set[str] | None = None
         self._core: dict[tuple[str, ChangeAction], datetime] = {}
+        self._pending: dict[tuple[str, ChangeAction], datetime] = {}
         self._bursts: dict[ChangeAction, list[_Seen]] = {}
         self._burst_timers: dict[ChangeAction, CALLBACK_TYPE] = {}
         self._lock = asyncio.Lock()
@@ -237,6 +240,8 @@ class OutsideAppWatcher:
 
     async def start(self) -> None:
         """Load the stored snapshot, listen, and take a snapshot. Never raises."""
+        if self._stopped:
+            return
         try:
             apps, repos = await self.hass.async_add_executor_job(self._load)
         except Exception as err:  # noqa: BLE001
@@ -286,28 +291,56 @@ class OutsideAppWatcher:
     async def stop(self) -> None:
         """Stop polling and record any pending start or stop burst now."""
         self._stopped = True
-        if self._start_task is not None and not self._start_task.done():
-            self._start_task.cancel()
+        # Not cancelled: a poll it runs is waited for below instead.
         self._start_task = None
         while self._unsubs:
             self._unsubs.pop()()
         if self._debouncer is not None:
             self._debouncer.async_shutdown()
             self._debouncer = None
-        for action in list(self._bursts):
-            self._flush_burst(action)
+        # A poll in flight records its diffs (or, read after this, drops its
+        # snapshot unsaved) before the bursts are flushed.
+        locked = False
+        try:
+            async with asyncio.timeout(READ_TIMEOUT):
+                await self._lock.acquire()
+            locked = True
+        except TimeoutError:
+            _LOGGER.debug("Electric Fence app poll still running at stop")
+        try:
+            for action in list(self._bursts):
+                self._flush_burst(action)
+        finally:
+            if locked:
+                self._lock.release()
 
     @callback
     def note_core_change(
-        self, slug: str | None, action: ChangeAction, at: datetime
+        self,
+        slug: str | None,
+        action: ChangeAction,
+        at: datetime,
+        *,
+        pending: bool = False,
     ) -> None:
-        """Note a change Core recorded, to suppress its outside record."""
+        """Note a change Core recorded, to suppress its outside record.
+
+        `pending` is a background install or update Supervisor accepted but
+        may not have done yet: it suppresses the first matching diff, for up
+        to an hour.
+        """
         if slug is None:
             return
         key = (slug, action)
         self._core[key] = max(at, self._core.get(key, at))
-        cutoff = dt_util.utcnow() - SUPPRESS_WINDOW
-        self._core = {k: v for k, v in self._core.items() if v >= cutoff}
+        if pending and action in _PENDING_ACTIONS:
+            self._pending[key] = at
+        self._prune(dt_util.utcnow())
+
+    def _prune(self, now: datetime) -> None:
+        core_cutoff, pending_cutoff = now - SUPPRESS_WINDOW, now - PENDING_WINDOW
+        self._core = {k: v for k, v in self._core.items() if v >= core_cutoff}
+        self._pending = {k: v for k, v in self._pending.items() if v >= pending_cutoff}
 
     @callback
     def _on_supervisor_event(self, event: Any) -> None:
@@ -326,6 +359,8 @@ class OutsideAppWatcher:
 
         A poll asked for while one runs runs once more after it.
         """
+        if self._stopped:
+            return
         if self._lock.locked():
             self._again = True
             return
@@ -359,6 +394,9 @@ class OutsideAppWatcher:
 
     async def _poll_once(self) -> None:
         apps, repos = await self._read()
+        if self._stopped:
+            # Saving it would lose its diffs: the next start finds them.
+            return
         now = dt_util.utcnow()
         diffs: list[AppDiff] = []
         if self._apps is not None and self._repos is not None:
@@ -369,9 +407,18 @@ class OutsideAppWatcher:
             await self.hass.async_add_executor_job(self._save, apps, repos, now)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Electric Fence could not store app snapshot: %r", err)
-        self._apps, self._repos = apps, repos
+        before, self._apps, self._repos = self._apps or {}, apps, repos
+        self._prune(now)
+        core_updated: set[str | None] = set()
         for diff in diffs:
-            self._handle(diff, apps, now)
+            if diff.details.get(WITH_UPDATE) and diff.slug in core_updated:
+                # Core's update filled in the new version's option defaults.
+                continue
+            if self._suppressed(diff, now):
+                if diff.action == ChangeAction.UPDATED:
+                    core_updated.add(diff.slug)
+                continue
+            self._handle(diff, before, apps, now)
 
     def _save(
         self, apps: dict[str, AppSnapshot], repos: set[str], at: datetime
@@ -380,8 +427,11 @@ class OutsideAppWatcher:
         self.runtime.store.save_app_repositories(repos)
 
     def _suppressed(self, diff: AppDiff, now: datetime) -> bool:
+        """Return True for a diff Core recorded; consumes a pending note."""
         if diff.slug is None:
             return False
+        if self._pending.pop((diff.slug, diff.action), None) is not None:
+            return True
         covering = [diff.action]
         if diff.action in _BURST_ACTIONS:
             covering.append(ChangeAction.RESTARTED)
@@ -392,18 +442,19 @@ class OutsideAppWatcher:
         )
 
     def _handle(
-        self, diff: AppDiff, apps: dict[str, AppSnapshot], now: datetime
+        self,
+        diff: AppDiff,
+        before: dict[str, AppSnapshot],
+        after: dict[str, AppSnapshot],
+        now: datetime,
     ) -> None:
-        if self._suppressed(diff, now):
-            return
         if diff.action in _BURST_ACTIONS and not self._stopped:
             self._add_to_burst(_Seen(diff, now))
             return
-        snap = apps.get(diff.slug) if diff.slug is not None else None
-        system = (
-            diff.action == ChangeAction.UPDATED
-            and snap is not None
+        system = diff.action == ChangeAction.UPDATED and all(
+            (snap := snaps.get(diff.slug or "")) is not None
             and snap.settings.get("auto_update") is True
+            for snaps in (before, after)
         )
         self._submit(diff.action, diff.slug, diff.name, diff.details, now, system)
 

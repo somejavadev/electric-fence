@@ -716,7 +716,13 @@ class AppCollector(BaseCollector):
         )
         if (watcher := self.runtime.app_watcher) is not None:
             # So the outside watcher doesn't record this change again.
-            self.guard.call(watcher.note_core_change, target_id, action, ts)
+            self.guard.call(
+                watcher.note_core_change,
+                target_id,
+                action,
+                ts,
+                pending=op.background,
+            )
 
     def _config_details(
         self, op: AppOp, before: Any, after: Any

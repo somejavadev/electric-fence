@@ -301,11 +301,11 @@ async def test_options_change_hash_only(
     assert row.actor_user_id is None
     assert row.actor_name == OUTSIDE_ACTOR
     snaps = await hass.async_add_executor_job(runtime.store.app_snapshot)
-    stored = snaps["core_ssh"]
-    assert '"a"' not in repr(stored.settings)
-    assert '"b"' not in repr(stored.settings)
-    assert stored.options_hash is not None
-    assert "password" not in dump_db(hass)
+    assert snaps["core_ssh"].options_hash is not None
+    dump = dump_db(hass)
+    assert "password" not in dump
+    assert '"a"' not in dump
+    assert '"b"' not in dump
 
 
 async def test_core_change_suppresses_outside(
@@ -605,8 +605,11 @@ async def test_one_poll_at_a_time(
         return await real()
 
     sup.client.addons.list.side_effect = slow
+    sup.client.addons.list.reset_mock()
     await asyncio.gather(watcher.poll(), watcher.poll(), watcher.poll())
     assert peak == 1
+    # The two asked for during the first run once, together, after it.
+    assert sup.client.addons.list.await_count == 2
 
 
 async def test_not_loaded_without_supervisor(
@@ -641,3 +644,135 @@ async def test_load_failure_still_watches(
     [row] = await _rows(hass, entry)
     assert row.action == A.UPDATED
     assert store.save_app_snapshot.call_count == 2
+
+
+async def test_background_core_update_pending(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """A Core background update suppresses its diff past 120 s, once."""
+    watcher = _watcher(entry)
+    accepted = dt_util.utcnow() - timedelta(seconds=200)
+    watcher.note_core_change("core_ssh", A.UPDATED, accepted, pending=True)
+    sup.set("core_ssh", version="2.0")
+    await watcher.poll()
+    assert await _rows(hass, entry) == []
+    sup.set("core_ssh", version="3.0")
+    await watcher.poll()
+    [row] = await _rows(hass, entry)
+    assert row.details == {"version_before": "2.0", "version_after": "3.0"}
+    assert row.actor_name == OUTSIDE_ACTOR
+
+
+async def test_background_core_install_pending(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """A Core background install finishing late isn't recorded again."""
+    watcher = _watcher(entry)
+    accepted = dt_util.utcnow() - timedelta(minutes=10)
+    watcher.note_core_change("core_new", A.INSTALLED, accepted, pending=True)
+    sup.set("core_new")
+    await watcher.poll()
+    assert await _rows(hass, entry) == []
+
+
+async def test_pending_note_expires_after_an_hour(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """A pending note older than an hour no longer suppresses."""
+    watcher = _watcher(entry)
+    accepted = dt_util.utcnow() - timedelta(hours=1, seconds=1)
+    watcher.note_core_change("core_ssh", A.UPDATED, accepted, pending=True)
+    sup.set("core_ssh", version="2.0")
+    await watcher.poll()
+    [row] = await _rows(hass, entry)
+    assert row.action == A.UPDATED
+    assert row.actor_name == OUTSIDE_ACTOR
+
+
+async def test_collector_passes_background_as_pending(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The collector notes a background update as pending."""
+    from custom_components.electric_fence.collectors.apps import (  # noqa: PLC0415
+        AppCollector,
+        AppOp,
+        _Before,
+    )
+    from custom_components.electric_fence.collectors.system_settings import Actor  # noqa: PLC0415
+
+    noted = Mock()
+    monkeypatch.setattr(_watcher(entry), "note_core_change", noted)
+    collector = next(
+        c for c in entry.runtime_data.collectors if isinstance(c, AppCollector)
+    )
+    op = AppOp(A.UPDATED, "core_ssh", None, (), background=True)
+    collector._record(op, Actor(None, None, None), _Before(), None, None)  # noqa: SLF001
+    [call] = noted.call_args_list
+    assert call.args[:2] == ("core_ssh", A.UPDATED)
+    assert call.kwargs == {"pending": True}
+
+
+async def test_options_with_core_update_skipped(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """New option defaults from a Core update aren't an outside change."""
+    watcher = _watcher(entry)
+    watcher.note_core_change("core_ssh", A.UPDATED, dt_util.utcnow())
+    sup.set("core_ssh", version="2.0", options={"new_default": 1})
+    await watcher.poll()
+    assert await _rows(hass, entry) == []
+
+
+async def test_options_with_outside_update_recorded(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """Options changed alongside an outside update are recorded, hash only."""
+    sup.set("core_ssh", version="2.0", options={"password": "x"})
+    await _watcher(entry).poll()
+    rows = await _rows(hass, entry)
+    by_action = {r.action: r for r in rows}
+    assert set(by_action) == {A.UPDATED, A.OPTIONS_CHANGED}
+    assert by_action[A.OPTIONS_CHANGED].details == {
+        "changed": ["options"],
+        "outside": True,
+        "with_update": True,
+    }
+    assert by_action[A.OPTIONS_CHANGED].actor_name == OUTSIDE_ACTOR
+
+
+async def test_auto_update_turned_on_with_update_is_outside(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """System needs auto-update on before and after the update."""
+    sup.set("core_ssh", version="2.0", auto_update=True)
+    await _watcher(entry).poll()
+    [row] = [r for r in await _rows(hass, entry) if r.action == A.UPDATED]
+    assert row.actor_name == OUTSIDE_ACTOR
+
+
+async def test_stop_waits_for_poll_in_flight(
+    hass: HomeAssistant, entry: MockConfigEntry, sup: FakeSupervisor
+) -> None:
+    """A poll whose read ends after stop leaves the stored snapshot as it was."""
+    watcher = _watcher(entry)
+    store = entry.runtime_data.store
+    before = await hass.async_add_executor_job(store.app_snapshot)
+    release = asyncio.Event()
+    real = sup.list_apps
+
+    async def held() -> list[SimpleNamespace]:
+        await release.wait()
+        return await real()
+
+    sup.client.addons.list.side_effect = held
+    sup.set("core_ssh", version="2.0")
+    polling = asyncio.ensure_future(watcher.poll())
+    await asyncio.sleep(0)
+    stopping = asyncio.ensure_future(watcher.stop())
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    release.set()
+    await asyncio.gather(polling, stopping)
+    assert await hass.async_add_executor_job(store.app_snapshot) == before
+    await watcher.poll()
+    assert await _rows(hass, entry) == []
