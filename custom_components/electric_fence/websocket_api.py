@@ -112,6 +112,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
 @callback
 def async_end_subscriptions(hass: HomeAssistant, entry_id: str) -> None:
     """End the subscriptions of an entry that is unloading."""
+    hass.data.get(DATA_SCAN_REQUESTED, {}).pop(entry_id, None)
     closers = hass.data.get(DATA_SUBSCRIPTIONS, {}).pop(entry_id, set())
     for close in list(closers):
         close()
@@ -282,7 +283,7 @@ def _query_changes(
         probatio.Optional("actor_user_id"): str,
         probatio.Optional("include_system", default=False): bool,
         probatio.Optional("action"): probatio.In([a.value for a in ChangeAction]),
-        probatio.Optional("ip"): str,
+        probatio.Optional("ip"): _SEARCH,
         probatio.Optional("search"): _SEARCH,
         **_PAGING,
     }
@@ -344,6 +345,7 @@ async def ws_status(
         return
     settings = runtime.settings.to_options()
     settings["notify_targets"] = list(settings["notify_targets"])
+    settings["forward_ca_pem_set"] = bool(settings.pop("forward_ca_pem"))
     settings["maxmind_license_key_set"] = bool(settings.pop("maxmind_license_key"))
     version = async_get_loaded_integration(hass, DOMAIN).version
     worker = runtime.worker

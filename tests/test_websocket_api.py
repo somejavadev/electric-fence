@@ -1081,6 +1081,7 @@ async def test_search_too_long_rejected(
     for cmd in ("electric_fence/logins", "electric_fence/changes"):
         assert not (await call(ws, cmd, search="x" * 201))["success"]
         assert (await call(ws, cmd, search="x" * 200))["success"]
+    assert not (await call(ws, "electric_fence/changes", ip="x" * 201))["success"]
 
 
 def _status(domain: str = "tuya") -> IntegrationStatus:
@@ -1219,3 +1220,29 @@ async def test_new_commands_require_admin(
         msg = await call(client, cmd)
         assert not msg["success"]
         assert msg["error"]["code"] == "unauthorized"
+
+
+async def test_status_leaves_out_ca_pem(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """The CA certificate is never sent; only whether one is set."""
+    runtime = setup_entry.runtime_data
+    res = await result(ws, "electric_fence/status")
+    assert "forward_ca_pem" not in res["settings"]
+    assert res["settings"]["forward_ca_pem_set"] is False
+
+    runtime.settings = replace(runtime.settings, forward_ca_pem="-----BEGIN-----")
+    res = await result(ws, "electric_fence/status")
+    assert "BEGIN" not in json.dumps(res)
+    assert res["settings"]["forward_ca_pem_set"] is True
+
+
+async def test_scan_cooldown_cleared_on_reload(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """A reloaded entry can scan again at once."""
+    assert await result(ws, "electric_fence/scan_integrations") == {"started": True}
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_reload(setup_entry.entry_id)
+    await hass.async_block_till_done()
+    assert await result(ws, "electric_fence/scan_integrations") == {"started": True}

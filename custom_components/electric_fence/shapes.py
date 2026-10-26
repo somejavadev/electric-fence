@@ -147,7 +147,7 @@ Commands::
                      attack_window_minutes, notify_ip_banned,
                      notify_username_attack, notify_new_country,
                      notify_ban_ended, notify_targets: [str],
-                     maxmind_license_key_set: bool,
+                     maxmind_license_key_set: bool, forward_ca_pem_set: bool,
                      forward_enabled: bool, verify_files: bool,
                      integration_repairs: bool, ...},
           geo: GeoStatus | null,
