@@ -153,8 +153,16 @@ def _header(pri: int, hostname: str, now: datetime) -> str:
 
 
 def syslog_line(event: dict[str, Any], *, hostname: str, now: datetime) -> bytes:
-    """Return the syslog line of an event, without framing."""
+    """Return the syslog line of an event, without framing.
+
+    TCP frames a line with a trailing LF, so the line itself never has one:
+    JSON escapes it and the hostname's whitespace is replaced.
+    """
     pri = FACILITY_LOCAL0 * 8 + _severity(event)
     host = _SPACE.sub("-", hostname.strip()) or "-"
     body = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
-    return (_header(pri, host, now) + body).encode("utf-8")
+    line = (_header(pri, host, now) + body).encode("utf-8")
+    if b"\n" in line:
+        # Would split into two messages at the receiver; the forwarder drops it.
+        raise ValueError("syslog line contains a line feed")
+    return line

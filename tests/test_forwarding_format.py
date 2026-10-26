@@ -176,3 +176,12 @@ def test_syslog_line_escapes_newlines_and_keeps_utf8() -> None:
     multiline_host = syslog_line(event, hostname="ha\nbox\r", now=NOW)
     assert b"\n" not in multiline_host
     assert b" ha-box " in multiline_host
+
+
+def test_syslog_line_refuses_a_line_feed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A line that would contain a raw LF is refused, never split."""
+    from custom_components.electric_fence.forwarding import format as fmt  # noqa: PLC0415
+
+    monkeypatch.setattr(fmt, "_header", lambda *_: "<134>bad\n")
+    with pytest.raises(ValueError, match="line feed"):
+        syslog_line({"event_type": "login_failed"}, hostname="ha", now=NOW)
