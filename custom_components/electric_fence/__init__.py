@@ -466,6 +466,10 @@ async def async_unload_entry(
     partway.
     """
     await _async_stop_recording(entry.runtime_data)
+    # Not run on shutdown. While the entry is unloaded nothing would keep
+    # these repairs current, so they go; the first scan after setup restores
+    # them.
+    async_sync_integration_issues(hass, set())
     await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
 

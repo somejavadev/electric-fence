@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -26,6 +27,7 @@ from custom_components.electric_fence.integrity.scheduler import IntegritySchedu
 from custom_components.electric_fence.models import ChangeAction, ChangeKind
 from custom_components.electric_fence.notifier import EVENT_SETTINGS_CHANGED
 from custom_components.electric_fence.settings import Settings
+from custom_components.electric_fence.storage import ChangeFilter, FenceStore
 from homeassistant.components.marketplace.const import SIGNAL_REPOSITORY_INSTALLED
 from homeassistant.components.marketplace.enums import MarketplaceSignal
 from homeassistant.core import HomeAssistant
@@ -635,6 +637,7 @@ async def test_stop_cancels_a_running_scan(
         await asyncio.Event().wait()
 
     fake.verify.side_effect = hang
+    fake.health["demo"] = health("archived")
     sched = integrity(setup_entry)
     task = hass.async_create_task(sched.scan())
     await started.wait()
@@ -642,6 +645,169 @@ async def test_stop_cancels_a_running_scan(
     assert await hass.config_entries.async_unload(setup_entry.entry_id)
     with pytest.raises(asyncio.CancelledError):
         await task
+    await hass.async_block_till_done()
+
+    def stored() -> tuple[list[Any], Any, Any]:
+        store = FenceStore(Path(hass.config.path(".storage", "electric_fence.db")))
+        store.open()
+        try:
+            return (
+                store.query_changes(ChangeFilter(include_system=True), limit=50),
+                store.finding("demo", "files"),
+                store.finding("demo", "health"),
+            )
+        finally:
+            store.close()
+
+    rows, files_finding, health_finding = await hass.async_add_executor_job(stored)
+    assert [
+        r for r in rows if r.kind in (ChangeKind.FILES, ChangeKind.INTEGRATION_HEALTH)
+    ] == []
+    assert files_finding is None
+    assert health_finding is None
+    assert our_issues(hass) == set()
+
+
+async def test_unload_clears_repairs(
+    hass: HomeAssistant, fake: Fake, setup_entry: MockConfigEntry
+) -> None:
+    """A disabled entry keeps no repairs nothing would keep current."""
+    fake.files["demo"] = files("changed", changed=["a.py"])
+    fake.health["demo"] = health("archived")
+    await integrity(setup_entry).scan()
+    assert our_issues(hass)
+
+    assert await hass.config_entries.async_unload(setup_entry.entry_id)
+    assert our_issues(hass) == set()
+
+
+def _progress(progress: int | bool) -> dict[str, Any]:
+    return {"repository": "owner/demo", "progress": progress}
+
+
+async def test_change_during_install_is_unchecked(
+    hass: HomeAssistant, fake: Fake, setup_entry: MockConfigEntry
+) -> None:
+    """A check that overlaps a running install never reports a change."""
+
+    async def installing(_hass: HomeAssistant, _rt: Any, it: Any) -> Any:
+        async_dispatcher_send(hass, scheduler.INSTALL_PROGRESS_SIGNAL, _progress(40))
+        return files("changed", changed=["a.py"])
+
+    fake.verify.side_effect = installing
+    results = await integrity(setup_entry).scan()
+    await flush_worker(hass)
+
+    assert results[0].files is not None
+    assert results[0].files.status == "unchecked"
+    assert results[0].files.reason == "install_in_progress"
+    assert file_rows(hass) == []
+    assert our_issues(hass) == set()
+
+
+async def test_stale_install_stops_counting(
+    hass: HomeAssistant,
+    fake: Fake,
+    freezer: FrozenDateTimeFactory,
+    setup_entry: MockConfigEntry,
+) -> None:
+    """An install that never says it ended stops blocking findings."""
+    async_dispatcher_send(hass, scheduler.INSTALL_PROGRESS_SIGNAL, _progress(40))
+    fake.files["demo"] = files("changed", changed=["a.py"])
+    sched = integrity(setup_entry)
+    assert (await sched.scan())[0].files.status == "unchecked"  # type: ignore[union-attr]
+
+    freezer.tick(timedelta(hours=2))
+    await sched.scan()
+    await flush_worker(hass)
+    assert [r.action for r in file_rows(hass)] == [ChangeAction.FILES_CHANGED]
+
+
+async def test_install_ending_mid_scan_rescans(
+    hass: HomeAssistant,
+    fake: Fake,
+    freezer: FrozenDateTimeFactory,
+    setup_entry: MockConfigEntry,
+) -> None:
+    """An install that ends during a scan gives no change; the rescan decides."""
+    await tick(hass, freezer, timedelta(minutes=30))
+    assert fake.inventory.await_count == 1
+
+    async def installed(_hass: HomeAssistant, _rt: Any, it: Any) -> Any:
+        async_dispatcher_send(hass, scheduler.INSTALL_PROGRESS_SIGNAL, _progress(False))
+        return files("changed", changed=["a.py"])
+
+    fake.verify.side_effect = installed
+    await integrity(setup_entry).scan()
+    await flush_worker(hass)
+    assert file_rows(hass) == []
+
+    fake.verify.side_effect = None
+    fake.verify.return_value = files("match")
+    await tick(hass, freezer, timedelta(minutes=30))
+    await flush_worker(hass)
+    assert fake.inventory.await_count == 3
+    assert file_rows(hass) == []
+
+
+async def test_version_moved_is_unchecked(
+    hass: HomeAssistant,
+    fake: Fake,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
+    setup_entry: MockConfigEntry,
+) -> None:
+    """A new installed version since the listing means the check is unchecked."""
+    await tick(hass, freezer, timedelta(minutes=30))
+    repo = SimpleNamespace(data=SimpleNamespace(installed_version="1.1.0"))
+    monkeypatch.setattr(
+        scheduler, "marketplace_repositories", lambda _h: (object(), {"demo": repo})
+    )
+    fake.files["demo"] = files("changed", changed=["a.py"])
+    results = await integrity(setup_entry).scan()
+    await flush_worker(hass)
+
+    assert results[0].files is not None
+    assert results[0].files.reason == "install_in_progress"
+    assert file_rows(hass) == []
+    await tick(hass, freezer, timedelta(minutes=30))
+    assert fake.inventory.await_count == 3
+
+
+async def test_rescan_due_during_a_scan_runs_after_it(
+    hass: HomeAssistant,
+    fake: Fake,
+    freezer: FrozenDateTimeFactory,
+    setup_entry: MockConfigEntry,
+) -> None:
+    """A rescan that comes due while a scan runs follows it, not skipped."""
+    await tick(hass, freezer, timedelta(minutes=30))
+    assert fake.inventory.await_count == 1
+    release = asyncio.Event()
+
+    async def slow(_hass: HomeAssistant, _rt: Any, it: Any) -> Any:
+        await release.wait()
+        return files(domain=it.domain)
+
+    fake.verify.side_effect = slow
+    sched = integrity(setup_entry)
+    running = asyncio.get_running_loop().create_task(sched.scan())
+    await asyncio.sleep(0)
+    assert fake.inventory.await_count == 2
+
+    async_dispatcher_send(hass, SIGNAL_REPOSITORY_INSTALLED, object())
+    freezer.tick(timedelta(minutes=30))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert fake.inventory.await_count == 2
+
+    release.set()
+    await running
+    await hass.async_block_till_done()
+    task = sched._task  # noqa: SLF001
+    assert task is not None
+    await asyncio.wait({task})
+    assert fake.inventory.await_count == 3
 
 
 def test_signals_known() -> None:

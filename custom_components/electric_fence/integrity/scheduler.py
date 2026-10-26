@@ -30,12 +30,17 @@ from ..settings import Settings
 from ..shapes import iso
 from .files import FileReport
 from .health import HealthResult, health_of
-from .inventory import InstalledIntegration, async_inventory
+from .inventory import (
+    InstalledIntegration,
+    _marketplace_repositories as marketplace_repositories,
+    async_inventory,
+)
 from .reference import FileResult, verify
 
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(hours=24)
+INSTALL_STALE_AFTER = timedelta(hours=1)
 # Each file list kept and exposed holds at most this many paths.
 FILE_LIST_CAP = 500
 REPAIR_FILES_SHOWN = 10
@@ -154,6 +159,12 @@ class IntegrityScheduler:
         self._unsubs: list[CALLBACK_TYPE] = []
         self._pending: CALLBACK_TYPE | None = None
         self._stopped = False
+        # A rescan that came due while a scan ran; it runs right after.
+        self._again = False
+        # Marketplace installs running (repository -> when last heard of), and
+        # a count of installs that ended, to spot one landing during a scan.
+        self._installing: dict[str | None, datetime] = {}
+        self._install_generation = 0
 
     def _delay(self) -> timedelta:
         return timedelta(minutes=self.runtime.settings.scan_delay_minutes)
@@ -210,12 +221,25 @@ class IntegrityScheduler:
 
     @callback
     def _on_installed(self, *_args: Any) -> None:
+        self._install_generation += 1
         self._schedule_rescan()
 
     @callback
     def _on_install_progress(self, data: Any = None, *_args: Any) -> None:
-        if isinstance(data, Mapping) and data.get("progress") is False:
+        if not isinstance(data, Mapping):
+            return
+        repository = data.get("repository")
+        if data.get("progress") is False:
+            self._installing.pop(repository, None)
+            self._install_generation += 1
             self._schedule_rescan()
+        else:
+            self._installing[repository] = dt_util.utcnow()
+
+    def _install_running(self) -> bool:
+        # An install that never said it ended stops counting after a while.
+        since = dt_util.utcnow() - INSTALL_STALE_AFTER
+        return any(at > since for at in self._installing.values())
 
     @callback
     def _schedule_rescan(self) -> None:
@@ -235,6 +259,11 @@ class IntegrityScheduler:
     @callback
     def _rescan(self, _now: datetime) -> None:
         self._pending = None
+        if self._task is not None and not self._task.done():
+            # The running scan may have listed the integrations before the
+            # install, so one more follows it.
+            self._again = True
+            return
         self._start_scan()
 
     @callback
@@ -243,7 +272,14 @@ class IntegrityScheduler:
             self._task = self.hass.async_create_background_task(
                 self._async_run(), "electric_fence integration scan"
             )
+            self._task.add_done_callback(self._scan_done)
         return self._task
+
+    @callback
+    def _scan_done(self, _task: asyncio.Task[list[IntegrationStatus]]) -> None:
+        if self._again and not self._stopped:
+            self._again = False
+            self._start_scan()
 
     async def scan(self) -> list[IntegrationStatus]:
         """Scan now, or wait for the scan that is running and return its result."""
@@ -330,6 +366,7 @@ class IntegrityScheduler:
         hass = self.hass
         settings = self.runtime.settings
         contract_ok = marketplace_contract_ok(hass)
+        generation = self._install_generation
         items = await async_inventory(hass)
         now = dt_util.utcnow()
         results: list[IntegrationStatus] = []
@@ -339,7 +376,7 @@ class IntegrityScheduler:
             # One at a time, and one failure never stops the others.
             try:
                 status, f_state, h_state = await self._async_check(
-                    item, settings, contract_ok, now
+                    item, settings, contract_ok, now, generation
                 )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug(
@@ -401,6 +438,7 @@ class IntegrityScheduler:
         settings: Settings,
         contract_ok: bool,
         now: datetime,
+        generation: int,
     ) -> tuple[IntegrationStatus, dict[str, Any] | None, str | None]:
         hass = self.hass
         store = self.runtime.store
@@ -436,6 +474,18 @@ class IntegrityScheduler:
                     file_result = FileResult(
                         domain, item.source, "unchecked", reason="check_failed"
                     )
+                if file_result.status == "changed" and self._install_overlaps(
+                    item, generation
+                ):
+                    # Core writes the new files before it records the new
+                    # version: wait for the rescan rather than report a change.
+                    file_result = FileResult(
+                        domain,
+                        item.source,
+                        "unchecked",
+                        reason="install_in_progress",
+                        ref=file_result.ref,
+                    )
             files_state = await self._async_files_finding(
                 item, name, file_result, prev_files, now
             )
@@ -462,6 +512,22 @@ class IntegrityScheduler:
             truncated,
         )
         return status, files_state, health_state
+
+    def _install_overlaps(self, item: InstalledIntegration, generation: int) -> bool:
+        """Return True when an install may have changed the files under a check."""
+        if self._install_running() or self._install_generation != generation:
+            return True
+        if item.source != "marketplace":
+            return False
+        try:
+            _manager, repos = marketplace_repositories(self.hass)
+            current = repos[item.domain].data.installed_version
+        except Exception:  # noqa: BLE001
+            return False
+        if current == item.installed_version:
+            return False
+        self._schedule_rescan()
+        return True
 
     async def _async_files_finding(
         self,
