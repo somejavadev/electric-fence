@@ -4,6 +4,7 @@ import { MAX_TEXT, formatTime, truncate } from "../format.ts";
 import { changeSentence, strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
 import type { ChangeItem, HomeAssistant } from "../types.ts";
+import { showIp } from "../mask.ts";
 
 /** One settings change: who did what, and from where. */
 export class EfChangeRow extends LitElement {
@@ -36,7 +37,9 @@ export class EfChangeRow extends LitElement {
           // Made over the panel's WebSocket or by Electric Fence: no IP.
           item.actor_ip === null && isProtectionChange(item)
             ? nothing
-            : html`<bdi class="ip">${item.actor_ip ?? strings.unknownIp}</bdi>`
+            : html`<bdi class="ip"
+                >${item.actor_ip === null ? strings.unknownIp : showIp(item.actor_ip)}</bdi
+              >`
         }
       </div>
       ${this.details ? changeLines(item, this.hass, 3) : nothing}

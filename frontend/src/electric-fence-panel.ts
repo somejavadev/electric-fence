@@ -1,4 +1,6 @@
-import { LitElement, html } from "lit";
+import { LitElement, html, nothing } from "lit";
+import { keyed } from "lit/directives/keyed.js";
+import { fetchStatus } from "./api.ts";
 // Also registers the sidebar icon: the extra module only loads on a full page
 // load, so this covers the integration being added without a reload.
 import "./electric-fence-icons.ts";
@@ -9,6 +11,7 @@ import "./views/ef-overview.ts";
 import "./views/ef-settings.ts";
 import "./views/ef-users.ts";
 import { navigate } from "./fire-event.ts";
+import { maskingIps, setMaskIps } from "./mask.ts";
 import { panelStyles } from "./styles.ts";
 import type { HomeAssistant, Route } from "./types.ts";
 
@@ -35,18 +38,54 @@ export class ElectricFencePanel extends LitElement {
     narrow: { type: Boolean },
     route: { attribute: false },
     panel: { attribute: false },
+    _maskKnown: { state: true },
   };
 
   declare hass: HomeAssistant;
   declare narrow: boolean;
   declare route: Route | undefined;
   declare panel: unknown;
+  /** False until the "mask IP addresses" option is read, so no tab shows. */
+  declare _maskKnown: boolean;
+  private _maskRequest = 0;
+  private _maskRead = false;
 
   static override styles = panelStyles;
 
   constructor() {
     super();
     this.narrow = false;
+    this._maskKnown = false;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // Read again on every connect: the options are edited on Home
+    // Assistant's own pages, and coming back connects the panel again.
+    this._maskRead = false;
+    this.requestUpdate();
+  }
+
+  protected override willUpdate(): void {
+    if (!this._maskRead && this.hass !== undefined && this.isConnected) {
+      this._maskRead = true;
+      void this._readMask();
+    }
+  }
+
+  private async _readMask(): Promise<void> {
+    const request = ++this._maskRequest;
+    let on = maskingIps();
+    try {
+      on = (await fetchStatus(this.hass)).settings.mask_ips;
+    } catch {
+      // The tabs show their own error or "unloaded" notice.
+    }
+    if (request === this._maskRequest) {
+      setMaskIps(on);
+      this._maskKnown = true;
+      this.requestUpdate();
+    }
   }
 
   protected override render() {
@@ -74,7 +113,12 @@ export class ElectricFencePanel extends LitElement {
         )}
       </nav>
       <main role="tabpanel" aria-labelledby="tab-${current}">
-        ${this._renderTab(current)}
+        ${
+          this._maskKnown
+            ? // A new tab element when masking flips, so nothing shows stale.
+              keyed(maskingIps(), this._renderTab(current))
+            : nothing
+        }
       </main>
     `;
   }

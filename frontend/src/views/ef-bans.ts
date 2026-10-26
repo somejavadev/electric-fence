@@ -10,6 +10,7 @@ import { dialogStyles, viewStyles } from "../styles.ts";
 import { bdiText, fill } from "../text.ts";
 import type { BanItem, BanSource, BanState, BansPage } from "../types.ts";
 import { LiveView } from "./live-view.ts";
+import { showHost, showIp } from "../mask.ts";
 
 const DIALOG_TITLE = "ban-dialog-title";
 const STATES: readonly BanState[] = ["active", "history"];
@@ -294,7 +295,8 @@ export class EfBans extends LiveView {
         }}
       >
         <span class="primary"
-          ><ef-flag .code=${ban.country_code}></ef-flag>${bdiText(ban.ip)}</span
+          ><ef-flag .code=${ban.country_code}></ef-flag
+          >${bdiText(showIp(ban.ip))}</span
         >
         <span class="secondary">${this._country(ban)} · ${banExpiry(ban)}</span>
         ${this._tag(ban)}
@@ -320,7 +322,9 @@ export class EfBans extends LiveView {
         <ef-flag .code=${ban.country_code}></ef-flag> ${this._country(ban)}
       </dd>
       <dt>${b.hostname}</dt>
-      <dd>${ban.hostname === null ? b.unknown : bdiText(ban.hostname)}</dd>
+      <dd>
+        ${ban.hostname === null ? b.unknown : bdiText(showHost(ban.hostname))}
+      </dd>
       <dt>${b.failures}</dt>
       <dd>${count(ban.failures)}</dd>
       <dt>${b.banNumber}</dt>
@@ -355,7 +359,7 @@ export class EfBans extends LiveView {
           : html`
               <header>
                 <div class="title" tabindex="-1" autofocus>
-                  <h3 id=${DIALOG_TITLE}>${bdiText(ban.ip)}</h3>
+                  <h3 id=${DIALOG_TITLE}>${bdiText(showIp(ban.ip))}</h3>
                   <span class="secondary">${banExpiry(ban)}</span>
                 </div>
                 <button
@@ -387,7 +391,7 @@ export class EfBans extends LiveView {
               ${
                 this._confirming
                   ? html`<ef-confirm-dialog
-                      .heading=${fill(b.unbanTitle, ban.ip)}
+                      .heading=${fill(b.unbanTitle, showIp(ban.ip))}
                       text=${b.unbanText}
                       action=${b.unban}
                       error=${this._error}
