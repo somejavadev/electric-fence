@@ -101,7 +101,8 @@ The minimum supported version is Home Assistant 2026.11.0.
 Go to **Settings** > **Devices & services** > **Electric Fence**, and select
 the cog (**Configure**) to change these. All of them apply
 immediately, without a restart. The dialog has the general settings below, and
-the **Bans**, **Username protection**, **Notifications**, **Integration checks**, and **Log forwarding** sections.
+the **Bans**, **Username protection**, **Notifications**, **Integration
+checks**, and **Log forwarding** sections.
 
 | Setting                            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -481,8 +482,9 @@ nothing anywhere, apart from downloading the GeoIP database, doing reverse DNS
 lookups, downloading public release files from GitHub for the integration
 checks (see [Custom integration checks](#custom-integration-checks)), and
 forwarding events to the SIEM you set up. Forwarding sends usernames and IP
-addresses unmasked to that SIEM. Reverse DNS is on by default. It sends each IP address to the DNS
-resolver your system is configured to use. You can turn it off in the settings.
+addresses unmasked to that SIEM. Reverse DNS is on by default. It sends each
+IP address to the DNS resolver your system is configured to use. You can turn
+it off in the settings.
 
 - **Usernames.** The username someone typed is stored, and shown in full only
   in the admin panel. Everywhere else (the notification, the events, the

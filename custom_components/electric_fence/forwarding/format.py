@@ -20,6 +20,9 @@ SEVERITY_WARNING = 4
 SEVERITY_NOTICE = 5
 SEVERITY_INFO = 6
 APP_NAME = "electric_fence"
+EVENT_TYPES = frozenset(
+    {"login_failed", "login_succeeded", "new_country_login", "settings_changed"}
+)
 
 _WARNING_ACTIONS = frozenset(
     {

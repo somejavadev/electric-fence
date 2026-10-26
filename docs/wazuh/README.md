@@ -44,6 +44,11 @@ them; nothing else refers to them.
 | 100511 | 6     | A custom integration's repository archived.          |
 | 100512 | 3     | Forwarding recovered after an outage.                |
 
+The first matching rule wins, so the specific rules are listed first in the
+file and the generic user and outside rules (100505, 100506) come last. Keep
+that order if you edit the file. The rules match the action on the JSON text
+(`"action":"installed"`) because `action` is also a static Wazuh field name.
+
 ## 3. Turn on forwarding
 
 In Home Assistant, go to **Settings** > **Devices & services** > **Electric
