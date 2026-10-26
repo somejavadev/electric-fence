@@ -712,3 +712,56 @@ def _check_hassio_rest_proxy(hass: HomeAssistant) -> str | None:
 register_contract(
     Contract("hassio_rest_proxy", "apps_rest_proxy", _check_hassio_rest_proxy)
 )
+
+
+INTEGRATION_CHECKS = "integration_checks"
+
+_REPOSITORY_DATA_FIELDS = (
+    "installed",
+    "installed_version",
+    "installed_commit",
+    "full_name",
+    "domain",
+    "category",
+    "archived",
+    "last_updated",
+)
+_REPOSITORY_MANIFEST_FIELDS = (
+    "zip_release",
+    "filename",
+    "content_in_root",
+    "persistent_directory",
+)
+
+
+def _check_marketplace_repositories(hass: HomeAssistant) -> str | None:
+    """Check the Marketplace objects the inventory reads keep their shape."""
+    for entry in hass.config_entries.async_loaded_entries("marketplace"):
+        repositories = getattr(entry.runtime_data, "repositories", None)
+        if repositories is None:
+            return "Marketplace manager has no repositories"
+        for method in ("list_all", "is_removed", "removed_repository"):
+            if not callable(getattr(repositories, method, None)):
+                return f"Marketplace repositories.{method} is missing"
+        for repository in repositories.list_all():
+            data = getattr(repository, "data", None)
+            manifest = getattr(repository, "repository_manifest", None)
+            for field in _REPOSITORY_DATA_FIELDS:
+                if not hasattr(data, field):
+                    return f"Marketplace repository data.{field} is missing"
+            for field in _REPOSITORY_MANIFEST_FIELDS:
+                if not hasattr(manifest, field):
+                    return f"Marketplace repository_manifest.{field} is missing"
+    return None
+
+
+register_contract(
+    Contract(
+        "marketplace_repositories", INTEGRATION_CHECKS, _check_marketplace_repositories
+    )
+)
+
+
+def marketplace_contract_ok(hass: HomeAssistant) -> bool:
+    """Return True when the integration checks may rely on the Marketplace shape."""
+    return not check_contracts(hass, INTEGRATION_CHECKS)
