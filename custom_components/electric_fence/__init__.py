@@ -13,11 +13,12 @@ from homeassistant.const import (
     Platform,
     __version__ as HA_VERSION,
 )
-from homeassistant.core import Event, HassJob, HomeAssistant
+from homeassistant.core import Event, HassJob, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.hassio import is_hassio
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
@@ -26,6 +27,7 @@ from homeassistant.util import dt as dt_util
 from .alerts import Alerter
 from .attribution import AttributionCollector
 from .collectors.apps import AppCollector
+from .collectors.apps_outside import OutsideAppWatcher
 from .collectors.auth_failures import AuthFailureCollector
 from .collectors.base import BaseCollector
 from .collectors.config_entries import ConfigEntryCollector
@@ -159,6 +161,7 @@ async def async_setup_entry(
 
     async def _async_shutdown() -> None:
         # Store what is queued before shutdown cancels background tasks.
+        await _async_stop_app_watcher(runtime)
         await worker.async_stop()
         await hass.async_add_executor_job(store.close)
 
@@ -244,6 +247,16 @@ async def async_setup_entry(
         collector = collector_type(hass, runtime)
         runtime.collectors.append(collector)
         collector.install()
+
+    if is_hassio(hass):
+        watcher = OutsideAppWatcher(hass, runtime)
+        runtime.app_watcher = watcher
+
+        @callback
+        def _start_app_watcher(_hass: HomeAssistant) -> None:
+            watcher.start_in_background()
+
+        entry.async_on_unload(async_at_started(hass, _start_app_watcher))
 
     async def _async_purge(_now: datetime | None = None) -> None:
         await async_purge(hass, runtime)
@@ -447,7 +460,21 @@ async def _async_stop_recording(runtime: Runtime) -> None:
     for collector in reversed(runtime.collectors):
         collector.uninstall()
     runtime.collectors.clear()
+    await _async_stop_app_watcher(runtime)
     await runtime.worker.async_stop()
+
+
+async def _async_stop_app_watcher(runtime: Runtime) -> None:
+    """Stop the outside app watcher, recording its pending burst. Never raises."""
+    watcher, runtime.app_watcher = runtime.app_watcher, None
+    if watcher is None:
+        return
+    try:
+        await watcher.stop()
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not stop the app watcher: %s", type(err).__name__
+        )
 
 
 async def _async_teardown(hass: HomeAssistant, runtime: Runtime) -> None:

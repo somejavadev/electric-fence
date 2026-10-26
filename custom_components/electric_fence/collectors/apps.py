@@ -700,9 +700,10 @@ class AppCollector(BaseCollector):
                 if found is None:
                     return
                 action, details = found
+        ts = dt_util.utcnow()
         self.runtime.worker.submit(
             SettingsChange(
-                ts=dt_util.utcnow(),
+                ts=ts,
                 kind=ChangeKind.APP,
                 action=action,
                 target_id=target_id,
@@ -713,6 +714,9 @@ class AppCollector(BaseCollector):
                 actor_ip=actor.ip,
             )
         )
+        if (watcher := self.runtime.app_watcher) is not None:
+            # So the outside watcher doesn't record this change again.
+            self.guard.call(watcher.note_core_change, target_id, action, ts)
 
     def _config_details(
         self, op: AppOp, before: Any, after: Any

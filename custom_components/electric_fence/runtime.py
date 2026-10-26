@@ -10,6 +10,7 @@ from .worker import Enricher, FenceWorker
 
 if TYPE_CHECKING:
     from .alerts import Alerter
+    from .collectors.apps_outside import OutsideAppWatcher
     from .forwarding.forwarder import Forwarder
     from .geo.base import GeoStatus
     from .geo.updater import GeoUpdater
@@ -37,3 +38,4 @@ class Runtime:
     username_guard: UsernameGuard | None = None
     alerts: Alerter | None = None
     forwarder: Forwarder | None = None
+    app_watcher: OutsideAppWatcher | None = None
