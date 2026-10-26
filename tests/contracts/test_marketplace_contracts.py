@@ -158,3 +158,11 @@ async def test_contract_fails_when_list_all_is_a_method(hass: HomeAssistant) -> 
     reasons = check_contracts(hass, INTEGRATION_CHECKS)
     assert reasons
     assert "list_all" in reasons[0]
+
+
+async def test_contract_fails_on_missing_list_all(hass: HomeAssistant) -> None:
+    """A container without `list_all` fails."""
+    _load(hass, None, list_all=None)
+    reasons = check_contracts(hass, INTEGRATION_CHECKS)
+    assert reasons
+    assert "list_all is missing" in reasons[0]

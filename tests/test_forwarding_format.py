@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from custom_components.electric_fence.forwarding.format import event_dict, syslog_line
+from custom_components.electric_fence.forwarding.transport import UDP_MAX
 from custom_components.electric_fence.models import (
     OUTSIDE_ACTOR,
     ChangeAction,
@@ -109,8 +110,9 @@ def test_change_event_details_without_values() -> None:
         event = event_dict(record, values=values)
         details = event["details"]
         assert "values" not in details
-        assert details["changed"] == files[:50]
-        assert details["changed_truncated"] is True
+        # `changed` is top level only, never sent twice
+        assert "changed" not in details
+        assert "changed_truncated" not in details
         assert details["missing"] == ["a.py"]
         assert "missing_truncated" not in details
         assert details["repository"] == "owner/repo"
@@ -122,7 +124,8 @@ def test_change_event_details_without_values() -> None:
     assert event_dict(record, values=True)["values"] == {"a": 1}
     assert record.details["changed"] == files
     small = event_dict(change(), values=False)
-    assert small["details"] == {"changed": ["a"]}
+    assert small["details"] == {}
+    assert small["changed"] == ["a"]
     assert "changed_truncated" not in small
     line = syslog_line(event_dict(record, values=True), hostname="ha", now=NOW)
     assert len(line) < 8192
@@ -185,3 +188,40 @@ def test_syslog_line_refuses_a_line_feed(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(fmt, "_header", lambda *_: "<134>bad\n")
     with pytest.raises(ValueError, match="line feed"):
         syslog_line({"event_type": "login_failed"}, hostname="ha", now=NOW)
+
+
+def test_files_changed_line_fits_one_udp_datagram() -> None:
+    """Four 50-entry lists of 150-char paths still make a line of at most 8 KB."""
+    lists = {
+        key: [f"custom_components/demo/{key}/{n:03d}_" + "x" * 120 for n in range(50)]
+        for key in ("changed", "missing", "added", "unreadable")
+    }
+    assert all(len(p) >= 140 for p in lists["changed"])
+    record = change(
+        kind=ChangeKind.FILES,
+        action=ChangeAction.FILES_CHANGED,
+        details={**lists, "repository": "owner/repo", "ref": "v1"},
+    )
+    event = event_dict(record, values=True)
+    line = syslog_line(event, hostname="ha", now=NOW)
+    assert len(line) <= UDP_MAX
+    parsed = json.loads(line.split(b": ", 1)[1])
+    assert parsed["changed"]
+    assert parsed["changed_truncated"] is True
+    assert parsed["details"]["repository"] == "owner/repo"
+    assert parsed["details"]["missing_truncated"] is True
+    # the record itself is untouched
+    assert len(record.details["changed"]) == 50
+
+
+def test_forwarded_path_strings_are_capped() -> None:
+    """A path string in a forwarded list is cut at 200 characters."""
+    long = "p" * 500
+    record = change(
+        kind=ChangeKind.FILES,
+        action=ChangeAction.FILES_CHANGED,
+        details={"changed": [long], "missing": [long]},
+    )
+    event = event_dict(record, values=False)
+    assert len(event["changed"][0]) == 200
+    assert len(event["details"]["missing"][0]) == 200

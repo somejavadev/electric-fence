@@ -181,14 +181,14 @@ described in [Privacy](#privacy).
 - **Where it listens.** Changes are recorded from the Supervisor WebSocket
   commands, the app actions (`hassio.addon_start` and friends), and the app
   update entities, with the user and IP address behind them. A change is
-  recorded only once Supervisor reports it succeeded.
+  recorded only once Supervisor reports it succeeded. The `/api/hassio` REST
+  proxy can't make app changes: Home Assistant only lets admins reach backups,
+  logs, the changelog and the docs there.
 - **Integrations that manage their own app.** Z-Wave JS, Matter, OpenThread
   Border Router, the Home Assistant hardware integrations and others install,
   start, update and configure their app through Home Assistant's app manager.
   Those changes are recorded as **System**, with the option names (and values
-  when **Record before and after values** is on). The `/api/hassio` REST
-  proxy can't make app changes: Home Assistant only lets admins reach backups,
-  logs, the changelog and the docs there.
+  when **Record before and after values** is on).
 - **Outside Home Assistant.** A change made from the command line, on the host
   or in Supervisor itself shows as **Outside Home Assistant**. Electric Fence
   sees these through Supervisor's events and a comparison of the app list
@@ -289,8 +289,11 @@ forwarding** section of the settings.
 - **Details.** A change event carries a `details` object: the record's
   details (file lists, versions, the apps of a burst, and so on) without the
   values, with fields named like a secret or a location hidden. Every list in
-  it holds at most 50 entries; a cut list has `<name>_truncated: true` beside
-  it, and so does `changed`.
+  it holds at most 50 entries and every text in a list at most 200 characters;
+  a cut list has `<name>_truncated: true` beside it. The changed names or files
+  are in `changed` at the top level of the event, not repeated in `details`. A
+  line never exceeds 8 KB (one UDP datagram): the longest lists are halved,
+  and flagged, until it fits.
 - **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
   Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
   certificate is checked unless you turn that off, and you can paste your own
