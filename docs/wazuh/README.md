@@ -63,6 +63,9 @@ Each line looks like this:
 <132>Oct 26 09:15:02 homeassistant electric_fence: {"event_type":"login_failed","ts":"2026-10-26T09:15:02Z",...}
 ```
 
+Over TCP each message ends with a newline (no length prefix), and over UDP
+each message is one datagram. The JSON never contains a raw newline.
+
 The header is RFC 3164, not RFC 5424. Wazuh's pre-decoder reads the 3164 form
 (`Mmm dd hh:mm:ss host program:`) reliably and hands the JSON to its stock JSON
 decoder, so no custom decoder is needed. The rules match the program name

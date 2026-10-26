@@ -33,8 +33,8 @@ async def _wait(predicate: Callable[[], bool]) -> None:
             await asyncio.sleep(0.01)
 
 
-async def test_tcp_octet_counting() -> None:
-    """Tcp octet counting."""
+async def test_tcp_newline_framing() -> None:
+    """Tcp lines end with LF and carry no length prefix (non-transparent framing)."""
     data = bytearray()
 
     async def handle(reader: asyncio.StreamReader, _: asyncio.StreamWriter) -> None:
@@ -49,8 +49,8 @@ async def test_tcp_octet_counting() -> None:
         assert transport.connected
         await transport.send(b"<132>one")
         await transport.send(b"<132>two!")
-        await _wait(lambda: len(data) >= 21)
-        assert bytes(data) == b"8 <132>one9 <132>two!"
+        await _wait(lambda: len(data) >= 19)
+        assert bytes(data) == b"<132>one\n<132>two!\n"
     finally:
         await transport.close()
         server.close()
@@ -123,6 +123,33 @@ async def test_send_after_peer_closed_raises() -> None:
         with pytest.raises(OSError):
             await _send_until_failure(transport)
         assert not transport.connected
+    finally:
+        await transport.close()
+        server.close()
+        await server.wait_closed()
+
+
+async def test_peer_close_after_first_line_is_noticed() -> None:
+    """A peer that closes after one line makes the next send fail, not vanish."""
+    got: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        got.append(await reader.readline())
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport = SyslogTransport("127.0.0.1", port, "tcp", None)
+    try:
+        await transport.connect()
+        await transport.send(b"<132>one")
+        await _wait(lambda: got == [b"<132>one\n"])
+        await asyncio.sleep(0.05)
+        with pytest.raises(OSError):
+            await transport.send(b"<132>two")
+        assert not transport.connected
+        await transport.connect()
+        assert transport.connected
     finally:
         await transport.close()
         server.close()
@@ -207,7 +234,7 @@ async def test_tls_verify_and_custom_ca(
     try:
         await trusted.connect()
         await trusted.send(b"<132>tls")
-        await _wait(lambda: bytes(data) == b"8 <132>tls")
+        await _wait(lambda: bytes(data) == b"<132>tls\n")
     finally:
         await trusted.close()
 

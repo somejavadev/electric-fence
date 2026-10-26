@@ -136,3 +136,6 @@ def test_syslog_line_escapes_newlines_and_keeps_utf8() -> None:
     assert b"\n" not in line
     assert b" my-host " in line
     assert "é".encode() in line
+    multiline_host = syslog_line(event, hostname="ha\nbox\r", now=NOW)
+    assert b"\n" not in multiline_host
+    assert b" ha-box " in multiline_host

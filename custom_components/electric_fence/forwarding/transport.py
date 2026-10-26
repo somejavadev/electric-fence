@@ -1,4 +1,10 @@
-"""Syslog transport over UDP, TCP and TLS."""
+"""Syslog transport over UDP, TCP and TLS.
+
+TCP and TLS use non-transparent framing (RFC 6587 §3.4.2): each line ends
+with LF, no length prefix, which is what Wazuh's remoted and Splunk's raw
+TCP input read. `syslog_line` never contains a raw LF. UDP sends one line
+per datagram.
+"""
 
 import asyncio
 import contextlib
@@ -48,6 +54,8 @@ class SyslogTransport:
         self._protocol = protocol
         self._ssl = ssl_context
         self._writer: asyncio.StreamWriter | None = None
+        # Never read from: kept so a peer's close (EOF) is noticed.
+        self._reader: asyncio.StreamReader | None = None
         self._datagram: asyncio.DatagramTransport | None = None
         self._udp: _Datagram | None = None
 
@@ -74,7 +82,7 @@ class SyslogTransport:
             return
         tls = self._protocol == "tls"
         async with asyncio.timeout(CONNECT_TIMEOUT):
-            _, self._writer = await asyncio.open_connection(
+            self._reader, self._writer = await asyncio.open_connection(
                 self._host,
                 self._port,
                 ssl=self._ssl if tls else None,
@@ -91,7 +99,10 @@ class SyslogTransport:
                 return
             if self._writer is None or self._writer.is_closing():
                 raise ConnectionError("not connected")
-            self._writer.write(b"%d " % len(line) + line)
+            if self._reader is not None and self._reader.at_eof():
+                # A write to a half-closed socket succeeds and is lost.
+                raise ConnectionError("closed by the receiver")
+            self._writer.write(line + b"\n")
             await self._writer.drain()
         except OSError:
             await self.close()
@@ -100,6 +111,7 @@ class SyslogTransport:
     async def close(self) -> None:
         """Close the connection; never raises."""
         writer, self._writer = self._writer, None
+        self._reader = None
         datagram, self._datagram = self._datagram, None
         self._udp = None
         if datagram is not None:

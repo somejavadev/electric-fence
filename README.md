@@ -276,7 +276,9 @@ forwarding** section of the settings.
 - **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
   Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
   certificate is checked unless you turn that off, and you can paste your own
-  CA certificate.
+  CA certificate. Over TCP and TLS each message ends with a newline, with no
+  length prefix, which is what Wazuh and Splunk's raw TCP input expect. Over
+  UDP each message is one datagram.
 - **Reliability.** Forwarding never makes a login wait. If the collector is
   down or its name doesn't resolve, events queue up to 1,000 and the oldest
   are dropped first. Reconnects back off from 1 second to 5 minutes, and the
