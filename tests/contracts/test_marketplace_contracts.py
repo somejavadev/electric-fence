@@ -39,7 +39,9 @@ def _load(hass: HomeAssistant, repo: object | None, **manager: object) -> None:
     entry = MockConfigEntry(domain="marketplace")
     entry.add_to_hass(hass)
     entry.mock_state(hass, ConfigEntryState.LOADED)
-    entry.runtime_data = SimpleNamespace(repositories=repos)
+    entry.runtime_data = SimpleNamespace(
+        repositories=repos, common=SimpleNamespace(archived_repositories=set())
+    )
 
 
 def _real_repo() -> SimpleNamespace:
@@ -96,3 +98,34 @@ async def test_contract_fails_on_missing_manager_method(hass: HomeAssistant) -> 
     reasons = check_contracts(hass, INTEGRATION_CHECKS)
     assert reasons
     assert "is_removed" in reasons[0]
+
+
+async def test_contract_fails_when_list_all_raises(hass: HomeAssistant) -> None:
+    """A raising `list_all` fails the contract."""
+
+    def boom() -> list[object]:
+        raise RuntimeError
+
+    _load(hass, None, list_all=boom)
+    # `common` is required too
+    hass.config_entries.async_loaded_entries("marketplace")[
+        0
+    ].runtime_data.common = SimpleNamespace(archived_repositories=set())
+    reasons = check_contracts(hass, INTEGRATION_CHECKS)
+    assert reasons
+    assert "list_all" in reasons[0]
+
+
+async def test_contract_fails_on_removed_shape(hass: HomeAssistant) -> None:
+    """A removed-repository record without `reason` fails."""
+    repo = _real_repo()
+    repo.data.full_name = "o/r"
+    _load(
+        hass, repo, is_removed=lambda name: True, removed_repository=lambda n: object()
+    )
+    hass.config_entries.async_loaded_entries("marketplace")[
+        0
+    ].runtime_data.common = SimpleNamespace(archived_repositories=set())
+    reasons = check_contracts(hass, INTEGRATION_CHECKS)
+    assert reasons
+    assert "reason" in reasons[0]

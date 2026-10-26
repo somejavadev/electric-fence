@@ -47,11 +47,17 @@ def _hash_file(path: str) -> str:
     return digest.hexdigest()
 
 
+def _skipped(rel: str, prefixes: tuple[str, ...], ignore: frozenset[str]) -> bool:
+    return rel in ignore or rel.startswith(prefixes)
+
+
 def hash_tree(root: Path, ignore: frozenset[str]) -> TreeHashes:
     """Hash every file under `root` (blocking; run in the executor).
 
     `ignore` holds relative POSIX paths, and directory prefixes ending in "/".
     """
+    if os.path.islink(root):  # noqa: PTH114
+        return TreeHashes({}, ["."], [])
     result = TreeHashes({}, [], [])
     prefixes = tuple(item for item in ignore if item.endswith("/"))
     base = str(root)
@@ -85,10 +91,6 @@ def hash_tree(root: Path, ignore: frozenset[str]) -> TreeHashes:
     result.symlinks.sort()
     result.unreadable.sort()
     return result
-
-
-def _skipped(rel: str, prefixes: tuple[str, ...], ignore: frozenset[str]) -> bool:
-    return rel in ignore or rel.startswith(prefixes)
 
 
 def compare(expected: dict[str, str], actual: TreeHashes) -> FileReport:

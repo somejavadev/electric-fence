@@ -6,10 +6,17 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.electric_fence.contracts import (
+    INTEGRATION_CHECKS,
+    check_contracts,
+    marketplace_contract_ok,
+)
+from custom_components.electric_fence.integrity.files import hash_tree
 from custom_components.electric_fence.integrity.inventory import (
     RemovedInfo,
     async_inventory,
@@ -179,3 +186,42 @@ async def test_inventory_marketplace_broken_falls_back_to_manual(
     entry.runtime_data = object()
     result = await async_inventory(hass)
     assert [(i.domain, i.source) for i in result] == [("demo", "manual")]
+    assert not marketplace_contract_ok(hass)
+
+
+async def test_inventory_symlinked_folder(hass: HomeAssistant) -> None:
+    """A symlinked folder is listed, flagged, and nothing behind it is read."""
+    outside = Path(hass.config.path("outside"))
+    outside.mkdir()
+    (outside / "manifest.json").write_text('{"version": "9"}')
+    (outside / "f.py").write_bytes(b"x")
+    root = Path(hass.config.path("custom_components"))
+    root.mkdir(exist_ok=True)
+    (root / "foo").symlink_to(outside)
+    _marketplace(hass, [_repo(domain="foo", full_name="o/foo")])
+    real_open = open
+    opened: list[str] = []
+
+    def spy(file: Any, *args: Any, **kwargs: Any) -> Any:
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    with patch("builtins.open", spy):
+        result = await async_inventory(hass)
+        hashes = await hass.async_add_executor_job(
+            hash_tree, result[0].path, frozenset()
+        )
+
+    assert result[0].symlinked is True
+    assert result[0].version is None
+    assert result[0].source == "marketplace"
+    assert hashes.symlinks == ["."]
+    assert not any("outside" in p for p in opened)
+
+
+async def test_contract_fails_without_common(hass: HomeAssistant) -> None:
+    """A manager without `common` fails the contract."""
+    manager = _marketplace(hass, [_repo()])
+    del manager.common
+    assert not marketplace_contract_ok(hass)
+    assert "archived_repositories" in check_contracts(hass, INTEGRATION_CHECKS)[0]

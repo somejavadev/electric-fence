@@ -38,6 +38,7 @@ class InstalledIntegration:
     archived: bool = False
     removed: RemovedInfo | None = None
     last_updated: datetime | None = None
+    symlinked: bool = False
 
 
 def _parse_last_updated(value: Any) -> datetime | None:
@@ -60,16 +61,18 @@ def _manifest_version(folder: Path) -> str | None:
     return version if isinstance(version, str) else None
 
 
-def _scan(root: Path) -> list[tuple[str, Path, str | None]]:
+def _scan(root: Path) -> list[tuple[str, Path, str | None, bool]]:
     try:
         folders = sorted(root.iterdir())
     except OSError:
         return []
-    return [
-        (folder.name, folder, _manifest_version(folder))
-        for folder in folders
-        if folder.is_dir() and (folder / "manifest.json").is_file()
-    ]
+    found: list[tuple[str, Path, str | None, bool]] = []
+    for folder in folders:
+        if folder.is_symlink():
+            found.append((folder.name, folder, None, True))
+        elif folder.is_dir() and (folder / "manifest.json").is_file():
+            found.append((folder.name, folder, _manifest_version(folder), False))
+    return found
 
 
 def _marketplace_repositories(hass: HomeAssistant) -> tuple[Any, dict[str, Any]]:
@@ -85,7 +88,7 @@ def _marketplace_repositories(hass: HomeAssistant) -> tuple[Any, dict[str, Any]]
                 and r.data.domain
             }
         except Exception:
-            _LOGGER.debug("Marketplace shape not understood", exc_info=True)
+            _LOGGER.warning("Marketplace shape not understood", exc_info=True)
             return None, {}
         return manager, repos
     return None, {}
@@ -123,12 +126,16 @@ async def async_inventory(hass: HomeAssistant) -> list[InstalledIntegration]:
     folders = await hass.async_add_executor_job(_scan, root)
     manager, repos = _marketplace_repositories(hass)
     result: list[InstalledIntegration] = []
-    for domain, path, version in folders:
+    for domain, path, version, symlinked in folders:
         fields: dict[str, Any] = {"source": "manual"}
         if manager is not None and (repo := repos.get(domain)) is not None:
             try:
                 fields = _marketplace_fields(manager, repo)
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug("Marketplace record of %s unreadable", domain)
-        result.append(InstalledIntegration(domain, path, version, **fields))
+            except Exception:
+                _LOGGER.warning(
+                    "Marketplace record of %s unreadable", domain, exc_info=True
+                )
+        result.append(
+            InstalledIntegration(domain, path, version, symlinked=symlinked, **fields)
+        )
     return result

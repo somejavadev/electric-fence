@@ -743,7 +743,15 @@ def _check_marketplace_repositories(hass: HomeAssistant) -> str | None:
         for method in ("list_all", "is_removed", "removed_repository"):
             if not callable(getattr(repositories, method, None)):
                 return f"Marketplace repositories.{method} is missing"
-        for repository in repositories.list_all():
+        if not hasattr(
+            getattr(entry.runtime_data, "common", None), "archived_repositories"
+        ):
+            return "Marketplace common.archived_repositories is missing"
+        try:
+            listed = list(repositories.list_all())
+        except Exception as err:  # noqa: BLE001
+            return f"Marketplace repositories.list_all raised {type(err).__name__}"
+        for repository in listed:
             data = getattr(repository, "data", None)
             manifest = getattr(repository, "repository_manifest", None)
             for field in _REPOSITORY_DATA_FIELDS:
@@ -752,6 +760,13 @@ def _check_marketplace_repositories(hass: HomeAssistant) -> str | None:
             for field in _REPOSITORY_MANIFEST_FIELDS:
                 if not hasattr(manifest, field):
                     return f"Marketplace repository_manifest.{field} is missing"
+            if repositories.is_removed(getattr(data, "full_name", "")):
+                removed = repositories.removed_repository(
+                    getattr(data, "full_name", "")
+                )
+                for field in ("reason", "removal_type"):
+                    if not hasattr(removed, field):
+                        return f"Marketplace removed repository {field} is missing"
     return None
 
 

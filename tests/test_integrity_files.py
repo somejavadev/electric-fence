@@ -101,3 +101,35 @@ def test_compare_report() -> None:
 def test_compare_ok() -> None:
     """Identical trees are ok."""
     assert compare({"a": "1"}, TreeHashes({"a": "1"}, [], [])).ok
+
+
+def test_hash_tree_root_symlink(tmp_path: Path) -> None:
+    """A symlinked root is reported, and nothing behind it is read."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "f.py").write_bytes(b"x")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    result = hash_tree(link, frozenset())
+    assert result == TreeHashes({}, ["."], [])
+    assert not compare({"f.py": "1"}, result).ok
+
+
+def test_hash_tree_ignored_symlink_omitted(tmp_path: Path) -> None:
+    """An ignored symlink is not listed."""
+    (tmp_path / "link").symlink_to("/etc/hostname")
+    assert hash_tree(tmp_path, frozenset({"link"})).symlinks == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every directory")
+def test_hash_tree_unreadable_subdir(tmp_path: Path) -> None:
+    """An unreadable directory is listed as unreadable."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "a.py").write_bytes(b"x")
+    sub.chmod(0)
+    try:
+        result = hash_tree(tmp_path, frozenset())
+    finally:
+        sub.chmod(0o700)
+    assert result.unreadable == ["sub"]
