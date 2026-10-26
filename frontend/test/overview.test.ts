@@ -711,15 +711,116 @@ describe("custom integrations card", () => {
     );
   });
 
-  it("is hidden when the command fails", async () => {
-    const fake = fakeApi({ overview: overview(), status: status() });
-    const el = document.createElement("ef-overview");
-    el.hass = fake.hass;
-    document.body.append(el);
-    for (let i = 0; i < 4; i += 1) {
-      await settle(el);
-    }
-    expect(card(el)).toBeNull();
+  it("shows an error and a retry when the command fails", async () => {
+    let fail = true;
+    const { el } = await mountCard(() => {
+      if (fail) {
+        throw new Error("boom");
+      }
+      return {
+        items: [changed],
+        scanned_at: null,
+        running: false,
+        available: true,
+      };
+    });
+    expect(squash(card(el).textContent)).toContain(
+      "Could not load this information from Home Assistant.",
+    );
+    expect(
+      card(el).querySelector<HTMLButtonElement>("button.check")?.disabled,
+    ).toBe(true);
+    fail = false;
+    const buttons = card(el).querySelectorAll<HTMLButtonElement>(
+      "[role=alert] button",
+    );
+    buttons[0]?.click();
+    await settle(el);
+    expect(card(el).querySelector("[role=alert]")).toBeNull();
+    expect(card(el).querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("says when integration checks are unavailable and disables Check now", async () => {
+    const { el, fake } = await mountCard({
+      items: [],
+      scanned_at: null,
+      running: false,
+      available: false,
+    });
+    expect(squash(card(el).textContent)).toContain(
+      "Integration checks unavailable",
+    );
+    const button = card(el).querySelector<HTMLButtonElement>("button.check");
+    expect(button?.disabled).toBe(true);
+    button?.click();
+    await settle(el);
+    expect(fake.of("scan_integrations")).toHaveLength(0);
+  });
+
+  it("says there are no custom integrations", async () => {
+    const { el } = await mountCard({
+      items: [],
+      scanned_at: null,
+      running: false,
+      available: true,
+    });
+    expect(squash(card(el).textContent)).toContain("No custom integrations");
+    expect(
+      card(el).querySelector<HTMLButtonElement>("button.check")?.disabled,
+    ).toBe(false);
+  });
+
+  it("keeps polling a long scan and re-enables the button when it ends", async () => {
+    vi.useFakeTimers();
+    let running = false;
+    const { el } = await mountCard(
+      () => ({ items: [changed], scanned_at: null, running, available: true }),
+      {
+        scan_integrations: () => {
+          running = true;
+          return { started: true };
+        },
+      },
+    );
+    const button = () =>
+      card(el).querySelector<HTMLButtonElement>(
+        "button.check",
+      ) as HTMLButtonElement;
+    button().click();
+    await settle(el);
+    await vi.advanceTimersByTimeAsync(2000 + 10_000 * 3);
+    await settle(el);
+    expect(button().disabled).toBe(true);
+    running = false;
+    await vi.advanceTimersByTimeAsync(10_000);
+    await settle(el);
+    expect(button().disabled).toBe(false);
+  });
+
+  it("gives up after five minutes and clears the stale state", async () => {
+    vi.useFakeTimers();
+    let running = false;
+    const { el } = await mountCard(
+      () => ({ items: [changed], scanned_at: null, running, available: true }),
+      {
+        scan_integrations: () => {
+          running = true;
+          return { started: true };
+        },
+      },
+    );
+    const button = () =>
+      card(el).querySelector<HTMLButtonElement>(
+        "button.check",
+      ) as HTMLButtonElement;
+    button().click();
+    await settle(el);
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    await settle(el);
+    expect(button().disabled).toBe(true);
+    await vi.advanceTimersByTimeAsync(70_000);
+    await settle(el);
+    expect(button().disabled).toBe(false);
   });
 });
 

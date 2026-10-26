@@ -230,6 +230,8 @@ describe("hostile values across the whole overview", () => {
         "img",
         "ef-change-row",
         "ef-posture-list",
+        "section",
+        "h2",
         // Posture icons: the icon name is a constant, never data.
         "ha-icon",
         "article",

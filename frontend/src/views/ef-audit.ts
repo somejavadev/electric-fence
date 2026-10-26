@@ -19,7 +19,7 @@ import {
   withinBounds,
 } from "../format.ts";
 import type { RangeChoice } from "../format.ts";
-import { strings } from "../strings.ts";
+import { actorLabel, strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type {
   ChangeAction,
@@ -178,6 +178,9 @@ export function matchesChange(
         item.target_id,
         item.target_name,
         item.actor_name,
+        item.actor_user_id === null && item.actor_name !== null
+          ? actorLabel(item)
+          : null,
         item.actor_ip,
         JSON.stringify(item.details),
       ],

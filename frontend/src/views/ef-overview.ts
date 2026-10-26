@@ -39,7 +39,9 @@ export const BANS_LINK = "/electric-fence/bans";
 
 /** After Check now, look this often (and at most this many times) for the end. */
 export const SCAN_POLL_MS = 2000;
-export const SCAN_POLLS = 5;
+/** Later polls are further apart; give up on a scan after this long. */
+export const SCAN_SLOW_POLL_MS = 10_000;
+export const SCAN_GIVE_UP_MS = 5 * 60_000;
 
 type Phase = "loading" | "ready" | "error" | "unloaded";
 
@@ -67,6 +69,7 @@ export class EfOverview extends LitElement {
     _selected: { state: true },
     _scanning: { state: true },
     _scanMessage: { state: true },
+    _integrationsFailed: { state: true },
   };
 
   declare hass: HomeAssistant;
@@ -83,6 +86,7 @@ export class EfOverview extends LitElement {
   declare _selected: string | undefined;
   declare _scanning: boolean;
   declare _scanMessage: string;
+  declare _integrationsFailed: boolean;
 
   private _generation = 0;
   private _requests = 0;
@@ -299,6 +303,7 @@ export class EfOverview extends LitElement {
     this._error = "";
     this._scanning = false;
     this._scanMessage = "";
+    this._integrationsFailed = false;
   }
 
   override connectedCallback(): void {
@@ -344,20 +349,45 @@ export class EfOverview extends LitElement {
     void this._loadIntegrations(generation);
   }
 
-  /** The card is left out when the command fails; nothing else depends on it. */
+  /** Only the attribution needs the status; failing here costs nothing. */
+  private async _loadStatus(generation: number): Promise<void> {
+    try {
+      const status = await fetchStatus(this.hass);
+      if (generation === this._generation) {
+        this._status = status;
+      }
+    } catch {
+      // No attribution line is the only effect.
+    }
+  }
+
   private async _loadIntegrations(generation: number): Promise<void> {
     try {
       const page = await fetchIntegrations(this.hass);
       if (generation === this._generation) {
-        this._integrations = page;
+        // An answer without a page counts as a failure.
+        this._integrations = page ?? this._integrations;
+        this._integrationsFailed = page == null;
       }
     } catch {
-      // No card is the only effect.
+      if (generation === this._generation) {
+        this._integrationsFailed = true;
+      }
     }
   }
 
+  private _retryIntegrations = (): void => {
+    void this._loadIntegrations(this._generation);
+  };
+
   private _checkNow = async (): Promise<void> => {
-    if (this._scanning || this._integrations?.running === true) {
+    const page = this._integrations;
+    if (
+      this._scanning ||
+      page === undefined ||
+      !page.available ||
+      page.running
+    ) {
       return;
     }
     const generation = this._generation;
@@ -372,7 +402,7 @@ export class EfOverview extends LitElement {
         ? strings.integrations.started
         : strings.integrations.recent;
       if (started) {
-        this._pollScan(generation, SCAN_POLLS);
+        this._pollScan(generation, 0);
         return;
       }
     } catch {
@@ -383,8 +413,9 @@ export class EfOverview extends LitElement {
     this._scanning = false;
   };
 
-  /** Refetch until the scan ends, at most `left` times. */
-  private _pollScan(generation: number, left: number): void {
+  /** Refetch until the scan ends; `elapsed` is the time waited so far. */
+  private _pollScan(generation: number, elapsed: number): void {
+    const delay = elapsed === 0 ? SCAN_POLL_MS : SCAN_SLOW_POLL_MS;
     this._scanTimer = setTimeout(() => {
       this._scanTimer = undefined;
       void (async () => {
@@ -392,25 +423,18 @@ export class EfOverview extends LitElement {
         if (generation !== this._generation) {
           return;
         }
-        if (this._integrations?.running === true && left > 1) {
-          this._pollScan(generation, left - 1);
+        const page = this._integrations;
+        if (page?.running !== true) {
+          this._scanning = false;
+        } else if (elapsed + delay < SCAN_GIVE_UP_MS) {
+          this._pollScan(generation, elapsed + delay);
         } else {
+          // Give up waiting: do not leave the button stuck on stale state.
+          this._integrations = { ...page, running: false };
           this._scanning = false;
         }
       })();
-    }, SCAN_POLL_MS);
-  }
-
-  /** Only the attribution needs the status; failing here costs nothing. */
-  private async _loadStatus(generation: number): Promise<void> {
-    try {
-      const status = await fetchStatus(this.hass);
-      if (generation === this._generation) {
-        this._status = status;
-      }
-    } catch {
-      // No attribution line is the only effect.
-    }
+    }, delay);
   }
 
   private _stop(): void {
@@ -586,10 +610,11 @@ export class EfOverview extends LitElement {
   private _integrationsCard() {
     const t = strings.integrations;
     const page = this._integrations;
-    if (!page || (!page.available && page.items.length === 0)) {
+    if (page === undefined && !this._integrationsFailed) {
       return nothing;
     }
-    const disabled = this._scanning || page.running;
+    const available = page?.available === true;
+    const disabled = !available || this._scanning || page?.running === true;
     return html`<section class="integrations">
       <header>
         <h2>${strings.cards.integrations}</h2>
@@ -603,7 +628,21 @@ export class EfOverview extends LitElement {
         </button>
       </header>
       ${
-        page.scanned_at === null
+        this._integrationsFailed
+          ? html`<p class="sub" role="alert">
+              ${strings.loadError}
+              <button
+                type="button"
+                class="check"
+                @click=${this._retryIntegrations}
+              >
+                ${strings.retry}
+              </button>
+            </p>`
+          : nothing
+      }
+      ${
+        page === undefined || page.scanned_at === null
           ? nothing
           : html`<p class="sub">
               ${t.scannedAt(formatTime(page.scanned_at, this.hass))}
@@ -615,11 +654,15 @@ export class EfOverview extends LitElement {
           : html`<p class="sub" role="status">${this._scanMessage}</p>`
       }
       ${
-        page.items.length === 0
-          ? html`<p class="empty">${t.empty}</p>`
-          : html`<ul>
-              ${page.items.map((item) => this._integrationRow(item))}
-            </ul>`
+        page === undefined
+          ? nothing
+          : !available && page.items.length === 0
+            ? html`<p class="empty">${t.unavailable}</p>`
+            : page.items.length === 0
+              ? html`<p class="empty">${t.empty}</p>`
+              : html`<ul>
+                  ${page.items.map((item) => this._integrationRow(item))}
+                </ul>`
       }
     </section>`;
   }

@@ -722,6 +722,20 @@ describe("push filter semantics", () => {
     expect(m({ username: "dmin" }, item)).toBe(true);
   });
 
+  it("matchesChange finds outside rows by their label", () => {
+    const item = change({
+      kind: "app",
+      actor_user_id: null,
+      actor_name: "outside",
+      actor_ip: null,
+    });
+    const f = { ...DEFAULT_AUDIT_FILTERS, system: true };
+    expect(matchesChange(item, { ...f, search: "outside home" }, NOW)).toBe(
+      true,
+    );
+    expect(matchesChange(item, { ...f, search: "nothing" }, NOW)).toBe(false);
+  });
+
   it("matchesChange", () => {
     const f: AuditFilters = { ...DEFAULT_AUDIT_FILTERS };
     const c = (
