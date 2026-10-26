@@ -12,6 +12,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
+import custom_components.electric_fence as fence
 from custom_components.electric_fence import posture
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.forwarding import forwarder as fwd
@@ -292,6 +293,54 @@ async def test_reconfigure_restarts_forwarder(
     assert entry.runtime_data.forwarder is not None
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert patched_transport.made[1].closed
+
+
+async def test_overlapping_restarts_leave_one_forwarder(
+    hass: HomeAssistant, patched_transport: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two option updates that overlap never orphan a running forwarder."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options=replace(
+            Settings(), forward_enabled=True, forward_host="siem.example"
+        ).to_options(),
+    )
+    entry.add_to_hass(hass)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    assert runtime.forwarder is not None
+    real_build = fence._async_build_forwarder  # noqa: SLF001
+    gate = asyncio.Event()
+
+    async def slow_build(hass: HomeAssistant, runtime: Any) -> Forwarder | None:
+        # Stands in for the TLS context load in the executor.
+        await gate.wait()
+        return await real_build(hass, runtime)
+
+    monkeypatch.setattr(fence, "_async_build_forwarder", slow_build)
+    restarts = [
+        asyncio.create_task(
+            fence._async_restart_forwarder(hass, runtime)  # noqa: SLF001
+        )
+        for _ in range(2)
+    ]
+    await asyncio.sleep(0)
+    gate.set()
+    await asyncio.gather(*restarts)
+    current = runtime.forwarder
+    assert current is not None
+    assert len(patched_transport.made) == 3
+    assert [t.closed for t in patched_transport.made] == [True, True, False]
+    assert current._task is not None  # noqa: SLF001
+    runtime.worker.submit(attempt(1))
+    await flush_worker(hass)
+    await until(lambda: len(patched_transport.lines) == 1)
+    await asyncio.sleep(0.05)
+    assert len(patched_transport.lines) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_forwarding_off_no_posture_item(

@@ -1,6 +1,7 @@
 """Runtime data for Electric Fence."""
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .collectors.base import BaseCollector
@@ -41,3 +42,4 @@ class Runtime:
     forwarder: Forwarder | None = None
     app_watcher: OutsideAppWatcher | None = None
     integrity: IntegrityScheduler | None = None
+    forward_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

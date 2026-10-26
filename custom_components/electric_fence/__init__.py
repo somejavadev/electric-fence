@@ -385,25 +385,31 @@ async def _async_start_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
 
 
 async def _async_restart_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
-    """Replace the forwarder; events still queued move to the new one."""
-    old = runtime.forwarder
-    try:
-        new = await _async_build_forwarder(hass, runtime)
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.warning(
-            "Electric Fence could not start forwarding: %s", type(err).__name__
-        )
-        new = None
-    # Built first, so the swap has no await and no record falls between.
-    if old is not None:
-        old.detach()
-    if new is not None:
-        new.start()
-    runtime.forwarder = new
-    if old is not None:
-        await old.stop()
+    """Replace the forwarder; events still queued move to the new one.
+
+    Restarts run one at a time, so overlapping option updates neither
+    orphan a running forwarder nor reorder the queued events.
+    """
+    async with runtime.forward_lock:
+        try:
+            new = await _async_build_forwarder(hass, runtime)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not start forwarding: %s", type(err).__name__
+            )
+            new = None
+        # Read after the build, so the swap has no await and no record
+        # falls between.
+        old = runtime.forwarder
+        if old is not None:
+            old.detach()
         if new is not None:
-            new.adopt(old.take_queue())
+            new.start()
+        runtime.forwarder = new
+        if old is not None:
+            await old.stop()
+            if new is not None:
+                new.adopt(old.take_queue())
 
 
 async def async_apply_settings(
