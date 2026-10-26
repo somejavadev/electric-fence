@@ -5,6 +5,7 @@ and `update` component are registered for real; only the Supervisor
 client is a stand-in.
 """
 
+import inspect
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +24,10 @@ from homeassistant.components.hassio import (
     http as hassio_http,
     update as hassio_update,
 )
-from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_API_DOMAIN
+from homeassistant.components.websocket_api import (
+    DOMAIN as WEBSOCKET_API_DOMAIN,
+    ActiveConnection,
+)
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.setup import async_setup_component
 from tests.helpers import setup_fake_hassio, supervisor_client
@@ -213,3 +217,112 @@ async def test_contracts_pass_off_supervisor(hass: HomeAssistant) -> None:
     """Without Supervisor the app contracts don't apply, and import nothing."""
     for name in (*NAMES, "hassio_rest_proxy"):
         assert _check(hass, name) is None, name
+
+
+def _registry(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+    return hass.services._services  # type: ignore[attr-defined,no-any-return]  # noqa: SLF001
+
+
+async def test_ws_contract_fails_on_missing_connection_attribute(
+    hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection class that lost an attribute we read fails the contract."""
+    monkeypatch.delattr(ActiveConnection, "user")
+    assert _check(hass, "supervisor_ws_api") == "ActiveConnection.user is missing"
+
+
+async def test_ws_contract_fails_on_nameless_schema(
+    hass: HomeAssistant, supervisor: None
+) -> None:
+    """A schema that doesn't list its field names fails the contract."""
+    _replace_command(hass, "supervisor/api", lambda msg: msg)
+    assert _check(hass, "supervisor_ws_api") == (
+        "supervisor/api: the message schema has no field names"
+    )
+
+
+async def test_service_contract_fails_on_wrong_service_shape(
+    hass: HomeAssistant, supervisor: None
+) -> None:
+    """A service that isn't Core's `Service`, or lost its parts, fails."""
+    registered = _registry(hass)["hassio"]
+    service = registered["addon_start"]
+    registered["addon_start"] = object()
+    assert (
+        _check(hass, "hassio_addon_services") == "hassio.addon_start is not a Service"
+    )
+    registered["addon_start"] = service
+    service.job = None  # type: ignore[assignment]
+    assert _check(hass, "hassio_addon_services") == (
+        "hassio.addon_start: Service.job is not a HassJob"
+    )
+
+
+async def test_service_contract_fails_on_nameless_schema(
+    hass: HomeAssistant, supervisor: None
+) -> None:
+    """A service schema without field names fails the contract."""
+    _registry(hass)["hassio"]["addon_start"].schema = lambda data: data
+    assert _check(hass, "hassio_addon_services") == (
+        "hassio.addon_start: the service schema has no field names"
+    )
+
+
+async def test_services_contract_fails_without_registry_mapping(
+    hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A service registry that changed its storage fails the contract."""
+    monkeypatch.setattr(hass.services, "_services", [])
+    assert _check(hass, "hassio_addon_services") == (
+        "ServiceRegistry._services is not a mapping"
+    )
+
+
+async def test_update_install_contract_fails_when_not_a_service(
+    hass: HomeAssistant, supervisor: None
+) -> None:
+    """An `update.install` that isn't a Service fails the contract."""
+    _registry(hass)["update"]["install"] = object()
+    assert _check(hass, "hassio_update_install") == "update.install is not a Service"
+
+
+async def test_update_install_contract_fails_without_source(
+    hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the entity's source can't be read, the contract fails."""
+
+    def unreadable(_obj: object) -> str:
+        raise OSError
+
+    monkeypatch.setattr(inspect, "getsource", unreadable)
+    assert _check(hass, "hassio_update_install") == (
+        "the HassioAddonEntity source is unavailable"
+    )
+
+
+async def test_supervisor_client_contract_fails_on_missing_pieces(
+    hass: HomeAssistant, supervisor: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing `get_supervisor_client` or client property fails."""
+    from aiohasupervisor import SupervisorClient  # noqa: PLC0415
+
+    from homeassistant.components import hassio  # noqa: PLC0415
+
+    monkeypatch.setattr(hassio, "get_supervisor_client", None)
+    assert _check(hass, "supervisor_client") == (
+        "hassio.get_supervisor_client is missing"
+    )
+    monkeypatch.undo()
+    monkeypatch.delattr(SupervisorClient, "store")
+    assert _check(hass, "supervisor_client") == (
+        "aiohasupervisor SupervisorClient.store is missing"
+    )
+
+
+async def test_rest_proxy_contract_fails_without_admin_paths(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proxy without its `PATHS_ADMIN` pattern fails the contract."""
+    hass.config.components.add("hassio")
+    monkeypatch.setattr(hassio_http, "PATHS_ADMIN", None)
+    assert _check(hass, "hassio_rest_proxy") == "hassio.http.PATHS_ADMIN is missing"

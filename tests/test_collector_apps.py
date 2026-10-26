@@ -1068,3 +1068,155 @@ async def test_password_only_change_hidden(
         "changed": ["options"],
         "values": {"options": {"hidden": True}},
     }
+
+
+def test_classify_delete_of_other_paths() -> None:
+    """A DELETE that isn't a repository removal is not an app change."""
+    assert classify("/addons/core_ssh", "DELETE", None) is None
+
+
+def test_repository_url_fallbacks() -> None:
+    """A removed repository without a known URL shows its slug; an add, none."""
+    url = AppCollector._repository_url  # noqa: SLF001
+    removed = AppOp(A.REPOSITORY_REMOVED, None, "a0d7b954", ())
+    assert url(removed, None, None) == "a0d7b954"
+    assert url(removed, {"a0d7b954": REPO}, None) == REPO
+    added = AppOp(A.REPOSITORY_ADDED, None, None, ())
+    assert url(added, None, {"x": REPO}) is None
+    assert url(added, {}, {"x": REPO}) == REPO
+
+
+def test_safe_url_without_url() -> None:
+    """No URL stays none."""
+    assert apps._safe_url(None) is None  # noqa: SLF001
+
+
+async def test_update_install_wrapped_once(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Wrapping `update.install` a second time does nothing."""
+    await _fake_update_component(hass)
+    collector = _collector(entry)
+    handles = len(collector._handles)  # noqa: SLF001
+    collector._wrap_update_install()  # noqa: SLF001
+    assert len(collector._handles) == handles  # noqa: SLF001
+
+
+async def test_update_addon_by_non_admin_goes_straight_to_core(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    send: AsyncMock,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """Core refuses a non-admin app update; nothing is read or recorded."""
+    ws = await hass_ws_client(hass, hass_read_only_access_token)
+    await ws.send_json_auto_id(
+        {"type": "hassio/update/addon", "addon": "core_ssh", "backup": False}
+    )
+    response = await ws.receive_json()
+    assert response["error"]["code"] == "unauthorized"
+    assert await _rows(hass) == []
+
+
+async def test_unknown_actor_leaves_the_call_to_core(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    send: AsyncMock,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the connection's actor can't be read, Core still handles the call."""
+    monkeypatch.setattr(apps, "ws_actor", Mock(side_effect=RuntimeError))
+    response = await _api(hass, hass_ws_client, "/addons/core_ssh/restart")
+    assert response["success"] is True
+    send.assert_awaited_once()
+    assert await _rows(hass) == []
+
+
+async def test_task_creation_failure_leaves_the_call_to_core(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    send: AsyncMock,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the read can't be scheduled, Core's handler still runs, unwatched."""
+    real = hass.async_create_task
+
+    def create(target: Any, name: str | None = None, **kwargs: Any) -> Any:
+        if name == "electric_fence app change":
+            raise RuntimeError("no tasks")
+        return real(target, name, **kwargs)
+
+    monkeypatch.setattr(hass, "async_create_task", create)
+    response = await _api(hass, hass_ws_client, "/addons/core_ssh/update")
+    assert response["success"] is True
+    send.assert_awaited_once()
+    assert await _rows(hass) == []
+
+
+async def test_service_without_slug_is_not_recorded(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A call without a slug string has nothing to record."""
+    call = ServiceCall(hass, "hassio", "app_start", {})
+    assert _collector(entry)._service_op(call, "app", A.STARTED) is None  # noqa: SLF001
+
+
+async def test_update_entity_read_failure_still_installs(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """If the versions can't be read, the install still goes ahead."""
+    collector = _collector(entry)
+    collector._update_entity_before = AsyncMock(side_effect=RuntimeError)  # type: ignore[method-assign]  # noqa: SLF001
+    original = AsyncMock(return_value="done")
+    handler = collector._wrap_update_entity(original)  # noqa: SLF001
+    call = ServiceCall(hass, "update", "install", {"entity_id": "update.x"})
+    assert await handler(call) == "done"
+    original.assert_awaited_once_with(call)
+
+
+async def test_slow_version_read_is_dropped(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read that outlasts the timeout is cancelled; the update isn't held up."""
+    collector = _collector(entry)
+    monkeypatch.setattr(apps, "READ_TIMEOUT", 0.01)
+    monkeypatch.setattr(collector, "_update_entity_slugs", lambda *_: ["core_ssh"])
+
+    async def slow(op: AppOp) -> Any:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(collector, "_read_before", slow)
+    call = ServiceCall(hass, "update", "install", {"entity_id": "all"})
+    [(op, _actor, before)] = await collector._update_entity_before(call)  # noqa: SLF001
+    assert op.slug == "core_ssh"
+    assert before.info is None
+
+
+async def test_supervisor_reads_fail_quietly(
+    hass: HomeAssistant, entry: MockConfigEntry, client: Mock
+) -> None:
+    """Reads that fail give nothing, and the app is read only with a slug."""
+    collector = _collector(entry)
+    assert await collector._info(None) is None  # noqa: SLF001
+    client.store.repositories_list.side_effect = RuntimeError
+    assert await collector._repositories() is None  # noqa: SLF001
+    collector._info = AsyncMock(side_effect=RuntimeError)  # type: ignore[method-assign]  # noqa: SLF001
+    before = await collector._read_before(AppOp(A.UPDATED, "core_ssh", None, ()))  # noqa: SLF001
+    assert before.info is None
+
+
+async def test_record_failure_is_contained(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """An error while recording is swallowed, not raised into Home Assistant."""
+    collector = _collector(entry)
+    collector._record = Mock(side_effect=RuntimeError)  # type: ignore[method-assign]  # noqa: SLF001
+    await collector._after(  # noqa: SLF001
+        AppOp(A.STARTED, "core_ssh", None, ()),
+        Mock(),
+        apps._Before(),  # noqa: SLF001
+    )
+    assert await _rows(hass) == []

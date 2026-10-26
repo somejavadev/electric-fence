@@ -776,3 +776,104 @@ async def test_stop_waits_for_poll_in_flight(
     assert await hass.async_add_executor_job(store.app_snapshot) == before
     await watcher.poll()
     assert await _rows(hass, entry) == []
+
+
+def test_is_poll_event_ignores_non_dicts() -> None:
+    """Anything but a dict is not a Supervisor event we poll for."""
+    assert apps_outside.is_poll_event("addon") is False
+    assert apps_outside.is_poll_event(None) is False
+
+
+async def test_start_after_stop_does_nothing(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A watcher stopped before it started takes no snapshot."""
+    watcher = _watcher(entry)
+    poll = AsyncMock()
+    monkeypatch.setattr(watcher, "poll", poll)
+    watcher._stopped = True  # noqa: SLF001
+    await watcher.start()
+    poll.assert_not_awaited()
+
+
+async def test_start_survives_listen_failure(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If listening can't start, start gives up quietly without polling."""
+    watcher = _watcher(entry)
+    poll = AsyncMock()
+    monkeypatch.setattr(watcher, "poll", poll)
+    monkeypatch.setattr(watcher, "_listen", Mock(side_effect=RuntimeError))
+    await watcher.start()
+    poll.assert_not_awaited()
+
+
+async def test_listen_after_stop_does_nothing(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A stopped watcher doesn't start listening."""
+    watcher = _watcher(entry)
+    await watcher.stop()
+    watcher._listen()  # noqa: SLF001
+    assert watcher._debouncer is None  # noqa: SLF001
+    assert watcher._unsubs == []  # noqa: SLF001
+
+
+async def test_stop_gives_up_on_a_poll_that_will_not_finish(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll still running at stop is not waited for forever."""
+    watcher = _watcher(entry)
+    monkeypatch.setattr(apps_outside, "READ_TIMEOUT", 0.01)
+    await watcher._lock.acquire()  # noqa: SLF001
+    await watcher.stop()
+    assert watcher._lock.locked()  # noqa: SLF001
+    watcher._lock.release()  # noqa: SLF001
+
+
+async def test_core_change_without_app_is_ignored(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A Core change with no app slug (a repository) suppresses nothing."""
+    watcher = _watcher(entry)
+    watcher.note_core_change(None, A.REPOSITORY_ADDED, dt_util.utcnow())
+    assert watcher._core == {}  # noqa: SLF001
+    diff = AppDiff(None, None, A.REPOSITORY_ADDED, {})
+    assert watcher._suppressed(diff, dt_util.utcnow()) is False  # noqa: SLF001
+
+
+async def test_event_handling_errors_are_contained(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """An error while handling a Supervisor event is swallowed."""
+    watcher = _watcher(entry)
+    watcher._debouncer = Mock(  # type: ignore[assignment]  # noqa: SLF001
+        async_schedule_call=Mock(side_effect=RuntimeError)
+    )
+    watcher._on_supervisor_event({"event": "addon"})  # noqa: SLF001
+
+
+async def test_snapshot_save_failure_does_not_stop_recording(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    sup: FakeSupervisor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the snapshot can't be stored, the change is still recorded."""
+    watcher = _watcher(entry)
+    monkeypatch.setattr(watcher, "_save", Mock(side_effect=OSError))
+    sup.set("core_ssh", version="2.0")
+    await watcher.poll()
+    [row] = await _rows(hass, entry)
+    assert row.action == "updated"
+
+
+async def test_worker_failure_does_not_escape(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the worker refuses a record, nothing is raised."""
+    watcher = _watcher(entry)
+    monkeypatch.setattr(
+        watcher.runtime.worker, "submit", Mock(side_effect=RuntimeError)
+    )
+    watcher._submit(A.STARTED, "a", "App a", {}, dt_util.utcnow(), False)  # noqa: SLF001
