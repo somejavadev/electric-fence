@@ -198,6 +198,15 @@ export const strings = {
     },
   },
   loadMore: "Load more",
+  download: {
+    menu: "More actions",
+    csv: "Download data (CSV)",
+    json: "Download data (JSON)",
+    preparing: (n: number): string => `Preparing… ${n} rows`,
+    failed: "Could not prepare the download. Nothing was saved.",
+    truncated: (n: number): string =>
+      `The download holds the newest ${n} rows only.`,
+  },
   users: {
     heading: "Users",
     empty: "No users to show",

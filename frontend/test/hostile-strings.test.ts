@@ -331,6 +331,7 @@ describe("hostile values in the other tabs", () => {
   }
 
   const filterBarTags = [
+    "ef-download-menu",
     "ef-filter-pane",
     "div",
     "button",

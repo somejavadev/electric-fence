@@ -1,4 +1,6 @@
 import { html, nothing } from "lit";
+import { activityCsv } from "../export.ts";
+import type { ExportFormat } from "../export.ts";
 import { fetchLogins, fetchUsers } from "../api.ts";
 import { NarrowController } from "../components/ef-filter-pane.ts";
 import "../components/ef-filter-pane.ts";
@@ -338,6 +340,16 @@ export class EfActivity extends LiveView {
     }
   }
 
+  private _startDownload = (format: ExportFormat): void => {
+    void this._download<LoginItem>(
+      format,
+      "activity",
+      loginFilter(this._filters),
+      (filter) => fetchLogins(this.hass, filter),
+      activityCsv,
+    );
+  };
+
   private _narrow = new NarrowController(this);
 
   private _fields(): FilterField[] {
@@ -394,6 +406,7 @@ export class EfActivity extends LiveView {
         @filter-changed=${this._onFilter}
         @filters-cleared=${this._onCleared}
       >
+        ${this._downloadMenu(this._startDownload)}
         ${
           this._phase === "loading"
             ? html`<p class="loading">${strings.loading}</p>`

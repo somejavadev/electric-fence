@@ -1,4 +1,6 @@
 import { html, nothing } from "lit";
+import { auditCsv } from "../export.ts";
+import type { ExportFormat } from "../export.ts";
 import { fetchChanges, fetchUsers } from "../api.ts";
 import "../components/ef-change-row.ts";
 import { NarrowController } from "../components/ef-filter-pane.ts";
@@ -340,6 +342,16 @@ export class EfAudit extends LiveView {
     }
   }
 
+  private _startDownload = (format: ExportFormat): void => {
+    void this._download<ChangeItem>(
+      format,
+      "audit",
+      changeFilter(this._filters),
+      (filter) => fetchChanges(this.hass, filter),
+      auditCsv,
+    );
+  };
+
   private _narrow = new NarrowController(this);
 
   private _fields(): FilterField[] {
@@ -412,6 +424,7 @@ export class EfAudit extends LiveView {
         @filter-changed=${this._onFilter}
         @filters-cleared=${this._onCleared}
       >
+        ${this._downloadMenu(this._startDownload)}
         ${
           this._phase === "loading"
             ? html`<p class="loading">${strings.loading}</p>`

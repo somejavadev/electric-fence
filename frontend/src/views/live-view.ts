@@ -1,5 +1,15 @@
 import { LitElement, html, nothing } from "lit";
 import { subscribe } from "../api.ts";
+import "../components/ef-download-menu.ts";
+import {
+  EXPORT_CAP,
+  EXPORT_PAGE,
+  collectAll,
+  downloadFile,
+  exportJson,
+  exportName,
+} from "../export.ts";
+import type { ExportFormat } from "../export.ts";
 import { strings } from "../strings.ts";
 import type {
   ChangeItem,
@@ -33,11 +43,17 @@ export abstract class LiveView extends LitElement {
     hass: { attribute: false },
     _phase: { state: true },
     _liveFailed: { state: true },
+    _exportRows: { state: true },
+    _exportNote: { state: true },
   };
 
   declare hass: HomeAssistant;
   declare _phase: Phase;
   declare _liveFailed: boolean;
+  /** Rows collected so far while an export runs, else null. */
+  declare _exportRows: number | null;
+  /** "failed", "truncated" or empty: the message under the header. */
+  declare _exportNote: "" | "failed" | "truncated";
 
   protected _generation = 0;
   protected _requests = 0;
@@ -50,6 +66,71 @@ export abstract class LiveView extends LitElement {
     super();
     this._phase = "loading";
     this._liveFailed = false;
+    this._exportRows = null;
+    this._exportNote = "";
+  }
+
+  /**
+   * Download everything a filter matches, unmasked, as CSV or JSON. The
+   * filter is fixed up front so every page sees the same time range.
+   */
+  protected async _download<T extends { id: number | null }>(
+    format: ExportFormat,
+    tab: "audit" | "activity",
+    filter: object,
+    fetchPage: (
+      filter: object,
+    ) => Promise<{ items: T[]; next_before_id: number | null }>,
+    toCsv: (items: T[]) => string,
+  ): Promise<void> {
+    if (this._exportRows !== null) {
+      return;
+    }
+    this._exportNote = "";
+    this._exportRows = 0;
+    try {
+      const { items, truncated } = await collectAll(
+        (before) =>
+          fetchPage({
+            ...filter,
+            limit: EXPORT_PAGE,
+            ...(before === null ? {} : { before_id: before }),
+          }),
+        undefined,
+        (n) => {
+          this._exportRows = n;
+        },
+      );
+      if (format === "csv") {
+        downloadFile(
+          exportName(tab, format),
+          "text/csv;charset=utf-8",
+          toCsv(items),
+        );
+      } else {
+        downloadFile(
+          exportName(tab, format),
+          "application/json",
+          exportJson(filter, items, truncated),
+        );
+      }
+      this._exportNote = truncated ? "truncated" : "";
+    } catch {
+      this._exportNote = "failed";
+    } finally {
+      this._exportRows = null;
+    }
+  }
+
+  /** The ⋮ menu for the filter pane's `actions` slot. */
+  protected _downloadMenu(start: (format: ExportFormat) => void) {
+    return html`<ef-download-menu
+      slot="actions"
+      .busy=${this._exportRows !== null}
+      .rows=${this._exportRows ?? 0}
+      @download-requested=${(e: CustomEvent<{ format: ExportFormat }>) =>
+        start(e.detail.format)}
+    ></ef-download-menu>`;
   }
 
   /** Fetch the data; the returned function applies it if still current. */
@@ -225,6 +306,16 @@ export abstract class LiveView extends LitElement {
 
   /** Unloaded, live-failed and load-error banners (null when none). */
   protected _banners() {
+    const exportNote =
+      this._exportNote === "failed"
+        ? html`<div class="notice error" role="alert">
+            <strong>${strings.download.failed}</strong>
+          </div>`
+        : this._exportNote === "truncated"
+          ? html`<div class="notice" role="status">
+              <strong>${strings.download.truncated(EXPORT_CAP)}</strong>
+            </div>`
+          : nothing;
     if (this._phase === "unloaded") {
       return html`
         <div class="notice" role="status">
@@ -235,6 +326,7 @@ export abstract class LiveView extends LitElement {
       `;
     }
     return html`
+      ${exportNote}
       ${
         this._liveFailed
           ? html`<div class="notice" role="status">
