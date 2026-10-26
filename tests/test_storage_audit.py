@@ -206,3 +206,11 @@ def test_change_search_non_ascii(store: FenceStore) -> None:
     """Search finds non-ASCII text in the details."""
     store.insert([change(details={"name": "ユーザー"}), change(details={"name": "x"})])
     assert len(store.query_changes(ChangeFilter(search="ユーザー"))) == 1
+
+
+def test_empty_baseline_keeps_version(store: FenceStore) -> None:
+    """An empty file set still records that a baseline exists."""
+    store.save_baseline("z", "2.0", {})
+    assert store.baseline("z") == ("2.0", {})
+    store.save_baseline("z", "2.1", {"a": "1"})
+    assert store.baseline("z") == ("2.1", {"a": "1"})

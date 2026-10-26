@@ -545,6 +545,10 @@ def read_active_ban_ips(path: Path) -> list[str]:
     return [str(r[0]) for r in rows]
 
 
+# Marks a baseline of zero files, so its version row still exists
+_EMPTY_BASELINE = ""
+
+
 class FenceStore:
     """SQLite repository. Synchronous and thread-safe via one lock."""
 
@@ -927,7 +931,9 @@ class FenceStore:
         )
         if not rows:
             return None, {}
-        return rows[0][0], {path: sha for _, path, sha in rows}
+        return rows[0][0], {
+            path: sha for _, path, sha in rows if path != _EMPTY_BASELINE
+        }
 
     def save_baseline(
         self, domain: str, version: str | None, hashes: dict[str, str]
@@ -938,7 +944,8 @@ class FenceStore:
             db.executemany(
                 "INSERT INTO file_baselines (domain, version, path, sha256) "
                 "VALUES (?, ?, ?, ?)",
-                [(domain, version, p, h) for p, h in hashes.items()],
+                [(domain, version, p, h) for p, h in hashes.items()]
+                or [(domain, version, _EMPTY_BASELINE, "")],
             )
 
     def finding(self, domain: str, check_name: str) -> dict[str, Any] | None:

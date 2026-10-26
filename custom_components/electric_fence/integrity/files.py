@@ -47,6 +47,11 @@ def _hash_file(path: str) -> str:
     return digest.hexdigest()
 
 
+def is_cache(name: str) -> bool:
+    """Return True for a bytecode cache folder or file name."""
+    return name == "__pycache__" or name.endswith(".pyc")
+
+
 def _skipped(rel: str, prefixes: tuple[str, ...], ignore: frozenset[str]) -> bool:
     return rel in ignore or rel.startswith(prefixes)
 
@@ -75,12 +80,12 @@ def hash_tree(root: Path, ignore: frozenset[str]) -> TreeHashes:
                 if not _skipped(rel_path, prefixes, ignore):
                     result.symlinks.append(rel_path)
             elif entry.is_dir(follow_symlinks=False):
-                if entry.name != "__pycache__" and not _skipped(
+                if not is_cache(entry.name) and not _skipped(
                     rel_path + "/", prefixes, ignore
                 ):
                     walk(entry.path, rel_path + "/")
             elif entry.is_file(follow_symlinks=False):
-                if entry.name.endswith(".pyc") or _skipped(rel_path, prefixes, ignore):
+                if is_cache(entry.name) or _skipped(rel_path, prefixes, ignore):
                     continue
                 try:
                     result.files[rel_path] = _hash_file(entry.path)
