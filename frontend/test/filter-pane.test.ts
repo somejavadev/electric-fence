@@ -160,6 +160,28 @@ describe("ef-filter-pane", () => {
     expect(search.value).toBe("");
   });
 
+  it("keeps typed text through unrelated re-renders before the emit", async () => {
+    const el = await mount();
+    const seen: FilterChange[] = [];
+    el.addEventListener("filter-changed", (e) =>
+      seen.push((e as CustomEvent<FilterChange>).detail),
+    );
+    const search = root(el).querySelector<HTMLInputElement>(
+      "[name=search]",
+    ) as HTMLInputElement;
+    search.value = "abc";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    el.values = { ...el.values, other: "x" };
+    el.open = true;
+    await el.updateComplete;
+    el.fields = [...el.fields];
+    el.defaults = { ...el.defaults };
+    await el.updateComplete;
+    expect(search.value).toBe("abc");
+    vi.advanceTimersByTime(400);
+    expect(seen).toEqual([{ name: "search", value: "abc" }]);
+  });
+
   it("emits nothing when disconnected before the delay", async () => {
     const el = await mount();
     const seen = vi.fn();

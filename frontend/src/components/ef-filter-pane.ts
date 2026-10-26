@@ -1,4 +1,8 @@
-import type { ReactiveController, ReactiveControllerHost } from "lit";
+import type {
+  PropertyValues,
+  ReactiveController,
+  ReactiveControllerHost,
+} from "lit";
 import { LitElement, css, html, nothing } from "lit";
 import { fireEvent } from "../fire-event.ts";
 import { strings } from "../strings.ts";
@@ -284,12 +288,22 @@ export class EfFilterPane extends LitElement {
   }
 
   /** Options render after the select, so its value is set once they exist. */
-  protected override updated(): void {
-    // Typed text is emitted trimmed; echoing it back would eat a typed space.
+  protected override updated(changed: PropertyValues<this>): void {
+    // Typed text is emitted trimmed; write the box only when `search` itself
+    // changed, never because a re-render found it ahead of `values`.
     const search =
       this.renderRoot.querySelector<HTMLInputElement>("input[name=search]");
     const wanted = this.values["search"] ?? "";
-    if (search !== null && search.value.trim() !== wanted) {
+    const before =
+      (changed.get("values") as Record<string, string> | undefined)?.[
+        "search"
+      ] ?? "";
+    if (
+      search !== null &&
+      changed.has("values") &&
+      before !== wanted &&
+      search.value.trim() !== wanted
+    ) {
       search.value = wanted;
     }
     for (const select of this.renderRoot.querySelectorAll("select")) {
