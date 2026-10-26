@@ -14,6 +14,7 @@ import {
   change,
   fakeApi,
   fakeHass,
+  integration,
   login,
   overview,
   status,
@@ -742,5 +743,115 @@ describe("hostile values in the other tabs", () => {
     const name = el.shadowRoot?.querySelector("button bdi");
     expect(name?.textContent.length).toBeLessThanOrEqual(65);
     expect(name?.getAttribute("title")).toBe(long);
+  });
+});
+
+describe("hostile integration and app text", () => {
+  const evil = "<img src=x onerror=alert(1)>";
+
+  async function render(tag: string, fake: ReturnType<typeof fakeApi>) {
+    const el = document.createElement(tag) as HTMLElement & {
+      hass: unknown;
+      updateComplete: Promise<unknown>;
+    };
+    el.hass = fake.hass;
+    document.body.append(el);
+    for (let i = 0; i < 12; i += 1) {
+      await Promise.resolve();
+    }
+    await el.updateComplete;
+    await new Promise((r) => setTimeout(r, 0));
+    return el;
+  }
+
+  const clean = (root: ParentNode) => {
+    const all = allShadowElements(root);
+    expect(
+      all.some((e) => e.localName === "img" && e.getAttribute("src") === "x"),
+    ).toBe(false);
+    expect(all.some((e) => e.hasAttribute("onerror"))).toBe(false);
+  };
+
+  it("integration name, file path and repository stay text", async () => {
+    const fake = fakeApi({
+      overview: overview(),
+      status: status(),
+      integrations: {
+        items: [
+          integration({
+            name: evil,
+            repository: evil,
+            version: evil,
+            files: {
+              status: "changed",
+              reason: evil,
+              ref: evil,
+              version_before: null,
+              report: {
+                changed: [evil],
+                missing: [evil],
+                added: [evil],
+                unreadable: [evil],
+                symlinks: [evil],
+              },
+            },
+            health: {
+              status: "removed",
+              level: "critical",
+              last_updated: null,
+              reason: evil,
+            },
+          }),
+        ],
+        scanned_at: null,
+        running: false,
+        available: true,
+      },
+    });
+    const el = await render("ef-overview", fake);
+    el.shadowRoot?.querySelector<HTMLButtonElement>("li button")?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const dialog = el.shadowRoot?.querySelector("ef-integration-dialog");
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    clean(el.shadowRoot as ShadowRoot);
+    expect(dialog?.shadowRoot?.textContent).toContain(evil);
+    expect(el.shadowRoot?.textContent).toContain(evil);
+  });
+
+  it("an app name in an audit sentence and burst details stays text", async () => {
+    const fake = fakeApi({
+      changes: {
+        items: [
+          change({
+            kind: "app",
+            action: "started",
+            target_id: null,
+            target_name: evil,
+            details: { apps: [{ slug: evil, name: evil }] },
+            actor_user_id: null,
+            actor_name: "outside",
+          }),
+          change({
+            id: 2,
+            kind: "files",
+            action: "files_changed",
+            target_id: evil,
+            target_name: evil,
+            details: {
+              changed: [evil],
+              missing: [],
+              added: [],
+              unreadable: [],
+            },
+          }),
+        ],
+        next_before_id: null,
+      },
+      users: { items: [] },
+    });
+    const el = await render("ef-audit", fake);
+    clean(el.shadowRoot as ShadowRoot);
+    expect(el.shadowRoot?.textContent).toContain(evil);
   });
 });

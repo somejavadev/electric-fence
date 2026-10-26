@@ -1,16 +1,27 @@
 import { LitElement, css, html, nothing } from "lit";
-import { endSlowdown, fetchOverview, fetchStatus, subscribe } from "../api.ts";
+import {
+  endSlowdown,
+  fetchIntegrations,
+  fetchOverview,
+  fetchStatus,
+  scanIntegrations,
+  subscribe,
+} from "../api.ts";
 import "../components/ef-answer-card.ts";
 import "../components/ef-change-row.ts";
 import "../components/ef-confirm-dialog.ts";
 import "../components/ef-flag.ts";
+import "../components/ef-integration-dialog.ts";
 import "../components/ef-login-row.ts";
 import "../components/ef-posture-list.ts";
-import { strings } from "../strings.ts";
+import { formatTime } from "../format.ts";
+import { integrationFiles, integrationHealth, strings } from "../strings.ts";
 import { bdiText, fill } from "../text.ts";
 import type {
   AttackItem,
   HomeAssistant,
+  IntegrationItem,
+  IntegrationsPage,
   Overview,
   Status,
   SubscribeEvent,
@@ -25,6 +36,10 @@ export const FAILED_LINK =
   "/electric-fence/activity?result=failed_or_blocked&range=24h";
 export const SUCCESS_LINK = "/electric-fence/activity?result=success&range=all";
 export const BANS_LINK = "/electric-fence/bans";
+
+/** After Check now, look this often (and at most this many times) for the end. */
+export const SCAN_POLL_MS = 2000;
+export const SCAN_POLLS = 5;
 
 type Phase = "loading" | "ready" | "error" | "unloaded";
 
@@ -48,6 +63,10 @@ export class EfOverview extends LitElement {
     _ending: { state: true },
     _busy: { state: true },
     _error: { state: true },
+    _integrations: { state: true },
+    _selected: { state: true },
+    _scanning: { state: true },
+    _scanMessage: { state: true },
   };
 
   declare hass: HomeAssistant;
@@ -59,6 +78,11 @@ export class EfOverview extends LitElement {
   declare _status: Status | undefined;
   declare _phase: Phase;
   declare _liveFailed: boolean;
+  declare _integrations: IntegrationsPage | undefined;
+  /** The domain whose details dialog is open. */
+  declare _selected: string | undefined;
+  declare _scanning: boolean;
+  declare _scanMessage: string;
 
   private _generation = 0;
   private _requests = 0;
@@ -67,6 +91,7 @@ export class EfOverview extends LitElement {
   private _unloaded = false;
   private _unsub: UnsubscribeFunc | undefined;
   private _timer: ReturnType<typeof setTimeout> | undefined;
+  private _scanTimer: ReturnType<typeof setTimeout> | undefined;
 
   static override styles = css`
     :host {
@@ -132,6 +157,90 @@ export class EfOverview extends LitElement {
       border-radius: var(--ha-card-border-radius, 12px);
       box-shadow: var(--ha-card-box-shadow, none);
     }
+    .integrations {
+      margin-top: 16px;
+      padding: 16px;
+      background: var(--ha-card-background, var(--card-background-color));
+      border: 1px solid var(--ha-card-border-color, var(--divider-color));
+      border-radius: var(--ha-card-border-radius, 12px);
+      box-shadow: var(--ha-card-box-shadow, none);
+    }
+    .integrations header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 16px;
+    }
+    .integrations button.item {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 2px 8px;
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 0;
+      border: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: start;
+      cursor: pointer;
+    }
+    .integrations .name {
+      font-weight: var(--ha-font-weight-medium, 500);
+      overflow-wrap: anywhere;
+    }
+    .integrations .sub {
+      font-size: var(--ha-font-size-s, 12px);
+      color: var(--secondary-text-color);
+      overflow-wrap: anywhere;
+    }
+    .integrations .tag {
+      padding: 0 8px;
+      border-radius: var(--ha-border-radius-xl, 16px);
+      font-size: var(--ha-font-size-s, 12px);
+      background: color-mix(
+        in srgb,
+        var(--secondary-text-color) 15%,
+        transparent
+      );
+    }
+    .integrations .tag.bad {
+      background: color-mix(in srgb, var(--error-color) 20%, transparent);
+    }
+    .integrations .tag.good {
+      background: color-mix(in srgb, var(--success-color) 20%, transparent);
+    }
+    .integrations .tag.warn {
+      background: color-mix(in srgb, var(--warning-color) 25%, transparent);
+    }
+    .integrations button:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 2px;
+    }
+    .integrations button.check {
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid var(--outline-color, var(--divider-color));
+      border-radius: var(--ha-border-radius-pill, 9999px);
+      background: none;
+      color: var(--primary-color);
+      font: inherit;
+      font-weight: var(--ha-font-weight-medium, 500);
+      cursor: pointer;
+    }
+    .integrations button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .integrations h2 {
+      margin: 0;
+      font-size: var(--ha-card-header-font-size, var(--ha-font-size-2xl, 24px));
+      font-weight: var(--ha-font-weight-normal, 400);
+      letter-spacing: -0.012em;
+      line-height: var(--ha-line-height-condensed, 1.2);
+    }
     .attacks h2 {
       margin: 0 0 8px;
       font-size: var(--ha-card-header-font-size, var(--ha-font-size-2xl, 24px));
@@ -188,6 +297,8 @@ export class EfOverview extends LitElement {
     this._liveFailed = false;
     this._busy = false;
     this._error = "";
+    this._scanning = false;
+    this._scanMessage = "";
   }
 
   override connectedCallback(): void {
@@ -222,6 +333,7 @@ export class EfOverview extends LitElement {
       return;
     }
     this._started = true;
+    this._scanning = false;
     this._unloaded = false;
     this._liveFailed = false;
     const generation = ++this._generation;
@@ -229,6 +341,64 @@ export class EfOverview extends LitElement {
     void this._refresh(generation);
     void this._subscribe(generation);
     void this._loadStatus(generation);
+    void this._loadIntegrations(generation);
+  }
+
+  /** The card is left out when the command fails; nothing else depends on it. */
+  private async _loadIntegrations(generation: number): Promise<void> {
+    try {
+      const page = await fetchIntegrations(this.hass);
+      if (generation === this._generation) {
+        this._integrations = page;
+      }
+    } catch {
+      // No card is the only effect.
+    }
+  }
+
+  private _checkNow = async (): Promise<void> => {
+    if (this._scanning || this._integrations?.running === true) {
+      return;
+    }
+    const generation = this._generation;
+    this._scanning = true;
+    this._scanMessage = "";
+    try {
+      const { started } = await scanIntegrations(this.hass);
+      if (generation !== this._generation) {
+        return;
+      }
+      this._scanMessage = started
+        ? strings.integrations.started
+        : strings.integrations.recent;
+      if (started) {
+        this._pollScan(generation, SCAN_POLLS);
+        return;
+      }
+    } catch {
+      if (generation === this._generation) {
+        this._scanMessage = strings.integrations.scanError;
+      }
+    }
+    this._scanning = false;
+  };
+
+  /** Refetch until the scan ends, at most `left` times. */
+  private _pollScan(generation: number, left: number): void {
+    this._scanTimer = setTimeout(() => {
+      this._scanTimer = undefined;
+      void (async () => {
+        await this._loadIntegrations(generation);
+        if (generation !== this._generation) {
+          return;
+        }
+        if (this._integrations?.running === true && left > 1) {
+          this._pollScan(generation, left - 1);
+        } else {
+          this._scanning = false;
+        }
+      })();
+    }, SCAN_POLL_MS);
   }
 
   /** Only the attribution needs the status; failing here costs nothing. */
@@ -251,6 +421,11 @@ export class EfOverview extends LitElement {
   }
 
   private _clearTimer(): void {
+    if (this._scanTimer !== undefined) {
+      clearTimeout(this._scanTimer);
+      this._scanTimer = undefined;
+      this._scanning = false;
+    }
     if (this._timer !== undefined) {
       clearTimeout(this._timer);
       this._timer = undefined;
@@ -403,6 +578,106 @@ export class EfOverview extends LitElement {
     </section>`;
   }
 
+  private _tag(text: string, level: "good" | "warn" | "bad" | "") {
+    return html`<span class="tag ${level}">${text}</span>`;
+  }
+
+  /** The custom integrations and what the last check found. */
+  private _integrationsCard() {
+    const t = strings.integrations;
+    const page = this._integrations;
+    if (!page || (!page.available && page.items.length === 0)) {
+      return nothing;
+    }
+    const disabled = this._scanning || page.running;
+    return html`<section class="integrations">
+      <header>
+        <h2>${strings.cards.integrations}</h2>
+        <button
+          type="button"
+          class="check"
+          ?disabled=${disabled}
+          @click=${this._checkNow}
+        >
+          ${t.checkNow}
+        </button>
+      </header>
+      ${
+        page.scanned_at === null
+          ? nothing
+          : html`<p class="sub">
+              ${t.scannedAt(formatTime(page.scanned_at, this.hass))}
+            </p>`
+      }
+      ${
+        this._scanMessage === ""
+          ? nothing
+          : html`<p class="sub" role="status">${this._scanMessage}</p>`
+      }
+      ${
+        page.items.length === 0
+          ? html`<p class="empty">${t.empty}</p>`
+          : html`<ul>
+              ${page.items.map((item) => this._integrationRow(item))}
+            </ul>`
+      }
+    </section>`;
+  }
+
+  private _integrationRow(item: IntegrationItem) {
+    const t = strings.integrations;
+    const files = item.files?.status;
+    const filesLevel =
+      files === "changed" ? "bad" : files === "match" ? "good" : "";
+    const health = item.health.status;
+    const healthLevel =
+      health === "ok"
+        ? "good"
+        : health === "removed"
+          ? "bad"
+          : health === "unknown"
+            ? ""
+            : "warn";
+    return html`<li>
+      <button
+        type="button"
+        class="item"
+        aria-haspopup="dialog"
+        @click=${() => {
+          this._selected = item.domain;
+        }}
+      >
+        <span class="name">${bdiText(item.name)}</span>
+        ${this._tag(Object.hasOwn(t.sources, item.source) ? (t.sources[item.source] ?? item.source) : item.source, "")}
+        ${
+          item.version === null
+            ? nothing
+            : html`<span class="sub"
+                >${bdiText(t.version(item.version), 32)}</span
+              >`
+        }
+        ${this._tag(integrationFiles(item), filesLevel)}
+        ${this._tag(integrationHealth(item), healthLevel)}
+      </button>
+    </li>`;
+  }
+
+  private _integrationDialog() {
+    const item = this._integrations?.items.find(
+      (i) => i.domain === this._selected,
+    );
+    if (item === undefined) {
+      return nothing;
+    }
+    return html`<ef-integration-dialog
+      .hass=${this.hass}
+      .item=${item}
+      @dialog-closed=${() => {
+        this._selected = undefined;
+      }}
+    ></ef-integration-dialog>`;
+  }
+
   private _bans() {
     const protection = this._overview?.protection;
     if (protection === undefined) {
@@ -553,12 +828,13 @@ export class EfOverview extends LitElement {
           )}
         </ef-answer-card>
       </div>
+      ${this._integrationsCard()}
       ${
         typeof attribution === "string" && attribution !== ""
           ? html`<p class="attribution"><bdi>${attribution}</bdi></p>`
           : nothing
       }
-      ${this._confirm()}
+      ${this._confirm()} ${this._integrationDialog()}
     `;
   }
 

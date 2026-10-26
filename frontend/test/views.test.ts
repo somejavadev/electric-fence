@@ -352,6 +352,43 @@ describe("ef-users", () => {
 describe("ef-settings", () => {
   const withStatus = (s: Status) => fakeApi({ status: s });
 
+  it("says app auditing is not available on this install type", async () => {
+    const s = status();
+    s.apps = "not_available";
+    const el = await mount<EfSettings>("ef-settings", withStatus(s));
+    expect(el.shadowRoot?.textContent).toContain(
+      "Not available on this install type",
+    );
+  });
+
+  it("shows forwarding state with queued and dropped counts", async () => {
+    const s = status();
+    s.settings.forward_enabled = true;
+    s.forwarding = {
+      state: "failing",
+      queued: 12,
+      dropped: 3,
+      last_error: "OSError",
+    };
+    const el = await mount<EfSettings>("ef-settings", withStatus(s));
+    const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("Log forwarding");
+    expect(text).toContain("Failing");
+    expect(text).toMatch(/Queued 12/);
+    expect(text).toMatch(/Dropped 3/);
+    expect(text).toContain("OSError");
+  });
+
+  it("shows forwarding and integration checks as off", async () => {
+    const s = status();
+    s.settings.verify_files = false;
+    const el = await mount<EfSettings>("ef-settings", withStatus(s));
+    const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/Forwarding Off/);
+    expect(text).toMatch(/File checks Off/);
+    expect(text).toMatch(/Repairs On/);
+  });
+
   it("shows the database date as a date, without a time zone shift", async () => {
     const s = status();
     s.geo = {

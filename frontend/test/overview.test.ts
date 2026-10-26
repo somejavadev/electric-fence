@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "../src/components/ef-posture-list.ts";
 import { REFRESH_DELAY_MS, EfOverview } from "../src/views/ef-overview.ts";
 import { changeSentence, postureText } from "../src/strings.ts";
 import {
@@ -6,6 +7,7 @@ import {
   change,
   fakeApi,
   fakeHass,
+  integration,
   login,
   overview,
   status,
@@ -539,5 +541,282 @@ describe("protection posture sentences", () => {
     });
     expect(text).toContain("ip_ban_enabled");
     expect(text).not.toContain("not known");
+  });
+});
+
+describe("custom integrations card", () => {
+  const changed = integration({
+    domain: "bad",
+    name: "Bad one",
+    source: "unverified",
+    files: {
+      status: "changed",
+      reason: null,
+      ref: "v1.0.0",
+      version_before: null,
+      report: {
+        changed: ["a.py"],
+        missing: ["b.py"],
+        added: ["c.py"],
+        unreadable: ["d.py"],
+        symlinks: ["e.py"],
+      },
+    },
+    health: {
+      status: "unmaintained",
+      level: "notice",
+      last_updated: new Date(Date.now() - 167 * 86_400_000).toISOString(),
+      reason: null,
+    },
+  });
+
+  async function mountCard(
+    integrations: unknown | (() => unknown),
+    extra: Parameters<typeof fakeApi>[0] = {},
+  ) {
+    const fake = fakeApi({
+      overview: overview(),
+      status: status(),
+      integrations,
+      ...extra,
+    });
+    const el = document.createElement("ef-overview");
+    el.hass = fake.hass;
+    document.body.append(el);
+    for (let i = 0; i < 4; i += 1) {
+      await settle(el);
+    }
+    return { el, fake };
+  }
+
+  const card = (el: EfOverview) =>
+    el.shadowRoot?.querySelector(".integrations") as HTMLElement;
+  const squash = (t: string | null | undefined) =>
+    t?.replace(/\s+/g, " ").trim() ?? "";
+
+  it("shows a row with source, version, file status and health", async () => {
+    const { el } = await mountCard({
+      items: [changed, integration()],
+      scanned_at: "2026-10-26T00:00:00+00:00",
+      running: false,
+      available: true,
+    });
+    const rows = card(el).querySelectorAll("li");
+    expect(rows).toHaveLength(2);
+    const first = squash(rows[0]?.textContent);
+    expect(first).toContain("Bad one");
+    expect(first).toContain("Unverified");
+    expect(first).toContain("Files changed");
+    expect(first).toContain("Not updated for 5 months");
+    const second = squash(rows[1]?.textContent);
+    expect(second).toContain("Marketplace");
+    expect(second).toContain("1.2.0");
+    expect(second).toContain("Files match");
+    expect(second).toContain("Up to date");
+  });
+
+  it("opens a dialog listing the files", async () => {
+    const { el } = await mountCard({
+      items: [changed],
+      scanned_at: null,
+      running: false,
+      available: true,
+    });
+    card(el).querySelector<HTMLButtonElement>("li button")?.click();
+    await settle(el);
+    const dialog = el.shadowRoot?.querySelector("ef-integration-dialog");
+    expect(dialog).not.toBeNull();
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const text = squash(dialog?.shadowRoot?.textContent);
+    for (const part of [
+      "Changed files a.py",
+      "Missing files b.py",
+      "Added files c.py",
+      "Unreadable files d.py",
+      "Symbolic links e.py",
+      "owner/thing",
+      "v1.0.0",
+    ]) {
+      expect(text).toContain(part);
+    }
+  });
+
+  it("says why a check could not run", async () => {
+    const { el } = await mountCard({
+      items: [
+        integration({
+          files: {
+            status: "unchecked",
+            reason: "too_large",
+            ref: null,
+            version_before: null,
+            report: null,
+          },
+        }),
+      ],
+      scanned_at: null,
+      running: false,
+      available: true,
+    });
+    expect(squash(card(el).textContent)).toContain("Couldn't check");
+    card(el).querySelector<HTMLButtonElement>("li button")?.click();
+    await settle(el);
+    const dialog = el.shadowRoot?.querySelector("ef-integration-dialog");
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    expect(squash(dialog?.shadowRoot?.textContent)).toContain(
+      "The official copy is over the 25 MB limit",
+    );
+  });
+
+  it("checks once and disables the button while running", async () => {
+    vi.useFakeTimers();
+    let running = false;
+    const { el, fake } = await mountCard(
+      () => ({ items: [changed], scanned_at: null, running, available: true }),
+      {
+        scan_integrations: () => {
+          running = true;
+          return { started: true };
+        },
+      },
+    );
+    const button = () =>
+      card(el).querySelector<HTMLButtonElement>(
+        "button.check",
+      ) as HTMLButtonElement;
+    expect(button().disabled).toBe(false);
+    button().click();
+    button().click();
+    await settle(el);
+    expect(fake.of("scan_integrations")).toHaveLength(1);
+    expect(button().disabled).toBe(true);
+    expect(squash(card(el).textContent)).toContain("Started");
+    running = false;
+    await vi.advanceTimersByTimeAsync(3000);
+    await settle(el);
+    expect(button().disabled).toBe(false);
+  });
+
+  it("says when a check ran recently", async () => {
+    const { el } = await mountCard(
+      { items: [changed], scanned_at: null, running: false, available: true },
+      { scan_integrations: { started: false } },
+    );
+    card(el).querySelector<HTMLButtonElement>("button.check")?.click();
+    await settle(el);
+    expect(squash(card(el).textContent)).toContain(
+      "Already ran in the last 5 minutes",
+    );
+  });
+
+  it("is hidden when the command fails", async () => {
+    const fake = fakeApi({ overview: overview(), status: status() });
+    const el = document.createElement("ef-overview");
+    el.hass = fake.hass;
+    document.body.append(el);
+    for (let i = 0; i < 4; i += 1) {
+      await settle(el);
+    }
+    expect(card(el)).toBeNull();
+  });
+});
+
+describe("posture sentences for v0.3", () => {
+  it("forwarding", () => {
+    expect(
+      postureText({
+        id: "forwarding_failing",
+        level: "warning",
+        params: {
+          last_error: "ConnectionRefusedError",
+          failing_since: "2026-10-26T00:00:00+00:00",
+          queued: 12,
+          dropped: 3,
+        },
+      }),
+    ).toBe(
+      "Forwarding logs to your log server is failing (ConnectionRefusedError). 12 events are waiting and 3 were dropped.",
+    );
+    expect(
+      postureText({
+        id: "forwarding_failing",
+        level: "ok",
+        params: {
+          last_error: null,
+          failing_since: null,
+          queued: 0,
+          dropped: 0,
+        },
+      }),
+    ).toBe("Forwarding logs to your log server is working.");
+  });
+
+  it("integration files, health and unchecked", () => {
+    expect(
+      postureText({
+        id: "integration_files_changed",
+        level: "warning",
+        params: { integrations: ["a", "b"] },
+      }),
+    ).toBe("2 custom integrations differ from their official copy: a, b.");
+    expect(
+      postureText({
+        id: "integration_files_changed",
+        level: "ok",
+        params: { integrations: [] },
+      }),
+    ).toBe("Custom integration files match their official copies.");
+    expect(
+      postureText({
+        id: "integration_health",
+        level: "critical",
+        params: { removed: ["x"], archived: ["y"], unmaintained: [] },
+      }),
+    ).toBe(
+      "1 custom integration was removed from the Marketplace: x. 1 is archived: y.",
+    );
+    expect(
+      postureText({
+        id: "integration_health",
+        level: "ok",
+        params: { removed: [], archived: [], unmaintained: [] },
+      }),
+    ).toBe("Custom integrations are maintained.");
+    expect(
+      postureText({
+        id: "integration_checks_unchecked",
+        level: "info",
+        params: { integrations: ["z"] },
+      }),
+    ).toBe("1 custom integration could not be checked: z.");
+  });
+
+  it("styles info and critical levels", async () => {
+    const el = document.createElement("ef-posture-list");
+    el.items = [
+      {
+        id: "integration_checks_unchecked",
+        level: "info",
+        params: { integrations: ["z"] },
+      },
+      {
+        id: "integration_health",
+        level: "critical",
+        params: { removed: ["x"], archived: [], unmaintained: [] },
+      },
+    ];
+    document.body.append(el);
+    await el.updateComplete;
+    const icons = [...(el.shadowRoot?.querySelectorAll("ha-icon") ?? [])];
+    expect(icons.map((i) => i.getAttribute("aria-label"))).toEqual([
+      "Info",
+      "Critical",
+    ]);
+    expect(icons.every((i) => (i.getAttribute("icon") ?? "") !== "")).toBe(
+      true,
+    );
+    expect(icons.map((i) => i.getAttribute("icon"))).not.toContain("undefined");
   });
 });

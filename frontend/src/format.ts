@@ -180,3 +180,20 @@ export function containsText(
 /** Whether the text is a `YYYY-MM-DD` day (or empty). */
 export const isDayOrEmpty = (text: string): boolean =>
   text === "" || localDay(text, false) !== undefined;
+
+const MONTH_MS = 30.44 * 24 * 60 * 60 * 1000;
+
+/** Whole months since `iso`; null when unknown or in the future. */
+export function monthsSince(
+  iso: string | null,
+  now: number = Date.now(),
+): number | null {
+  if (iso === null) {
+    return null;
+  }
+  const then = Date.parse(iso);
+  if (Number.isNaN(then) || then > now) {
+    return null;
+  }
+  return Math.floor((now - then) / MONTH_MS);
+}
