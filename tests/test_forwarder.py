@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta
 import json
+import threading
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 from custom_components.electric_fence import posture
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.forwarding import forwarder as fwd
+from custom_components.electric_fence.forwarding.format import event_dict
 from custom_components.electric_fence.forwarding.forwarder import Forwarder
 from custom_components.electric_fence.models import (
     ChangeAction,
@@ -257,6 +259,7 @@ async def test_failed_and_recovered_records(
     # The health records are forwarded like any other.
     kinds = {e.get("action") for e in net.events()}
     assert "forwarding_failed" in kinds
+    assert [e["error"] for e in net.events() if "error" in e] == ["OSError"]
     await forwarder.stop()
 
 
@@ -356,3 +359,109 @@ async def test_worker_health_record_is_a_settings_change(
     await until(lambda: len(net.lines) == 1)
     assert net.lines[0].startswith(b"<132>")
     await forwarder.stop()
+
+
+class SlowTransport(FakeTransport):
+    """A transport whose send waits until the test lets it finish."""
+
+    def __init__(self, net: Net, gate: asyncio.Event, started: asyncio.Event) -> None:
+        """Register on the network."""
+        super().__init__(net)
+        self.gate = gate
+        self.started = started
+
+    async def send(self, line: bytes) -> None:
+        """Wait for the gate, then send."""
+        self.started.set()
+        await self.gate.wait()
+        await super().send(line)
+
+
+async def test_adopt_during_send_neither_duplicates_nor_goes_negative(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, net: Net
+) -> None:
+    """Adopting the old queue while a send is in flight sends each event once."""
+    gate, started = asyncio.Event(), asyncio.Event()
+    forwarder = Forwarder(
+        hass, setup_entry.runtime_data, lambda: SlowTransport(net, gate, started)
+    )
+    forwarder.start()
+    forwarder.on_record(attempt(3))
+    await asyncio.wait_for(started.wait(), 5)
+    forwarder.adopt(
+        [event_dict(attempt(1), values=False), event_dict(attempt(2), values=False)]
+    )
+    gate.set()
+    await until(lambda: len(net.lines) == 3)
+    await asyncio.sleep(0.05)
+    assert sorted(e["username"] for e in net.events()) == ["user1", "user2", "user3"]
+    stats = forwarder.stats()
+    assert (stats.dropped, stats.queued, stats.sent) == (0, 0, 3)
+    await forwarder.stop()
+
+
+async def test_unformattable_event_is_dropped_not_retried(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, net: Net
+) -> None:
+    """A bad event is counted and skipped; the ones behind it still go out."""
+    forwarder = make_forwarder(hass, setup_entry, net)
+    forwarder.start()
+    forwarder.on_record(attempt(1))
+    await until(lambda: len(net.lines) == 1)
+    bad = attempt(2)
+    bad.username_typed = object()  # type: ignore[assignment]
+    forwarder.on_record(bad)
+    forwarder.on_record(attempt(3))
+    await until(lambda: len(net.lines) == 2)
+    assert [e["username"] for e in net.events()] == ["user1", "user3"]
+    stats = forwarder.stats()
+    assert (stats.dropped, stats.queued, stats.last_error) == (1, 0, None)
+    assert net.made[0].connected
+    await forwarder.stop()
+
+
+async def test_restart_with_tls_loses_no_record(
+    hass: HomeAssistant,
+    patched_transport: Net,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Records stored while the new TLS context is built are all delivered."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options=replace(
+            Settings(), forward_enabled=True, forward_host="siem.example"
+        ).to_options(),
+    )
+    entry.add_to_hass(hass)
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    net = patched_transport
+    net.down = True
+    runtime = entry.runtime_data
+    release = threading.Event()
+
+    def slow_context(verify: bool, ca: str) -> None:
+        release.wait(5)
+
+    monkeypatch.setattr(
+        "custom_components.electric_fence.build_ssl_context", slow_context
+    )
+    hass.config_entries.async_update_entry(
+        entry,
+        options=replace(
+            Settings.from_options(entry.options), forward_protocol="tls"
+        ).to_options(),
+    )
+    await asyncio.sleep(0.05)
+    for n in (1, 2, 3):
+        runtime.worker.submit(attempt(n))
+    await flush_worker(hass)
+    release.set()
+    await hass.async_block_till_done()
+    net.down = False
+    await until(lambda: [e.get("username") for e in net.events()].count("user3") == 1)
+    await asyncio.sleep(0.1)
+    sent = [e["username"] for e in net.events() if "username" in e]
+    assert sent == ["user1", "user2", "user3"]
+    assert await hass.config_entries.async_unload(entry.entry_id)

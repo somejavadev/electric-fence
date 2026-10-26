@@ -320,10 +320,10 @@ def _forward_target(settings: Settings) -> tuple[object, ...] | None:
     )
 
 
-async def _async_new_forwarder(
+async def _async_build_forwarder(
     hass: HomeAssistant, runtime: Runtime
 ) -> Forwarder | None:
-    """Return a started forwarder for the current settings, None when off."""
+    """Return a forwarder for the current settings (not started), None when off."""
     settings = runtime.settings
     if _forward_target(settings) is None:
         return None
@@ -348,15 +348,16 @@ async def _async_new_forwarder(
             ssl_context,
         )
 
-    forwarder = Forwarder(hass, runtime, factory)
-    forwarder.start()
-    return forwarder
+    return Forwarder(hass, runtime, factory)
 
 
 async def _async_start_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
     """Start forwarding when it is on. Never raises."""
     try:
-        runtime.forwarder = await _async_new_forwarder(hass, runtime)
+        forwarder = await _async_build_forwarder(hass, runtime)
+        if forwarder is not None:
+            forwarder.start()
+        runtime.forwarder = forwarder
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
             "Electric Fence could not start forwarding: %s", type(err).__name__
@@ -366,14 +367,23 @@ async def _async_start_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
 async def _async_restart_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
     """Replace the forwarder; events still queued move to the new one."""
     old = runtime.forwarder
+    try:
+        new = await _async_build_forwarder(hass, runtime)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not start forwarding: %s", type(err).__name__
+        )
+        new = None
+    # Built first, so the swap has no await and no record falls between.
     if old is not None:
-        # No record falls between the two: the swap has no await.
         old.detach()
-    await _async_start_forwarder(hass, runtime)
+    if new is not None:
+        new.start()
+    runtime.forwarder = new
     if old is not None:
         await old.stop()
-        if runtime.forwarder is not None:
-            runtime.forwarder.adopt(old.take_queue())
+        if new is not None:
+            new.adopt(old.take_queue())
 
 
 async def async_apply_settings(

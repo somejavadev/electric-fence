@@ -114,6 +114,8 @@ def event_dict(record: Record, *, values: bool) -> dict[str, Any]:
         "actor_kind": actor_kind,
         "changed": _changed(record.details),
     }
+    if record.action is ChangeAction.FORWARDING_FAILED and "error" in record.details:
+        event["error"] = str(record.details["error"])
     if values and "values" in record.details:
         event["values"] = record.details["values"]
     return event

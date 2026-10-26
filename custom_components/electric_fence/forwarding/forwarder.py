@@ -221,6 +221,13 @@ class Forwarder:
             event = self._queue[0]
             try:
                 line = syslog_line(event, hostname=hostname, now=dt_util.utcnow())
+            except Exception as err:  # noqa: BLE001
+                # A bad event must not block the ones behind it.
+                _LOGGER.debug("Electric Fence dropped an event: %s", type(err).__name__)
+                self._remove(event)
+                self._dropped += 1
+                continue
+            try:
                 await transport.send(line)
             except Exception as err:  # noqa: BLE001
                 await transport.close()
@@ -230,10 +237,16 @@ class Forwarder:
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
                 continue
-            if self._queue and self._queue[0] is event:
-                self._queue.popleft()
-            else:
+            if not self._remove(event):
                 # Overflow pushed it out while sending, and it was counted.
                 self._dropped -= 1
             self._sent += 1
             self._succeeded()
+
+    def _remove(self, event: dict[str, Any]) -> bool:
+        """Remove this very event, wherever `adopt` has moved it to."""
+        for index, queued in enumerate(self._queue):
+            if queued is event:
+                del self._queue[index]
+                return True
+        return False
