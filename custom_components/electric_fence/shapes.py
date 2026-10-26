@@ -61,7 +61,8 @@ AttackItem (a username under attack)::
 
 PostureItem::
 
-    {id: str, level: "ok" | "warning" | "error", params: object}
+    {id: str, level: "ok" | "info" | "warning" | "error" | "critical",
+     params: object}
 
     id                  params
     admins_without_mfa  {users: [{id, name}]}        (active, non-system admins)
@@ -75,6 +76,17 @@ PostureItem::
                         {collector: str, reasons: [str]}
     storage_error       {storage_errors: int, last_error: str | null,
                          last_error_at: str | null}
+    integration_files_changed
+                        {integrations: [domain]}  (warning while any differ)
+    integration_health  {removed: [domain], archived: [domain],
+                         unmaintained: [domain]}
+                        (critical if any removed, else warning if any
+                         archived or unmaintained)
+    integration_checks_unchecked
+                        {integrations: [domain]}  (info: couldn't be checked)
+
+    The three integration items are left out while `integration_repairs` is
+    off, and before the first integration scan.
 
     A check that itself fails gives `level: "error"` with
     `params: {check_failed: "<exception type>"}`. The text lives in the panel.

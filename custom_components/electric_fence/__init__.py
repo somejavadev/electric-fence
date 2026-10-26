@@ -41,6 +41,7 @@ from .forwarding.transport import SyslogTransport, build_ssl_context
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
+from .integrity.scheduler import IntegrityScheduler
 from .notifier import Notifier
 from .panel import async_register_panel, async_unregister_panel
 from .protection.backend import CoreBanBackend
@@ -53,6 +54,7 @@ from .repairs import (
     async_clear_ip_ban_disabled,
     async_clear_schema_too_new,
     async_report_schema_too_new,
+    async_sync_integration_issues,
 )
 from .runtime import Runtime
 from .settings import Settings
@@ -161,6 +163,7 @@ async def async_setup_entry(
 
     async def _async_shutdown() -> None:
         # Store what is queued before shutdown cancels background tasks.
+        await _async_stop_integrity(runtime)
         await _async_stop_app_watcher(runtime)
         await worker.async_stop()
         await hass.async_add_executor_job(store.close)
@@ -257,6 +260,8 @@ async def async_setup_entry(
             watcher.start_in_background()
 
         entry.async_on_unload(async_at_started(hass, _start_app_watcher))
+
+    _start_integrity(hass, runtime)
 
     async def _async_purge(_now: datetime | None = None) -> None:
         await async_purge(hass, runtime)
@@ -427,6 +432,20 @@ async def async_apply_settings(
     if old.record_values and not settings.record_values:
         # Flush first so rows still queued with values are covered too.
         await _async_strip_values(hass, runtime, flush=True)
+    if (
+        settings.integration_repairs != old.integration_repairs
+        or settings.verify_files != old.verify_files
+        or settings.unmaintained_months != old.unmaintained_months
+    ) and runtime.integrity is not None:
+        # A scan already scheduled keeps its time when `scan_delay_minutes`
+        # changes; the next one uses the new delay.
+        try:
+            runtime.integrity.apply_repairs()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not update integration repairs: %s",
+                type(err).__name__,
+            )
     if settings.retention_days < old.retention_days:
         try:
             await async_purge(hass, runtime)
@@ -460,8 +479,37 @@ async def _async_stop_recording(runtime: Runtime) -> None:
     for collector in reversed(runtime.collectors):
         collector.uninstall()
     runtime.collectors.clear()
+    await _async_stop_integrity(runtime)
     await _async_stop_app_watcher(runtime)
     await runtime.worker.async_stop()
+
+
+def _start_integrity(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Schedule the integration checks. Never raises."""
+    try:
+        scheduler = IntegrityScheduler(hass, runtime)
+        scheduler.start()
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not schedule integration checks: %s",
+            type(err).__name__,
+        )
+        return
+    runtime.integrity = scheduler
+
+
+async def _async_stop_integrity(runtime: Runtime) -> None:
+    """Stop the integration checks; repairs stay. Never raises."""
+    scheduler, runtime.integrity = runtime.integrity, None
+    if scheduler is None:
+        return
+    try:
+        await scheduler.stop()
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Electric Fence could not stop the integration checks: %s",
+            type(err).__name__,
+        )
 
 
 async def _async_stop_app_watcher(runtime: Runtime) -> None:
@@ -520,4 +568,5 @@ async def async_remove_entry(
     await _async_lift_own_bans(hass)
     async_clear_disabled_collector(hass, "protection")
     async_clear_ip_ban_disabled(hass)
+    async_sync_integration_issues(hass, set())
     await hass.async_add_executor_job(_remove_data, Path(hass.config.config_dir))

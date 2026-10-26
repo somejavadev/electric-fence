@@ -76,6 +76,18 @@
     "schema_too_new": {
       "title": "Electric Fence database is from a newer version",
       "description": "The Electric Fence database uses schema version {version}, but this version of Electric Fence supports up to {supported}. It was probably written by a newer Electric Fence. Electric Fence did not load and left the database unchanged. Update Electric Fence to that newer version. Logins are not affected."
+    },
+    "integration_files_changed": {
+      "title": "Files of {name} were changed",
+      "description": "The installed files of the custom integration {name} differ from its published copy or from the copy Electric Fence recorded: {files}. If you didn't change them, someone else may have. Reinstall {name} from its source to restore its files. Home Assistant is not affected otherwise."
+    },
+    "integration_archived": {
+      "title": "{name} is archived",
+      "description": "The author of the custom integration {name} archived its repository, so it gets no more updates, including security fixes. Consider replacing it with an integration that is still maintained."
+    },
+    "integration_unmaintained": {
+      "title": "{name} has not been updated in a long time",
+      "description": "The custom integration {name} has had no update in more than {months} months, so it may no longer get security fixes. Check whether it is still maintained, or replace it."
     }
   },
   "options": {

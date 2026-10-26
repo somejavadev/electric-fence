@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .forwarding.forwarder import Forwarder
     from .geo.base import GeoStatus
     from .geo.updater import GeoUpdater
+    from .integrity.scheduler import IntegrityScheduler
     from .notifier import Notifier
     from .protection.bans import BanManager
     from .protection.policy import IpPolicy
@@ -39,3 +40,4 @@ class Runtime:
     alerts: Alerter | None = None
     forwarder: Forwarder | None = None
     app_watcher: OutsideAppWatcher | None = None
+    integrity: IntegrityScheduler | None = None

@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.electric_fence import posture
 from custom_components.electric_fence.const import DOMAIN
+from custom_components.electric_fence.integrity import scheduler
 from custom_components.electric_fence.models import (
     LoginAttempt,
     LoginReason,
@@ -433,3 +434,35 @@ async def test_ip_ban_disabled_repair(
     monkeypatch.setattr(runtime.bans.backend, "health", lambda: None)
     await runtime.bans.async_start()
     assert registry.async_get_issue(DOMAIN, "ip_ban_disabled") is None
+
+
+async def test_integration_posture_waits_for_first_scan(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No integration items before a scan; ok items after a clean one."""
+    ids = {"integration_files_changed", "integration_health"}
+    ids.add("integration_checks_unchecked")
+    assert not ids & {i["id"] for i in await check(hass, setup_entry)}
+
+    async def inventory(_hass: HomeAssistant) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(scheduler, "async_inventory", inventory)
+    sched = setup_entry.runtime_data.integrity
+    assert sched is not None
+    await sched.scan()
+    items = await check(hass, setup_entry)
+
+    assert by_id(items, "integration_files_changed") == {
+        "id": "integration_files_changed",
+        "level": "ok",
+        "params": {"integrations": []},
+    }
+    assert by_id(items, "integration_health")["level"] == "ok"
+    assert by_id(items, "integration_checks_unchecked") == {
+        "id": "integration_checks_unchecked",
+        "level": "ok",
+        "params": {"integrations": []},
+    }

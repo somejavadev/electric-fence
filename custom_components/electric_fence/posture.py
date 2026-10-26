@@ -8,7 +8,7 @@ never stops the others.
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from homeassistant.components.http.ban import KEY_LOGIN_THRESHOLD
 from homeassistant.core import HomeAssistant
@@ -26,6 +26,7 @@ from .storage import FenceStore, LoginFilter, LoginRow
 _LOGGER = logging.getLogger(__name__)
 
 type PostureItem = dict[str, Any]
+type PostureLevel = Literal["ok", "info", "warning", "error", "critical"]
 
 PROXY_WINDOW = timedelta(days=7)
 PROXY_MIN_USERS = 3
@@ -37,7 +38,7 @@ _PAGE = 500
 _CONF_USE_X_FORWARDED_FOR = "use_x_forwarded_for"
 
 
-def _item(item_id: str, level: str, **params: Any) -> PostureItem:
+def _item(item_id: str, level: PostureLevel, **params: Any) -> PostureItem:
     return {"id": item_id, "level": level, "params": params}
 
 
@@ -70,6 +71,9 @@ async def async_check(
     async def forwarding() -> list[PostureItem]:
         return _forwarding_failing(runtime)
 
+    async def integrations() -> list[PostureItem]:
+        return _integration_checks(runtime)
+
     checks: list[tuple[str, Callable[[], Awaitable[list[PostureItem]]]]] = [
         ("admins_without_mfa", admins),
         ("auto_ban_off", auto_ban),
@@ -79,6 +83,7 @@ async def async_check(
         ("collector_disabled", collectors),
         ("storage_error", storage),
         ("forwarding_failing", forwarding),
+        ("integration_checks", integrations),
     ]
     items: list[PostureItem] = []
     for item_id, run in checks:
@@ -240,4 +245,40 @@ def _forwarding_failing(runtime: Runtime) -> list[PostureItem]:
             queued=stats.queued,
             dropped=stats.dropped,
         )
+    ]
+
+
+def _integration_checks(runtime: Runtime) -> list[PostureItem]:
+    """Integration findings; none while repairs are off or before a scan."""
+    scheduler = runtime.integrity
+    if not runtime.settings.integration_repairs or scheduler is None:
+        return []
+    found = scheduler.findings()
+    if found is None:
+        return []
+    if found.removed:
+        health: PostureLevel = "critical"
+    elif found.archived or found.unmaintained:
+        # Posture has no `notice`, so unmaintained alone is a warning here.
+        health = "warning"
+    else:
+        health = "ok"
+    return [
+        _item(
+            "integration_files_changed",
+            "warning" if found.files_changed else "ok",
+            integrations=found.files_changed,
+        ),
+        _item(
+            "integration_health",
+            health,
+            removed=found.removed,
+            archived=found.archived,
+            unmaintained=found.unmaintained,
+        ),
+        _item(
+            "integration_checks_unchecked",
+            "info" if found.unchecked else "ok",
+            integrations=found.unchecked,
+        ),
     ]

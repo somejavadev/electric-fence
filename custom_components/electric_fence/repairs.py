@@ -71,3 +71,42 @@ def async_report_ip_ban_disabled(hass: HomeAssistant) -> None:
 def async_clear_ip_ban_disabled(hass: HomeAssistant) -> None:
     """Remove the repair issue for Core's IP ban being off."""
     ir.async_delete_issue(hass, DOMAIN, IP_BAN_DISABLED)
+
+
+INTEGRATION_FILES_CHANGED = "integration_files_changed"
+INTEGRATION_ARCHIVED = "integration_archived"
+INTEGRATION_UNMAINTAINED = "integration_unmaintained"
+_INTEGRATION_PREFIXES = tuple(
+    f"{key}_"
+    for key in (
+        INTEGRATION_FILES_CHANGED,
+        INTEGRATION_ARCHIVED,
+        INTEGRATION_UNMAINTAINED,
+    )
+)
+
+
+def async_report_integration_issue(
+    hass: HomeAssistant, issue_id: str, key: str, placeholders: dict[str, str]
+) -> None:
+    """Raise (or update) a repair issue about one custom integration."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=key,
+        translation_placeholders=placeholders,
+    )
+
+
+def async_sync_integration_issues(hass: HomeAssistant, keep: set[str]) -> None:
+    """Remove the custom integration repair issues not in `keep`."""
+    for domain, issue_id in list(ir.async_get(hass).issues):
+        if (
+            domain == DOMAIN
+            and issue_id.startswith(_INTEGRATION_PREFIXES)
+            and issue_id not in keep
+        ):
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
