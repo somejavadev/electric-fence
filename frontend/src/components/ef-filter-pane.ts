@@ -245,9 +245,6 @@ export class EfFilterPane extends LitElement {
       font-size: var(--ha-font-size-m, 14px);
       color: var(--primary-text-color);
     }
-    .check input {
-      width: 18px;
-    }
     @media (prefers-reduced-motion: no-preference) {
       .chip {
         transition: border-color 0.15s;
@@ -288,6 +285,13 @@ export class EfFilterPane extends LitElement {
 
   /** Options render after the select, so its value is set once they exist. */
   protected override updated(): void {
+    // Typed text is emitted trimmed; echoing it back would eat a typed space.
+    const search =
+      this.renderRoot.querySelector<HTMLInputElement>("input[name=search]");
+    const wanted = this.values["search"] ?? "";
+    if (search !== null && search.value.trim() !== wanted) {
+      search.value = wanted;
+    }
     for (const select of this.renderRoot.querySelectorAll("select")) {
       select.value = this._value(select.name);
     }
@@ -433,7 +437,6 @@ export class EfFilterPane extends LitElement {
             autocomplete="off"
             placeholder=${strings.filters.searchPlaceholder}
             aria-label=${strings.filters.search}
-            .value=${this.values["search"] ?? ""}
             @input=${this._onSearch}
           />
         </div>

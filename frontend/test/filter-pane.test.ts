@@ -140,6 +140,40 @@ describe("ef-filter-pane", () => {
     expect(seen).toEqual([{ name: "search", value: "abc" }]);
   });
 
+  it("keeps a typed trailing space while the value echoes back", async () => {
+    const el = await mount();
+    el.addEventListener("filter-changed", (e) => {
+      const { name, value } = (e as CustomEvent<FilterChange>).detail;
+      el.values = { ...el.values, [name]: value };
+    });
+    const search = root(el).querySelector<HTMLInputElement>(
+      "[name=search]",
+    ) as HTMLInputElement;
+    search.value = "abc ";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    vi.advanceTimersByTime(400);
+    await el.updateComplete;
+    expect(el.values["search"]).toBe("abc");
+    expect(search.value).toBe("abc ");
+    el.values = { ...el.values, search: "" };
+    await el.updateComplete;
+    expect(search.value).toBe("");
+  });
+
+  it("emits nothing when disconnected before the delay", async () => {
+    const el = await mount();
+    const seen = vi.fn();
+    el.addEventListener("filter-changed", seen);
+    const search = root(el).querySelector<HTMLInputElement>(
+      "[name=search]",
+    ) as HTMLInputElement;
+    search.value = "abc";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    el.remove();
+    vi.advanceTimersByTime(400);
+    expect(seen).not.toHaveBeenCalled();
+  });
+
   it("shows the search value from values", async () => {
     const el = await mount({ range: "7d", search: "needle" });
     const search = root(el).querySelector<HTMLInputElement>("[name=search]");
