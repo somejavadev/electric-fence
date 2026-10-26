@@ -79,13 +79,15 @@
           "retention_days": "History retention",
           "geoip_provider": "GeoIP provider",
           "reverse_dns": "Reverse DNS lookups",
-          "record_values": "Record before and after values"
+          "record_values": "Record before and after values",
+          "mask_ips": "Mask IP addresses in the panel"
         },
         "data_description": {
           "retention_days": "Days of history to keep, from 1 to 3650.",
           "geoip_provider": "Where country lookups come from. DB-IP Lite needs no account. MaxMind GeoLite2 needs an account ID and license key.",
           "reverse_dns": "Look up host names for IP addresses.",
-          "record_values": "Store what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored."
+          "record_values": "Store what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored.",
+          "mask_ips": "Show only the start of each IP address (203.x.x.x, 2001:db8:x:x:x:x:x:x) and hide host names in the Electric Fence panel, for example for screenshots. Full addresses are still recorded, and notifications and the logbook are unchanged."
         },
         "sections": {
           "bans": {

@@ -19,6 +19,7 @@ class Settings:
     maxmind_license_key: str | None = None
     reverse_dns: bool = True
     record_values: bool = False
+    mask_ips: bool = False
     auto_ban: bool = True
     ban_threshold: int = 5
     ban_window_minutes: int = 15
@@ -87,6 +88,7 @@ class Settings:
             maxmind_license_key=text("maxmind_license_key"),
             reverse_dns=flag("reverse_dns"),
             record_values=flag("record_values"),
+            mask_ips=flag("mask_ips"),
             auto_ban=flag("auto_ban"),
             ban_threshold=number("ban_threshold", 1, 100),
             ban_window_minutes=number("ban_window_minutes", 1, 1440),

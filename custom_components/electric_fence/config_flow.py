@@ -131,6 +131,7 @@ class OptionsFlowHandler(OptionsFlow):
                 ),
                 probatio.Required("reverse_dns", default=current.reverse_dns): bool,
                 probatio.Required("record_values", default=current.record_values): bool,
+                **flag("mask_ips"),
                 probatio.Required("bans"): section(
                     probatio.Schema(
                         {

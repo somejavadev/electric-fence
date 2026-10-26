@@ -4,6 +4,7 @@ import "./ef-flag.ts";
 import { strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
 import type { HomeAssistant, LoginItem } from "../types.ts";
+import { showHost, showIp } from "../mask.ts";
 
 /** Country code; "local" only when the login really came from the local network. */
 export function locationLabel(item: LoginItem): string {
@@ -139,7 +140,9 @@ export class EfLoginRow extends LitElement {
   private _failed(item: LoginItem) {
     return html`
       <span class="tag bad">${reasonLabel(item.reason)}</span>
-      <bdi class="ip">${item.ip ?? strings.unknownIp}</bdi>
+      <bdi class="ip"
+        >${item.ip === null ? strings.unknownIp : showIp(item.ip)}</bdi
+      >
       ${
         item.reason === "invalid_token" && item.url !== null
           ? text(item.url, "url")
@@ -166,7 +169,7 @@ export class EfLoginRow extends LitElement {
     const d = strings.details;
     const rows: [string, string | null][] = [
       [d.url, item.url],
-      [d.hostname, item.hostname],
+      [d.hostname, item.hostname === null ? null : showHost(item.hostname)],
       [d.userAgent, item.user_agent],
       [
         d.provider,

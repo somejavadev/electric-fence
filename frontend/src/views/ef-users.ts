@@ -8,6 +8,7 @@ import { dialogStyles, viewStyles } from "../styles.ts";
 import { bdiText } from "../text.ts";
 import type { SessionItem, UserItem } from "../types.ts";
 import { LiveView } from "./live-view.ts";
+import { showIp } from "../mask.ts";
 
 const DIALOG_TITLE = "user-dialog-title";
 
@@ -167,7 +168,7 @@ export class EfUsers extends LiveView {
     const when = formatTime(login.ts, this.hass);
     // The list stays compact; the dialog shows the country's flag.
     return html`${labelled ? strings.users.lastLoginAt(when) : when} ·
-      <bdi>${login.ip ?? strings.unknownIp}</bdi> ·
+      <bdi>${login.ip === null ? strings.unknownIp : showIp(login.ip)}</bdi> ·
       ${labelled ? nothing : html`<ef-flag .code=${login.country_code}></ef-flag>`}
       ${locationLabel(login)}`;
   }
@@ -212,8 +213,11 @@ export class EfUsers extends LiveView {
             ? u.neverUsed
             : u.lastUsedAt(formatTime(s.last_used_at, this.hass))
         }
-        · <bdi>${s.last_used_ip ?? strings.unknownIp}</bdi> ·
-        ${u.createdAt(formatTime(s.created_at, this.hass))}
+        ·
+        <bdi
+          >${s.last_used_ip === null ? strings.unknownIp : showIp(s.last_used_ip)}</bdi
+        >
+        · ${u.createdAt(formatTime(s.created_at, this.hass))}
       </span>
     </li>`;
   }

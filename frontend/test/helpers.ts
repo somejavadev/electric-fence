@@ -95,6 +95,7 @@ export const status = (attribution: string | null = null): Status => ({
     notify_username_attack: true,
     notify_new_country: true,
     notify_ban_ended: false,
+    mask_ips: false,
     notify_targets: [],
     maxmind_license_key_set: false,
   },

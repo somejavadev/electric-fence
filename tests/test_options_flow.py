@@ -57,6 +57,7 @@ TOP_LEVEL = (
     "geoip_provider",
     "reverse_dns",
     "record_values",
+    "mask_ips",
 )
 
 
@@ -566,6 +567,26 @@ async def test_options_flow_shows_record_values(
     await _change(hass, setup_entry, record_values=True)
     assert setup_entry.options["record_values"] is True
     assert setup_entry.runtime_data.settings.record_values is True
+
+
+def test_mask_ips_defaults_off() -> None:
+    """Masking is off unless turned on, and only a real bool turns it on."""
+    assert Settings.from_options({}).mask_ips is False
+    assert Settings().to_options()["mask_ips"] is False
+    assert Settings.from_options({"mask_ips": "yes"}).mask_ips is False
+    assert Settings.from_options({"mask_ips": True}).mask_ips is True
+
+
+async def test_options_flow_shows_mask_ips(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The form offers mask_ips (default off) and stores True."""
+    result = await _init(hass, setup_entry)
+    keys = {str(k): k for k in result["data_schema"].schema}
+    assert keys["mask_ips"].default() is False
+    await _change(hass, setup_entry, mask_ips=True)
+    assert setup_entry.options["mask_ips"] is True
+    assert setup_entry.runtime_data.settings.mask_ips is True
 
 
 def _valued_change(name: str) -> SettingsChange:

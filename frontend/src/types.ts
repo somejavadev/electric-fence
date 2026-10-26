@@ -323,6 +323,8 @@ export interface Status {
     notify_username_attack: boolean;
     notify_new_country: boolean;
     notify_ban_ended: boolean;
+    /** The panel masks addresses and host names; the data stays complete. */
+    mask_ips: boolean;
     /** Notify entity IDs. */
     notify_targets: string[];
     maxmind_license_key_set: boolean;

@@ -1,5 +1,6 @@
 import { truncate } from "./format.ts";
 import type { BanItem, ChangeItem, PostureItem } from "./types.ts";
+import { showIp } from "./mask.ts";
 
 /** Limit a value the server or a user supplied before it joins a sentence. */
 const cut = (text: string): string => truncate(text, 64).short;
@@ -371,7 +372,9 @@ function systemSentence(item: ChangeItem): string | undefined {
 /** Sentence for a ban or login protection change; undefined for others. */
 function protectionSentence(item: ChangeItem): string | undefined {
   if (item.kind === "ip_ban") {
-    const ip = cut(item.target_id ?? strings.unknownIp);
+    const ip = cut(
+      item.target_id === null ? strings.unknownIp : showIp(item.target_id),
+    );
     switch (item.action) {
       case "banned":
         return `banned ${ip}`;
@@ -491,7 +494,7 @@ export function postureText(item: PostureItem): string {
         return "No sign of a reverse proxy hiding visitors' addresses.";
       }
       const ip = "ip" in item.params ? item.params.ip : null;
-      return `Many different users seem to log in from one address${ip === null ? "" : ` (${cut(ip)})`}. That looks like a reverse proxy, and Home Assistant is not set to trust its forwarded address.`;
+      return `Many different users seem to log in from one address${ip === null ? "" : ` (${cut(showIp(ip))})`}. That looks like a reverse proxy, and Home Assistant is not set to trust its forwarded address.`;
     }
     case "geoip_missing": {
       const p = item.params;
