@@ -76,7 +76,11 @@ export type KnownChangeKind =
   | "logger"
   | "recorder"
   | "ip_ban"
-  | "login_protection";
+  | "login_protection"
+  | "app"
+  | "files"
+  | "integration_health"
+  | "forwarding";
 
 /** A kind from a newer or older database may be any string. */
 export type ChangeKind = KnownChangeKind | (string & Record<never, never>);
@@ -101,6 +105,25 @@ export type ChangeAction =
   | "attack_ended"
   | "slowdown_ended"
   | "countries_cleared"
+  | "installed"
+  | "uninstalled"
+  | "started"
+  | "stopped"
+  | "restarted"
+  | "rebuilt"
+  | "settings_changed"
+  | "repository_added"
+  | "repository_removed"
+  | "files_changed"
+  | "files_match"
+  | "baseline_recorded"
+  | "baseline_renewed"
+  | "archived"
+  | "removed_from_store"
+  | "unmaintained"
+  | "recovered"
+  | "forwarding_failed"
+  | "forwarding_recovered"
   | (string & Record<never, never>);
 
 /** A stored settings change. A null `actor_user_id` means System. */
@@ -278,6 +301,7 @@ export interface LoginFilter {
   username?: string;
   ip?: string;
   country?: string;
+  search?: string;
   since?: string;
   until?: string;
   before_id?: number;
@@ -287,6 +311,9 @@ export interface LoginFilter {
 export interface ChangeFilter {
   kind?: ChangeKind;
   actor_user_id?: string;
+  action?: ChangeAction;
+  ip?: string;
+  search?: string;
   include_system?: boolean;
   since?: string;
   until?: string;

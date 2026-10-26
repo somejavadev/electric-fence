@@ -1,14 +1,26 @@
 import { html, nothing } from "lit";
 import { fetchChanges, fetchUsers } from "../api.ts";
 import "../components/ef-change-row.ts";
-import "../components/ef-filter-bar.ts";
-import type { FilterChange, FilterField } from "../components/ef-filter-bar.ts";
+import { NarrowController } from "../components/ef-filter-pane.ts";
+import "../components/ef-filter-pane.ts";
+import type {
+  FilterChange,
+  FilterField,
+} from "../components/ef-filter-pane.ts";
 import { changeLines } from "../change-lines.ts";
-import { TIME_RANGES, sinceFor, truncate } from "../format.ts";
-import type { TimeRange } from "../format.ts";
+import {
+  TIME_RANGES,
+  containsText,
+  isDayOrEmpty,
+  rangeBounds,
+  truncate,
+  withinBounds,
+} from "../format.ts";
+import type { RangeChoice } from "../format.ts";
 import { strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type {
+  ChangeAction,
   ChangeFilter,
   ChangeItem,
   ChangeKind,
@@ -32,21 +44,84 @@ const KINDS = [
   "recorder",
   "ip_ban",
   "login_protection",
+  "app",
+  "files",
+  "integration_health",
+  "forwarding",
 ] as const satisfies readonly KnownChangeKind[];
+
+const ACTIONS = [
+  "added",
+  "removed",
+  "updated",
+  "reconfigured",
+  "options_changed",
+  "enabled",
+  "disabled",
+  "password_changed",
+  "restore_requested",
+  "confirmed",
+  "purged",
+  "withdrawn",
+  "banned",
+  "unbanned",
+  "expired",
+  "attack_started",
+  "attack_ended",
+  "slowdown_ended",
+  "countries_cleared",
+  "installed",
+  "uninstalled",
+  "started",
+  "stopped",
+  "restarted",
+  "rebuilt",
+  "settings_changed",
+  "repository_added",
+  "repository_removed",
+  "files_changed",
+  "files_match",
+  "baseline_recorded",
+  "baseline_renewed",
+  "archived",
+  "removed_from_store",
+  "unmaintained",
+  "recovered",
+  "forwarding_failed",
+  "forwarding_recovered",
+] as const satisfies readonly ChangeAction[];
+
+const CUSTOM = { field: "range", equals: "custom" } as const;
 
 export interface AuditFilters {
   kind: ChangeKind | "";
+  action: ChangeAction | "";
   actor: string;
-  range: TimeRange;
+  ip: string;
+  range: RangeChoice;
+  /** `YYYY-MM-DD` days, used only when the range is custom. */
+  from: string;
+  to: string;
   /** Include changes made by the system (no user). Off by default. */
   system: boolean;
+  search: string;
 }
 
 export const DEFAULT_AUDIT_FILTERS: AuditFilters = {
   kind: "",
+  action: "",
   actor: "",
+  ip: "",
   range: "7d",
+  from: "",
+  to: "",
   system: false,
+  search: "",
+};
+
+const DEFAULT_VALUES: Record<string, string> = {
+  ...DEFAULT_AUDIT_FILTERS,
+  system: "",
 };
 
 export function changeFilter(
@@ -57,14 +132,22 @@ export function changeFilter(
   if (filters.kind !== "") {
     out.kind = filters.kind;
   }
+  if (filters.action !== "") {
+    out.action = filters.action;
+  }
   if (filters.actor !== "") {
     out.actor_user_id = filters.actor;
   }
-  const since = sinceFor(filters.range, now);
-  if (since !== undefined) {
-    out.since = since;
+  if (filters.ip !== "") {
+    out.ip = filters.ip;
   }
-  return out;
+  if (filters.search !== "") {
+    out.search = filters.search;
+  }
+  return {
+    ...out,
+    ...rangeBounds(filters.range, filters.from, filters.to, now),
+  };
 }
 
 export function matchesChange(
@@ -78,11 +161,33 @@ export function matchesChange(
   if (filters.kind !== "" && item.kind !== filters.kind) {
     return false;
   }
+  if (filters.action !== "" && item.action !== filters.action) {
+    return false;
+  }
   if (filters.actor !== "" && item.actor_user_id !== filters.actor) {
     return false;
   }
-  const since = sinceFor(filters.range, now);
-  return since === undefined || Date.parse(item.ts) >= Date.parse(since);
+  if (filters.ip !== "" && item.actor_ip !== filters.ip) {
+    return false;
+  }
+  if (
+    !containsText(
+      [
+        item.target_id,
+        item.target_name,
+        item.actor_name,
+        item.actor_ip,
+        JSON.stringify(item.details),
+      ],
+      filters.search,
+    )
+  ) {
+    return false;
+  }
+  return withinBounds(
+    item.ts,
+    rangeBounds(filters.range, filters.from, filters.to, now),
+  );
 }
 
 /** Audit tab: who changed which settings, with live additions. */
@@ -157,22 +262,41 @@ export class EfAudit extends LiveView {
       (value === "" || (KINDS as readonly string[]).includes(value))
     ) {
       next.kind = value as AuditFilters["kind"];
+    } else if (
+      name === "action" &&
+      (value === "" || (ACTIONS as readonly string[]).includes(value))
+    ) {
+      next.action = value as AuditFilters["action"];
     } else if (name === "actor") {
       next.actor = value;
+    } else if (name === "ip") {
+      next.ip = value;
+    } else if (name === "search") {
+      next.search = value;
     } else if (
       name === "range" &&
-      (TIME_RANGES as readonly string[]).includes(value)
+      (value === "custom" || (TIME_RANGES as readonly string[]).includes(value))
     ) {
-      next.range = value as TimeRange;
+      next.range = value as RangeChoice;
+    } else if ((name === "from" || name === "to") && isDayOrEmpty(value)) {
+      next[name] = value;
     } else if (name === "system") {
       next.system = value === "1";
     } else {
       return;
     }
+    this._apply(next);
+  };
+
+  private _onCleared = (): void => {
+    this._apply({ ...DEFAULT_AUDIT_FILTERS });
+  };
+
+  private _apply(next: AuditFilters): void {
     this._filters = next;
     this._resetList();
     void this._refresh();
-  };
+  }
 
   protected override _resetRun(): void {
     this._loadingMore = false;
@@ -216,6 +340,8 @@ export class EfAudit extends LiveView {
     }
   }
 
+  private _narrow = new NarrowController(this);
+
   private _fields(): FilterField[] {
     const f = strings.filters;
     return [
@@ -226,6 +352,15 @@ export class EfAudit extends LiveView {
         options: [
           { value: "", label: f.anyKind },
           ...KINDS.map((k) => ({ value: k, label: f.kinds[k] })),
+        ],
+      },
+      {
+        name: "action",
+        label: f.action,
+        type: "select",
+        options: [
+          { value: "", label: f.anyAction },
+          ...ACTIONS.map((a) => ({ value: a, label: f.actions[a] })),
         ],
       },
       {
@@ -240,12 +375,18 @@ export class EfAudit extends LiveView {
           })),
         ],
       },
+      { name: "ip", label: f.ip, type: "text" },
       {
         name: "range",
         label: f.range,
         type: "select",
-        options: TIME_RANGES.map((r) => ({ value: r, label: f.ranges[r] })),
+        options: [
+          ...TIME_RANGES.map((r) => ({ value: r, label: f.ranges[r] })),
+          { value: "custom", label: f.customRange },
+        ],
       },
+      { name: "from", label: f.from, type: "date", when: CUSTOM },
+      { name: "to", label: f.to, type: "date", when: CUSTOM },
       { name: "system", label: f.showSystem, type: "checkbox" },
     ];
   }
@@ -257,54 +398,56 @@ export class EfAudit extends LiveView {
   protected override render() {
     const items = [...this._live, ...this._items];
     const values = {
-      kind: this._filters.kind,
-      actor: this._filters.actor,
-      range: this._filters.range,
+      ...this._filters,
       system: this._filters.system ? "1" : "",
     };
     return html`
       <h2 class="visually-hidden">${strings.audit.heading}</h2>
       ${this._banners()}
-      <ef-filter-bar
+      <ef-filter-pane
         .fields=${this._fields()}
         .values=${values}
+        .defaults=${{ ...DEFAULT_VALUES }}
+        .narrow=${this._narrow.narrow}
         @filter-changed=${this._onFilter}
-      ></ef-filter-bar>
-      ${
-        this._phase === "loading"
-          ? html`<p class="loading">${strings.loading}</p>`
-          : items.length === 0 && this._phase === "ready"
-            ? html`<div class="card">
-                <p class="empty">${strings.audit.empty}</p>
+        @filters-cleared=${this._onCleared}
+      >
+        ${
+          this._phase === "loading"
+            ? html`<p class="loading">${strings.loading}</p>`
+            : items.length === 0 && this._phase === "ready"
+              ? html`<div class="card">
+                  <p class="empty">${strings.audit.empty}</p>
+                </div>`
+              : html`<div class="card">
+                  <ul>
+                    ${items.map(
+                      (item) =>
+                        html`<li>
+                          <ef-change-row
+                            .hass=${this.hass}
+                            .item=${item}
+                          ></ef-change-row>
+                          ${this._details(item)}
+                        </li>`,
+                    )}
+                  </ul>
+                </div>`
+        }
+        ${
+          this._next !== null
+            ? html`<div class="more">
+                <button
+                  type="button"
+                  ?disabled=${this._loadingMore}
+                  @click=${() => void this._loadMore()}
+                >
+                  ${strings.loadMore}
+                </button>
               </div>`
-            : html`<div class="card">
-                <ul>
-                  ${items.map(
-                    (item) =>
-                      html`<li>
-                        <ef-change-row
-                          .hass=${this.hass}
-                          .item=${item}
-                        ></ef-change-row>
-                        ${this._details(item)}
-                      </li>`,
-                  )}
-                </ul>
-              </div>`
-      }
-      ${
-        this._next !== null
-          ? html`<div class="more">
-              <button
-                type="button"
-                ?disabled=${this._loadingMore}
-                @click=${() => void this._loadMore()}
-              >
-                ${strings.loadMore}
-              </button>
-            </div>`
-          : nothing
-      }
+            : nothing
+        }
+      </ef-filter-pane>
     `;
   }
 }

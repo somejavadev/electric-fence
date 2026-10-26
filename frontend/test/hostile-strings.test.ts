@@ -331,12 +331,12 @@ describe("hostile values in the other tabs", () => {
   }
 
   const filterBarTags = [
-    "ef-filter-bar",
-    "form",
-    "label",
-    "select",
-    "option",
+    "ef-filter-pane",
+    "div",
+    "button",
+    "span",
     "input",
+    "slot",
   ];
 
   it("activity, with every detail line expanded", async () => {

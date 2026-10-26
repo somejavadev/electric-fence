@@ -98,3 +98,85 @@ export function sinceFor(
     ? undefined
     : new Date(now - RANGE_MS[range]).toISOString();
 }
+
+/** A time range, or two chosen days (`from` and `to`) when "custom". */
+export type RangeChoice = TimeRange | "custom";
+
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** A `YYYY-MM-DD` day as a local date; `undefined` when it isn't one. */
+function localDay(day: string, end: boolean): Date | undefined {
+  const match = DAY.exec(day);
+  if (match === null) {
+    return undefined;
+  }
+  const [year, month, date] = match.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const value = end
+    ? new Date(year, month - 1, date, 23, 59, 59, 999)
+    : new Date(year, month - 1, date);
+  return value.getDate() === date ? value : undefined;
+}
+
+export interface Bounds {
+  since?: string;
+  until?: string;
+}
+
+/**
+ * The `since` and `until` of a range as ISO UTC. Custom days are read in the
+ * browser's time zone: `since` is the start of `from`, `until` the end of `to`.
+ */
+export function rangeBounds(
+  range: RangeChoice,
+  from: string,
+  to: string,
+  now: number = Date.now(),
+): Bounds {
+  if (range !== "custom") {
+    const since = sinceFor(range, now);
+    return since === undefined ? {} : { since };
+  }
+  const out: Bounds = {};
+  const start = localDay(from, false);
+  const end = localDay(to, true);
+  if (start !== undefined) {
+    out.since = start.toISOString();
+  }
+  if (end !== undefined) {
+    out.until = end.toISOString();
+  }
+  return out;
+}
+
+/** Whether an ISO timestamp lies inside the bounds (ends included). */
+export function withinBounds(ts: string, bounds: Bounds): boolean {
+  const time = Date.parse(ts);
+  return (
+    (bounds.since === undefined || time >= Date.parse(bounds.since)) &&
+    (bounds.until === undefined || time <= Date.parse(bounds.until))
+  );
+}
+
+/** SQLite LIKE folds ASCII letters only; so does this. */
+export const asciiLower = (text: string): string =>
+  text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/** Whether any field contains the text, ignoring ASCII case. */
+export function containsText(
+  fields: readonly (string | null | undefined)[],
+  needle: string,
+): boolean {
+  if (needle === "") {
+    return true;
+  }
+  const lower = asciiLower(needle);
+  return fields.some((f) => asciiLower(f ?? "").includes(lower));
+}
+
+/** Whether the text is a `YYYY-MM-DD` day (or empty). */
+export const isDayOrEmpty = (text: string): boolean =>
+  text === "" || localDay(text, false) !== undefined;

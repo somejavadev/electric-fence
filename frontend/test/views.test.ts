@@ -6,7 +6,11 @@ import {
   matchesLogin,
 } from "../src/views/ef-activity.ts";
 import type { ActivityFilters } from "../src/views/ef-activity.ts";
-import { EfAudit, matchesChange } from "../src/views/ef-audit.ts";
+import {
+  DEFAULT_AUDIT_FILTERS,
+  EfAudit,
+  matchesChange,
+} from "../src/views/ef-audit.ts";
 import type { AuditFilters } from "../src/views/ef-audit.ts";
 import { EfSettings } from "../src/views/ef-settings.ts";
 import { EfChangeRow } from "../src/components/ef-change-row.ts";
@@ -35,6 +39,11 @@ async function mount<
   (el as unknown as { hass: unknown }).hass = api.hass;
   document.body.append(el);
   await settle(el);
+  const pane = el.shadowRoot?.querySelector("ef-filter-pane");
+  if (pane !== null && pane !== undefined) {
+    pane.open = true;
+    await settle(pane);
+  }
   return el;
 }
 
@@ -67,7 +76,7 @@ const select = (root: ShadowRoot, name: string) =>
   root.querySelector<HTMLSelectElement>(`[name=${name}]`) as HTMLSelectElement;
 
 function bar(el: HTMLElement): ShadowRoot {
-  return el.shadowRoot?.querySelector("ef-filter-bar")
+  return el.shadowRoot?.querySelector("ef-filter-pane")
     ?.shadowRoot as ShadowRoot;
 }
 
@@ -234,8 +243,8 @@ describe("ef-activity", () => {
 
   it("has labelled filters", async () => {
     const el = await mount<EfActivity>("ef-activity", api());
-    const labels = [...bar(el).querySelectorAll("label")].map((l) =>
-      l.textContent.trim().split("\n")[0]?.trim(),
+    const labels = [...bar(el).querySelectorAll("summary .label")].map((l) =>
+      l.textContent.trim(),
     );
     expect(labels).toEqual([
       "Result",
@@ -461,7 +470,7 @@ describe("audit details use the real backend shapes", () => {
       users: { items: [] },
     });
     const el = await mount<EfAudit>("ef-audit", fake);
-    const bar = el.shadowRoot?.querySelector("ef-filter-bar") as unknown as {
+    const bar = el.shadowRoot?.querySelector("ef-filter-pane") as unknown as {
       fields: { name: string; options: { label: string }[] }[];
     };
     const kind = bar.fields.find((f) => f.name === "kind");
@@ -478,6 +487,10 @@ describe("audit details use the real backend shapes", () => {
       "Recorder",
       "IP bans",
       "Login protection",
+      "Apps",
+      "Integration files",
+      "Integration health",
+      "Log forwarding",
     ]);
   });
 
@@ -631,6 +644,9 @@ describe("push filter semantics", () => {
     ip: "",
     country: "",
     range: "24h",
+    from: "",
+    to: "",
+    search: "",
   };
   const fresh = login({ ts: "2026-10-24T11:00:00Z" });
   const m = (over: Partial<ActivityFilters>, item = fresh) =>
@@ -670,7 +686,7 @@ describe("push filter semantics", () => {
   });
 
   it("matchesChange", () => {
-    const f: AuditFilters = { kind: "", actor: "", range: "7d", system: false };
+    const f: AuditFilters = { ...DEFAULT_AUDIT_FILTERS };
     const c = (
       over: Partial<AuditFilters>,
       item = change({ ts: "2026-10-24T11:00:00Z" }),
@@ -1238,5 +1254,236 @@ describe("protection changes in the Audit", () => {
     });
     const el = await mount<EfAudit>("ef-audit", fake);
     expect(el.shadowRoot?.textContent).toMatch(/Ban number:\s*1/);
+  });
+});
+
+function type(root: ShadowRoot, name: string, value: string, event = "change") {
+  const control = root.querySelector<HTMLInputElement>(`[name=${name}]`);
+  (control as HTMLInputElement).value = value;
+  control?.dispatchEvent(new Event(event, { bubbles: true }));
+}
+
+function dayBounds(from: string, to: string): { since: string; until: string } {
+  const [fy, fm, fd] = from.split("-").map(Number) as [number, number, number];
+  const [ty, tm, td] = to.split("-").map(Number) as [number, number, number];
+  return {
+    since: new Date(fy, fm - 1, fd).toISOString(),
+    until: new Date(ty, tm - 1, td, 23, 59, 59, 999).toISOString(),
+  };
+}
+
+describe("filter pane in Audit", () => {
+  const api = () =>
+    fakeApi({
+      changes: { items: [change({ id: 3 })], next_before_id: null },
+      users: { items: [user()] },
+    });
+
+  it("sends action, ip and search to electric_fence/changes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const fake = api();
+    const el = await mount<EfAudit>("ef-audit", fake);
+    chooseOption(bar(el), "action", "installed");
+    await settle(el);
+    type(bar(el), "ip", "192.168.1.5");
+    await settle(el);
+    type(bar(el), "search", "tuya", "input");
+    await vi.advanceTimersByTimeAsync(350);
+    await settle(el);
+    expect(fake.of("changes").at(-1)).toMatchObject({
+      action: "installed",
+      ip: "192.168.1.5",
+      search: "tuya",
+    });
+  });
+
+  it("offers the new kinds and actions", async () => {
+    const el = await mount<EfAudit>("ef-audit", api());
+    const pane = el.shadowRoot?.querySelector("ef-filter-pane") as unknown as {
+      fields: { name: string; options?: { value: string; label: string }[] }[];
+    };
+    const kinds = pane.fields.find((f) => f.name === "kind")?.options ?? [];
+    expect(kinds.map((o) => o.value)).toEqual(
+      expect.arrayContaining([
+        "app",
+        "files",
+        "integration_health",
+        "forwarding",
+      ]),
+    );
+    const actions = pane.fields.find((f) => f.name === "action")?.options ?? [];
+    expect(actions[0]).toEqual({ value: "", label: "Any action" });
+    expect(actions.map((o) => o.value)).toEqual(
+      expect.arrayContaining([
+        "files_changed",
+        "forwarding_failed",
+        "restarted",
+      ]),
+    );
+    expect(actions.every((o) => o.label !== "" || o.value === "")).toBe(true);
+    expect(actions.find((o) => o.value === "files_changed")?.label).toBe(
+      "Files changed",
+    );
+  });
+
+  it("sends the custom range at the day bounds, in local time", async () => {
+    const fake = api();
+    const el = await mount<EfAudit>("ef-audit", fake);
+    chooseOption(bar(el), "range", "custom");
+    await settle(el);
+    type(bar(el), "from", "2026-10-01");
+    await settle(el);
+    type(bar(el), "to", "2026-10-03");
+    await settle(el);
+    const last = fake.of("changes").at(-1);
+    expect(last).toMatchObject(dayBounds("2026-10-01", "2026-10-03"));
+  });
+
+  it("hides from and to until the range is custom", async () => {
+    const el = await mount<EfAudit>("ef-audit", api());
+    expect(bar(el).querySelector("[name=from]")).toBeNull();
+    chooseOption(bar(el), "range", "custom");
+    await settle(el);
+    expect(bar(el).querySelector("[name=from]")).not.toBeNull();
+    expect(bar(el).querySelector("[name=to]")).not.toBeNull();
+  });
+
+  it("clears every filter with one refetch", async () => {
+    const fake = api();
+    const el = await mount<EfAudit>("ef-audit", fake);
+    chooseOption(bar(el), "kind", "user");
+    await settle(el);
+    type(bar(el), "ip", "1.1.1.1");
+    await settle(el);
+    const before = fake.of("changes").length;
+    bar(el).querySelector<HTMLButtonElement>("button.clear")?.click();
+    await settle(el);
+    expect(fake.of("changes")).toHaveLength(before + 1);
+    const last = fake.of("changes").at(-1) as Record<string, unknown>;
+    expect(last).not.toHaveProperty("kind");
+    expect(last).not.toHaveProperty("ip");
+    expect(last).toMatchObject({ include_system: false });
+  });
+
+  it("matches live changes on action, ip, custom range and search", () => {
+    const base: AuditFilters = {
+      kind: "",
+      action: "",
+      actor: "",
+      ip: "",
+      range: "all",
+      from: "",
+      to: "",
+      system: false,
+      search: "",
+    };
+    const now = Date.parse("2026-10-24T10:00:00Z");
+    const item = change({
+      action: "updated",
+      target_name: "Tuya Cloud",
+      details: { changed: ["Token"] },
+    });
+    const m = (over: Partial<AuditFilters>) =>
+      matchesChange(item, { ...base, ...over }, now);
+    expect(m({})).toBe(true);
+    expect(m({ action: "updated" })).toBe(true);
+    expect(m({ action: "added" })).toBe(false);
+    expect(m({ ip: "192.168.1.5" })).toBe(true);
+    expect(m({ ip: "10.0.0.1" })).toBe(false);
+    expect(m({ search: "tuya CLOUD" })).toBe(true);
+    expect(m({ search: "token" })).toBe(true);
+    expect(m({ search: "anna" })).toBe(true);
+    expect(m({ search: "nothing here" })).toBe(false);
+    expect(m({ range: "custom", from: "2026-10-24", to: "2026-10-24" })).toBe(
+      true,
+    );
+    expect(m({ range: "custom", from: "2026-10-25" })).toBe(false);
+    expect(m({ range: "custom", to: "2026-10-23" })).toBe(false);
+  });
+
+  it("does not show a live change that misses the search", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const fake = api();
+    const el = await mount<EfAudit>("ef-audit", fake);
+    type(bar(el), "search", "tuya", "input");
+    await vi.advanceTimersByTimeAsync(350);
+    await settle(el);
+    const rows = () => el.shadowRoot?.querySelectorAll("ef-change-row").length;
+    const before = rows();
+    fake.push({
+      type: "change",
+      item: change({
+        id: null,
+        target_name: "Hue",
+        ts: new Date().toISOString(),
+      }),
+    });
+    fake.push({
+      type: "change",
+      item: change({
+        id: null,
+        target_name: "Tuya 2",
+        ts: new Date().toISOString(),
+      }),
+    });
+    await settle(el);
+    expect(rows()).toBe((before ?? 0) + 1);
+  });
+});
+
+describe("filter pane in Activity", () => {
+  const api = () =>
+    fakeApi({
+      logins: { items: [login({ id: 5 })], next_before_id: null },
+      users: { items: [user()] },
+    });
+
+  it("sends search and ip to electric_fence/logins", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const fake = api();
+    const el = await mount<EfActivity>("ef-activity", fake);
+    type(bar(el), "ip", "203.0.113.7");
+    await settle(el);
+    type(bar(el), "search", "firefox", "input");
+    await vi.advanceTimersByTimeAsync(350);
+    await settle(el);
+    expect(fake.of("logins").at(-1)).toMatchObject({
+      ip: "203.0.113.7",
+      search: "firefox",
+    });
+    expect(new URLSearchParams(location.search).get("search")).toBe("firefox");
+  });
+
+  it("sends the custom range at the day bounds and keeps it in the URL", async () => {
+    history.replaceState(
+      null,
+      "",
+      "/electric-fence/activity?range=custom&from=2026-10-01&to=2026-10-03",
+    );
+    const fake = api();
+    await mount<EfActivity>("ef-activity", fake);
+    expect(fake.of("logins")[0]).toMatchObject(
+      dayBounds("2026-10-01", "2026-10-03"),
+    );
+    expect(
+      filtersFromQuery("?range=custom&from=nope&to=2026-10-03"),
+    ).toMatchObject({ range: "custom", from: "", to: "2026-10-03" });
+  });
+
+  it("matches live logins on the custom range and search", () => {
+    const base = filtersFromQuery("");
+    const now = Date.parse("2026-10-24T10:00:00Z");
+    const item = login({ client_name: "Firefox", hostname: "Host.Example" });
+    const m = (over: Partial<ActivityFilters>) =>
+      matchesLogin(item, { ...base, range: "all", ...over }, now);
+    expect(m({ search: "FIREfox" })).toBe(true);
+    expect(m({ search: "host.example" })).toBe(true);
+    expect(m({ search: "203.0.113" })).toBe(true);
+    expect(m({ search: "chrome" })).toBe(false);
+    expect(m({ range: "custom", from: "2026-10-25" })).toBe(false);
+    expect(m({ range: "custom", to: "2026-10-23" })).toBe(false);
+    expect(m({ range: "custom", from: "2026-10-23", to: "2026-10-25" })).toBe(
+      true,
+    );
   });
 });
