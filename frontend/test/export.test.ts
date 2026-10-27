@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { collectAll, csvSafe, toCsv } from "../src/export.ts";
+import {
+  activityCsv,
+  auditCsv,
+  collectAll,
+  csvSafe,
+  toCsv,
+} from "../src/export.ts";
 import { setMaskIps } from "../src/mask.ts";
 import { EfActivity } from "../src/views/ef-activity.ts";
 import { EfAudit } from "../src/views/ef-audit.ts";
@@ -62,6 +68,28 @@ describe("toCsv", () => {
       ],
     );
     expect(out).toBe(BOM + 'a,b\r\n1,"x,y"\r\n,2\r\n');
+  });
+
+  it("ends with a note row as wide as the header", () => {
+    const out = toCsv(["a", "b", "c"], [["1", "2", "3"]], "Cut short");
+    expect(out).toBe(BOM + "a,b,c\r\n1,2,3\r\nCut short,,\r\n");
+  });
+});
+
+describe("truncated CSV", () => {
+  const note = "The download holds the newest 100000 rows only.";
+  const lastLine = (csv: string) => csv.trimEnd().split("\r\n").at(-1);
+
+  it("marks a cut audit download in its last row", () => {
+    expect(lastLine(auditCsv([change()], true))).toMatch(
+      new RegExp(`^${note.replaceAll(".", "\\.")},+$`),
+    );
+    expect(auditCsv([change()])).not.toContain(note);
+  });
+
+  it("marks a cut activity download in its last row", () => {
+    expect(lastLine(activityCsv([login()], true))?.startsWith(note)).toBe(true);
+    expect(activityCsv([login()])).not.toContain(note);
   });
 });
 
@@ -450,6 +478,31 @@ describe("download while the view changes", () => {
     expect(data.items).toHaveLength(100_000);
     expect(el.shadowRoot?.querySelector(".notice")?.textContent).toContain(
       "100000",
+    );
+  });
+
+  it("marks a CSV the cap cut short", async () => {
+    let next = 1_000_000;
+    const api = fakeApi({
+      changes: (m: Record<string, unknown>) => {
+        if (m.limit !== 200) {
+          return { items: [], next_before_id: null };
+        }
+        const items = Array.from({ length: 200 }, () => change({ id: next }));
+        next -= 200;
+        return { items, next_before_id: next };
+      },
+      users: { items: [] },
+    });
+    const el = await mount<EfAudit>("ef-audit", api);
+    await choose(el, 0);
+    for (let i = 0; i < 600; i += 1) {
+      await Promise.resolve();
+    }
+    await settle(el);
+    const body = saved.calls[0]?.body ?? "";
+    expect(body.trimEnd().split("\r\n").at(-1)).toContain(
+      "newest 100000 rows only",
     );
   });
 });

@@ -84,7 +84,7 @@ export abstract class LiveView extends LitElement {
     fetchPage: (
       filter: object,
     ) => Promise<{ items: T[]; next_before_id: number | null }>,
-    toCsv: (items: T[]) => string,
+    toCsv: (items: T[], truncated: boolean) => string,
   ): Promise<void> {
     if (this._exportRows !== null) {
       return;
@@ -118,7 +118,7 @@ export abstract class LiveView extends LitElement {
         downloadFile(
           exportName(tab, format),
           "text/csv;charset=utf-8",
-          toCsv(items),
+          toCsv(items, truncated),
         );
       } else {
         downloadFile(

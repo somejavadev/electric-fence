@@ -1,3 +1,4 @@
+import { strings } from "./strings.ts";
 import type { ChangeItem, LoginItem, Page } from "./types.ts";
 
 /** Most rows one export holds. */
@@ -29,9 +30,20 @@ export function csvSafe(value: unknown): string {
   return NEEDS_QUOTES.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
-/** CSV with CRLF line ends and a UTF-8 BOM, so Excel reads non-Latin text. */
-export function toCsv(header: string[], rows: unknown[][]): string {
-  const lines = [header, ...rows].map((row) => row.map(csvSafe).join(","));
+/**
+ * CSV with CRLF line ends and a UTF-8 BOM, so Excel reads non-Latin text.
+ * A `note` becomes a last row, padded to the header's width.
+ */
+export function toCsv(
+  header: string[],
+  rows: unknown[][],
+  note?: string,
+): string {
+  const all =
+    note === undefined
+      ? [header, ...rows]
+      : [header, ...rows, [note, ...header.slice(1).map(() => "")]];
+  const lines = all.map((row) => row.map(csvSafe).join(","));
   return `${BOM}${lines.join("\r\n")}\r\n`;
 }
 
@@ -99,7 +111,11 @@ const detailsJson = (details: Record<string, unknown>): string => {
   return JSON.stringify(rest);
 };
 
-export function auditCsv(items: ChangeItem[]): string {
+/** Rows run newest first, so the note sits where the cap cut them. */
+const capNote = (truncated: boolean): string | undefined =>
+  truncated ? strings.download.truncated(EXPORT_CAP) : undefined;
+
+export function auditCsv(items: ChangeItem[], truncated = false): string {
   const withValues = items.some((i) => i.details["values"] !== undefined);
   const header = [
     "time",
@@ -133,10 +149,11 @@ export function auditCsv(items: ChangeItem[]): string {
           ]
         : []),
     ]),
+    capNote(truncated),
   );
 }
 
-export const activityCsv = (items: LoginItem[]): string =>
+export const activityCsv = (items: LoginItem[], truncated = false): string =>
   toCsv(
     [
       "time",
@@ -172,6 +189,7 @@ export const activityCsv = (items: LoginItem[]): string =>
       i.new_country,
       i.count,
     ]),
+    capNote(truncated),
   );
 
 export const exportJson = (
