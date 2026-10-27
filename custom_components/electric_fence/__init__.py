@@ -53,7 +53,9 @@ from .repairs import (
     async_clear_disabled_collector,
     async_clear_ip_ban_disabled,
     async_clear_schema_too_new,
+    async_clear_tls_check_required,
     async_report_schema_too_new,
+    async_report_tls_check_required,
     async_sync_integration_issues,
 )
 from .runtime import Runtime
@@ -133,6 +135,7 @@ async def async_setup_entry(
         _LOGGER.error("%s", message)
         raise ConfigEntryError(message) from err
     async_clear_schema_too_new(hass)
+    _async_drop_tls_check_option(hass, entry)
     enricher = GeoEnricher(hass)
     worker = FenceWorker(hass, store, enricher)
     settings = Settings.from_options(entry.options)
@@ -297,6 +300,27 @@ async def async_setup_entry(
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
 
+def _async_drop_tls_check_option(
+    hass: HomeAssistant, entry: ElectricFenceConfigEntry
+) -> None:
+    """Drop the removed "Verify the certificate" option, once.
+
+    TLS forwarding now always checks the certificate, so an entry that had the
+    check off for TLS gets a repair issue explaining how to fix forwarding.
+    """
+    if "forward_verify_tls" not in entry.options:
+        return
+    options = dict(entry.options)
+    verify = options.pop("forward_verify_tls")
+    hass.config_entries.async_update_entry(entry, options=options)
+    if (
+        verify is False
+        and options.get("forward_enabled")
+        and options.get("forward_protocol") == "tls"
+    ):
+        async_report_tls_check_required(hass)
+
+
 async def async_purge(hass: HomeAssistant, runtime: Runtime) -> None:
     """Delete records older than the retention period."""
     cutoff = dt_util.utcnow() - timedelta(days=runtime.settings.retention_days)
@@ -335,7 +359,6 @@ def _forward_target(settings: Settings) -> tuple[object, ...] | None:
         settings.forward_host,
         settings.forward_port,
         settings.forward_protocol,
-        settings.forward_verify_tls,
         settings.forward_ca_pem,
     )
 
@@ -351,7 +374,7 @@ async def _async_build_forwarder(
     if settings.forward_protocol == "tls":
         try:
             ssl_context = await hass.async_add_executor_job(
-                build_ssl_context, settings.forward_verify_tls, settings.forward_ca_pem
+                build_ssl_context, settings.forward_ca_pem
             )
         except Exception as err:  # noqa: BLE001
             # The transport then fails to connect, which the sensor shows.
@@ -419,6 +442,8 @@ async def async_apply_settings(
     runtime = entry.runtime_data
     old = runtime.settings
     settings = Settings.from_options(entry.options)
+    # Saving the settings means the TLS notice has been acted on.
+    async_clear_tls_check_required(hass)
     # Collectors, notifier and sensor read runtime.settings on every use.
     runtime.settings = settings
     if runtime.geo_updater is not None and (

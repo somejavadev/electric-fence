@@ -30,6 +30,7 @@ from custom_components.electric_fence.models import (
 )
 from custom_components.electric_fence.settings import Settings
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from tests.helpers import change_rows, create_hass_user, flush_worker, login_flow
 
@@ -490,7 +491,7 @@ async def test_restart_with_tls_loses_no_record(
     runtime = entry.runtime_data
     release = threading.Event()
 
-    def slow_context(verify: bool, ca: str) -> None:
+    def slow_context(ca: str) -> None:
         release.wait(5)
 
     monkeypatch.setattr(
@@ -514,3 +515,77 @@ async def test_restart_with_tls_loses_no_record(
     sent = [e["username"] for e in net.events() if "username" in e]
     assert sent == ["user1", "user2", "user3"]
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def _setup_with_old_option(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, protocol: str, verify: bool
+) -> MockConfigEntry:
+    """Set up an entry saved by 0.3.0, with the removed TLS check option."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    options = replace(
+        Settings(),
+        forward_enabled=True,
+        forward_host="siem.example",
+        forward_protocol=protocol,
+    ).to_options()
+    entry = MockConfigEntry(
+        domain=DOMAIN, options={**options, "forward_verify_tls": verify}
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+def _tls_issue(hass: HomeAssistant) -> ir.IssueEntry | None:
+    return ir.async_get(hass).async_get_issue(DOMAIN, "tls_check_required")
+
+
+async def test_tls_check_off_raises_a_repair_once(
+    hass: HomeAssistant, patched_transport: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TLS with the check off: the option is dropped and a repair explains why."""
+    entry = await _setup_with_old_option(hass, monkeypatch, "tls", verify=False)
+    assert "forward_verify_tls" not in entry.options
+    issue = _tls_issue(hass)
+    assert issue is not None
+    assert issue.is_persistent
+    assert issue.severity is ir.IssueSeverity.WARNING
+
+    # Restarting does not bring the option or a second issue back.
+    ir.async_delete_issue(hass, DOMAIN, "tls_check_required")
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _tls_issue(hass) is None
+
+
+@pytest.mark.parametrize(
+    ("protocol", "verify"), [("tls", True), ("tcp", False), ("udp", False)]
+)
+async def test_tls_check_option_dropped_quietly(
+    hass: HomeAssistant,
+    patched_transport: Net,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    verify: bool,
+) -> None:
+    """With the check on, or without TLS, nothing changes for the user."""
+    entry = await _setup_with_old_option(hass, monkeypatch, protocol, verify)
+    assert "forward_verify_tls" not in entry.options
+    assert _tls_issue(hass) is None
+
+
+async def test_saving_settings_clears_the_tls_repair(
+    hass: HomeAssistant, patched_transport: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saving the settings removes the repair."""
+    entry = await _setup_with_old_option(hass, monkeypatch, "tls", verify=False)
+    assert _tls_issue(hass) is not None
+    hass.config_entries.async_update_entry(
+        entry,
+        options=replace(
+            Settings.from_options(entry.options), forward_protocol="tcp"
+        ).to_options(),
+    )
+    await hass.async_block_till_done()
+    assert _tls_issue(hass) is None

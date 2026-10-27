@@ -71,7 +71,6 @@ def test_settings_v03_defaults() -> None:
     assert s.forward_host == ""
     assert s.forward_port == 514
     assert s.forward_protocol == "tcp"
-    assert s.forward_verify_tls is True
     assert s.forward_ca_pem == ""
 
 

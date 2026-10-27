@@ -65,7 +65,6 @@ SECTIONS = {
         "forward_host",
         "forward_port",
         "forward_protocol",
-        "forward_verify_tls",
         "forward_ca_pem",
     ),
 }
@@ -823,7 +822,6 @@ async def test_v03_options_saved(
         forward_host="siem.local",
         forward_port=6514,
         forward_protocol="udp",
-        forward_verify_tls=False,
     )
     result = await hass.config_entries.options.async_configure(result["flow_id"], form)
     await hass.async_block_till_done()
@@ -841,7 +839,6 @@ async def test_v03_options_saved(
     assert settings.forward_host == "siem.local"
     assert settings.forward_port == 6514
     assert settings.forward_protocol == "udp"
-    assert not settings.forward_verify_tls
 
 
 def _initial(fields: list[dict[str, Any]]) -> dict[str, Any]:
