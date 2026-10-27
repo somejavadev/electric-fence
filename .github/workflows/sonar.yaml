@@ -20,12 +20,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    env:
-      # Absent for Dependabot and forked pull requests: the analysis is skipped.
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    # SONAR_TOKEN is given to the scan step only, never to the steps that run
+    # dependency code (pip, npm, the tests).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # Full history for SonarCloud's blame and new-code detection.
           fetch-depth: 0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -48,10 +48,18 @@ jobs:
       - name: Frontend tests with coverage
         working-directory: frontend
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run coverage
+      # The token is absent for Dependabot and forked pull requests: the
+      # analysis is skipped.
+      - name: Check for the SonarCloud token
+        id: sonar
+        env:
+          PRESENT: ${{ secrets.SONAR_TOKEN != '' }}
+        run: echo "present=$PRESENT" >> "$GITHUB_OUTPUT"
       - name: SonarCloud scan
-        if: env.SONAR_TOKEN != ''
+        if: steps.sonar.outputs.present == 'true'
         uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
