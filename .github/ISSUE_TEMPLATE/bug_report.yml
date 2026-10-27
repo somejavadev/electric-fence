@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in Electric Fence isn't working as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For a security problem, use a [private report](https://github.com/somejavadev/electric-fence/security/advisories/new) instead.
+
+        Remove IP addresses, usernames and host names you don't want to share from anything you paste below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to …
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: ef-version
+    attributes:
+      label: Electric Fence version
+      description: Shown on the integration's page in Settings > Devices & services.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      description: Settings > About.
+      placeholder: "2026.11.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-type
+    attributes:
+      label: Installation type
+      options:
+        - Home Assistant OS
+        - Home Assistant Container
+        - Home Assistant Supervised
+        - Home Assistant Core
+    validations:
+      required: true
+  - type: dropdown
+    id: access
+    attributes:
+      label: How Home Assistant is reached
+      multiple: true
+      options:
+        - Local network only
+        - VPN
+        - Home Assistant Cloud (Nabu Casa)
+        - Reverse proxy
+        - Exposed directly to the internet
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Settings > Devices & services > Electric Fence > ⋮ > Download diagnostics. Drag the file here.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Lines from Settings > System > Logs that mention electric_fence.
+      render: text
