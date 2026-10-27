@@ -21,6 +21,7 @@ from .sensor_protection import (
     AdminsWithoutMfaSensor,
     AttackedUsernamesSensor,
     Bans24hSensor,
+    ForwardingSensor,
     GeoipUpdatedSensor,
     LastBanSensor,
     LastFailedLoginSensor,
@@ -61,6 +62,7 @@ async def async_setup_entry(
             LastNewCountryLoginSensor(entry),
             AdminsWithoutMfaSensor(entry),
             GeoipUpdatedSensor(entry),
+            ForwardingSensor(entry),
         ]
     )
 

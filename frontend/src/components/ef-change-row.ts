@@ -1,7 +1,7 @@
 import { LitElement, html, nothing } from "lit";
 import { changeLines, isProtectionChange } from "../change-lines.ts";
 import { MAX_TEXT, formatTime, truncate } from "../format.ts";
-import { changeSentence, strings } from "../strings.ts";
+import { actorLabel, changeSentence, strings } from "../strings.ts";
 import { rowStyles } from "../styles.ts";
 import type { ChangeItem, HomeAssistant } from "../types.ts";
 import { showIp } from "../mask.ts";
@@ -26,7 +26,7 @@ export class EfChangeRow extends LitElement {
     if (item === undefined) {
       return nothing;
     }
-    const actor = truncate(item.actor_name ?? strings.system, MAX_TEXT);
+    const actor = truncate(actorLabel(item), MAX_TEXT);
     const sentence = truncate(changeSentence(item), MAX_TEXT * 2);
     return html`
       <div class="row">

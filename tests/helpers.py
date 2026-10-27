@@ -4,9 +4,11 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import AsyncMock, Mock
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient
+import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     MockModule,
@@ -323,3 +325,53 @@ async def dummy_entry(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+def supervisor_client() -> Mock:
+    """Return a stand-in for `hassio.get_supervisor_client(hass)`."""
+    client = Mock()
+    for name in (
+        "addon_info",
+        "start_addon",
+        "stop_addon",
+        "restart_addon",
+        "write_addon_stdin",
+    ):
+        setattr(client.addons, name, AsyncMock())
+    client.store.update_addon = AsyncMock()
+    client.store.repositories_list = AsyncMock(return_value=[])
+    return client
+
+
+async def setup_fake_hassio(
+    hass: HomeAssistant, client: Mock, monkeypatch: pytest.MonkeyPatch
+) -> AsyncMock:
+    """Register Core's Supervisor commands and app services, without Supervisor.
+
+    `hassio` is marked loaded, Core's real `supervisor/api` and
+    `hassio/update/addon` commands and app services are registered, and
+    every Supervisor client is `client`. Returns the `send_command` mock that
+    `supervisor/api` calls.
+    """
+    from homeassistant.components import hassio  # noqa: PLC0415
+    from homeassistant.components.hassio import (  # noqa: PLC0415
+        addon_manager,
+        const,
+        services,
+        update_helper,
+        websocket_api as hassio_ws,
+    )
+    from homeassistant.components.websocket_api import async_register_command  # noqa: PLC0415
+
+    assert await async_setup_component(hass, "websocket_api", {})
+    send = AsyncMock(return_value={"result": "ok", "data": {}})
+    hass.data[const.DATA_COMPONENT] = Mock(send_command=send)
+    hass.data[const.DATA_ADDONS_LIST] = []
+    async_register_command(hass, hassio_ws.websocket_supervisor_api)
+    async_register_command(hass, hassio_ws.websocket_update_addon)
+    services.async_register_app_services(hass, client)
+    monkeypatch.setattr(hassio, "get_supervisor_client", lambda _hass: client)
+    monkeypatch.setattr(update_helper, "get_supervisor_client", lambda _hass: client)
+    monkeypatch.setattr(addon_manager, "get_supervisor_client", lambda _hass: client)
+    hass.config.components.add("hassio")
+    return send

@@ -3,7 +3,7 @@
 Synchronous: call it from the executor only.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +16,7 @@ import threading
 from typing import Any, Final, Literal
 
 from .models import (
+    OUTSIDE_ACTOR,
     ChangeAction,
     ChangeKind,
     LoginAttempt,
@@ -29,7 +30,7 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # A `LoginFilter.result` for failed and blocked attempts together.
 FAILED_OR_BLOCKED: Final = "failed_or_blocked"
@@ -122,6 +123,42 @@ CREATE TABLE IF NOT EXISTS known_countries (
 );
 """
 
+_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS file_references (
+    repository TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    PRIMARY KEY (repository, ref, path)
+);
+CREATE TABLE IF NOT EXISTS file_baselines (
+    domain TEXT NOT NULL,
+    version TEXT,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    PRIMARY KEY (domain, path)
+);
+CREATE TABLE IF NOT EXISTS integration_findings (
+    domain TEXT NOT NULL,
+    check_name TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (domain, check_name)
+);
+CREATE TABLE IF NOT EXISTS app_snapshots (
+    slug TEXT PRIMARY KEY,
+    name TEXT,
+    version TEXT,
+    state TEXT,
+    options_hash TEXT,
+    settings_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_repositories (
+    url TEXT PRIMARY KEY
+);
+"""
+
 _SEED_COUNTRIES = (
     "INSERT OR IGNORE INTO known_countries (user_id, country_code) "
     "SELECT DISTINCT user_id, country_code FROM login_attempts "
@@ -141,6 +178,16 @@ def _migration_v1(db: sqlite3.Connection) -> str:
         + ("" if "new_country" in columns else _ADD_NEW_COUNTRY)
         + _PROTECTION_SCHEMA
         + _SEED_COUNTRIES
+        + "PRAGMA user_version = 2;"
+        + "COMMIT;"
+    )
+
+
+def _migration_v2() -> str:
+    """Return the v2 to v3 script; user_version is set inside its transaction."""
+    return (
+        "BEGIN;"
+        + _AUDIT_SCHEMA
         + f"PRAGMA user_version = {int(SCHEMA_VERSION)};"
         + "COMMIT;"
     )
@@ -155,6 +202,17 @@ _CHANGE_COLUMNS = (
     "id, ts, kind, action, target_id, target_name, details_json, "
     "actor_user_id, actor_name, actor_ip"
 )
+
+
+_LOGIN_SEARCH = (
+    "username_typed",
+    "ip",
+    "hostname",
+    "client_name",
+    "client_id",
+    "user_agent",
+)
+_CHANGE_SEARCH = ("target_id", "target_name", "actor_name", "actor_ip", "details_json")
 
 
 class StoreSchemaTooNewError(Exception):
@@ -201,6 +259,7 @@ class LoginFilter:
     since: datetime | None = None
     until: datetime | None = None
     new_country: bool | None = None
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +271,21 @@ class ChangeFilter:
     include_system: bool = False
     since: datetime | None = None
     until: datetime | None = None
+    action: ChangeAction | None = None
+    ip: str | None = None
+    search: str | None = None
+
+
+@dataclass(frozen=True)
+class AppSnapshot:
+    """The last seen state of one app."""
+
+    slug: str
+    name: str
+    version: str | None
+    state: str | None
+    options_hash: str | None
+    settings: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -424,7 +498,7 @@ def _change_values(c: SettingsChange) -> tuple[Any, ...]:
         str(c.action),
         c.target_id,
         c.target_name,
-        json.dumps(c.details, sort_keys=True),
+        json.dumps(c.details, sort_keys=True, ensure_ascii=False),
         c.actor_user_id,
         c.actor_name,
         c.actor_ip,
@@ -440,6 +514,16 @@ def _time_clauses(
     if until is not None:
         where.append("ts <= ?")
         params.append(_to_text(until))
+
+
+def _search_clause(
+    where: list[str], params: list[Any], search: str | None, columns: Sequence[str]
+) -> None:
+    if not search:
+        return
+    pattern = f"%{_like_escape(search)}%"
+    where.append("(" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in columns) + ")")
+    params.extend([pattern] * len(columns))
 
 
 def read_active_ban_ips(path: Path) -> list[str]:
@@ -460,6 +544,10 @@ def read_active_ban_ips(path: Path) -> list[str]:
     finally:
         db.close()
     return [str(r[0]) for r in rows]
+
+
+# Marks a baseline of zero files, so its version row still exists
+_EMPTY_BASELINE = ""
 
 
 class FenceStore:
@@ -499,7 +587,14 @@ class FenceStore:
                         with contextlib.suppress(sqlite3.Error):
                             db.execute("ROLLBACK")
                         raise
-                db.executescript(_SCHEMA + _PROTECTION_SCHEMA)
+                if version == 2:
+                    try:
+                        db.executescript(_migration_v2())
+                    except BaseException:
+                        with contextlib.suppress(sqlite3.Error):
+                            db.execute("ROLLBACK")
+                        raise
+                db.executescript(_SCHEMA + _PROTECTION_SCHEMA + _AUDIT_SCHEMA)
                 db.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                     ("schema_version", str(SCHEMA_VERSION)),
@@ -577,6 +672,7 @@ class FenceStore:
             params.append(f.country_code)
         if f.new_country:
             where.append("new_country = 1")
+        _search_clause(where, params, f.search, _LOGIN_SEARCH)
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
             where.append("(ts, id) < (SELECT ts, id FROM login_attempts WHERE id = ?)")
@@ -602,8 +698,17 @@ class FenceStore:
         if f.actor_user_id is not None:
             where.append("actor_user_id = ?")
             params.append(f.actor_user_id)
+        if f.action is not None:
+            where.append("action = ?")
+            params.append(str(f.action))
+        if f.ip is not None:
+            where.append("actor_ip = ?")
+            params.append(f.ip)
+        _search_clause(where, params, f.search, _CHANGE_SEARCH)
         if not f.include_system:
-            where.append("actor_user_id IS NOT NULL")
+            # System only: changes made outside Home Assistant stay shown.
+            where.append("(actor_user_id IS NOT NULL OR actor_name = ?)")
+            params.append(OUTSIDE_ACTOR)
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
             where.append(
@@ -715,7 +820,12 @@ class FenceStore:
                     continue
                 if isinstance(details, dict) and "values" in details:
                     del details["values"]
-                    updates.append((json.dumps(details, sort_keys=True), row_id))
+                    updates.append(
+                        (
+                            json.dumps(details, sort_keys=True, ensure_ascii=False),
+                            row_id,
+                        )
+                    )
             if not updates:
                 return 0
             db.execute("BEGIN")
@@ -764,6 +874,20 @@ class FenceStore:
                     _LOGGER.debug("VACUUM failed after purge")
         return deleted
 
+    @contextlib.contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """Hold the lock and run the block in one transaction (all or nothing)."""
+        with self._lock:
+            db = self._conn()
+            db.execute("BEGIN")
+            try:
+                yield db
+                db.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error):
+                    db.execute("ROLLBACK")
+                raise
+
     def _write(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         """Run one statement in its own transaction and return the cursor."""
         with self._lock:
@@ -781,6 +905,131 @@ class FenceStore:
     def _read(self, sql: str, params: Sequence[Any] = ()) -> list[Any]:
         with self._lock:
             return self._conn().execute(sql, params).fetchall()
+
+    def reference_hashes(self, repository: str, ref: str) -> dict[str, str] | None:
+        """Return the cached official hashes of a repository at a ref, if any."""
+        rows = self._read(
+            "SELECT path, sha256 FROM file_references WHERE repository = ? AND ref = ?",
+            (repository, ref),
+        )
+        return dict(rows) if rows else None
+
+    def save_reference(self, repository: str, ref: str, hashes: dict[str, str]) -> None:
+        """Cache official hashes, replacing any earlier ref of the repository."""
+        with self._transaction() as db:
+            db.execute(
+                "DELETE FROM file_references WHERE repository = ?", (repository,)
+            )
+            db.executemany(
+                "INSERT INTO file_references (repository, ref, path, sha256) "
+                "VALUES (?, ?, ?, ?)",
+                [(repository, ref, p, h) for p, h in hashes.items()],
+            )
+
+    def baseline(self, domain: str) -> tuple[str | None, dict[str, str]]:
+        """Return the baseline version and file hashes of an integration."""
+        rows = self._read(
+            "SELECT version, path, sha256 FROM file_baselines WHERE domain = ?",
+            (domain,),
+        )
+        if not rows:
+            return None, {}
+        return rows[0][0], {
+            path: sha for _, path, sha in rows if path != _EMPTY_BASELINE
+        }
+
+    def save_baseline(
+        self, domain: str, version: str | None, hashes: dict[str, str]
+    ) -> None:
+        """Replace the baseline of an integration."""
+        with self._transaction() as db:
+            db.execute("DELETE FROM file_baselines WHERE domain = ?", (domain,))
+            db.executemany(
+                "INSERT INTO file_baselines (domain, version, path, sha256) "
+                "VALUES (?, ?, ?, ?)",
+                [(domain, version, p, h) for p, h in hashes.items()]
+                or [(domain, version, _EMPTY_BASELINE, "")],
+            )
+
+    def finding(self, domain: str, check_name: str) -> dict[str, Any] | None:
+        """Return the stored state of one check, if any."""
+        rows = self._read(
+            "SELECT state_json FROM integration_findings "
+            "WHERE domain = ? AND check_name = ?",
+            (domain, check_name),
+        )
+        return json.loads(rows[0][0]) if rows else None
+
+    def save_finding(
+        self, domain: str, check_name: str, state: dict[str, Any], at: datetime
+    ) -> None:
+        """Store the state of one check."""
+        self._write(
+            "INSERT OR REPLACE INTO integration_findings "
+            "(domain, check_name, state_json, updated_at) VALUES (?, ?, ?, ?)",
+            (
+                domain,
+                check_name,
+                json.dumps(state, sort_keys=True, ensure_ascii=False),
+                _to_text(at),
+            ),
+        )
+
+    def drop_findings(self, keep_domains: set[str]) -> None:
+        """Delete the findings of integrations that are no longer installed."""
+        with self._transaction() as db:
+            marks = ", ".join("?" * len(keep_domains))
+            db.execute(
+                f"DELETE FROM integration_findings WHERE domain NOT IN ({marks})",  # noqa: S608
+                sorted(keep_domains),
+            )
+
+    def app_snapshot(self) -> dict[str, AppSnapshot]:
+        """Return the last seen state of every app, by slug."""
+        rows = self._read(
+            "SELECT slug, name, version, state, options_hash, settings_json "
+            "FROM app_snapshots"
+        )
+        return {
+            r[0]: AppSnapshot(r[0], r[1], r[2], r[3], r[4], json.loads(r[5]))
+            for r in rows
+        }
+
+    def save_app_snapshot(self, snaps: dict[str, AppSnapshot], at: datetime) -> None:
+        """Replace the stored app states."""
+        text = _to_text(at)
+        with self._transaction() as db:
+            db.execute("DELETE FROM app_snapshots")
+            db.executemany(
+                "INSERT INTO app_snapshots (slug, name, version, state, "
+                "options_hash, settings_json, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        s.slug,
+                        s.name,
+                        s.version,
+                        s.state,
+                        s.options_hash,
+                        json.dumps(s.settings, sort_keys=True, ensure_ascii=False),
+                        text,
+                    )
+                    for s in snaps.values()
+                ],
+            )
+
+    def app_repositories(self) -> set[str]:
+        """Return the known app repository URLs."""
+        return {r[0] for r in self._read("SELECT url FROM app_repositories")}
+
+    def save_app_repositories(self, urls: set[str]) -> None:
+        """Replace the known app repository URLs."""
+        with self._transaction() as db:
+            db.execute("DELETE FROM app_repositories")
+            db.executemany(
+                "INSERT INTO app_repositories (url) VALUES (?)",
+                [(u,) for u in sorted(urls)],
+            )
 
     def add_ban(
         self,

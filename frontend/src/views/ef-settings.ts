@@ -236,6 +236,61 @@ export class EfSettings extends LiveView {
     </table>`;
   }
 
+  private _forwarding(status: Status) {
+    const s = strings.settings;
+    const f = status.forwarding;
+    if (!status.settings.forward_enabled || f === null) {
+      return this._table([[s.forwardingState, s.off]]);
+    }
+    return this._table([
+      [s.forwardingState, s.on],
+      [
+        s.state,
+        html`<span class="tag ${f.state === "connected" ? "good" : "bad"}"
+          >${Object.hasOwn(s.forwardingStates, f.state) ? s.forwardingStates[f.state] : bdiText(f.state)}</span
+        >`,
+      ],
+      [s.queued, f.queued],
+      [s.dropped, f.dropped],
+      [
+        s.lastError,
+        f.last_error === null ? s.none : bdiText(f.last_error, 256),
+      ],
+    ]);
+  }
+
+  private _extras(status: Status) {
+    const s = strings.settings;
+    const v = status.settings;
+    const onOff = (on: boolean) => (on ? s.on : s.off);
+    return html`
+      <section class="card">
+        <h2>${s.apps}</h2>
+        ${this._table([
+          [
+            s.appAuditing,
+            status.apps === "not_available"
+              ? s.appsNotAvailable
+              : status.apps === "disabled"
+                ? s.appsDisabled
+                : s.on,
+          ],
+        ])}
+      </section>
+      <section class="card">
+        <h2>${s.forwarding}</h2>
+        ${this._forwarding(status)}
+      </section>
+      <section class="card">
+        <h2>${s.integrationChecks}</h2>
+        ${this._table([
+          [s.fileChecks, onOff(v.verify_files)],
+          [s.repairs, onOff(v.integration_repairs)],
+        ])}
+      </section>
+    `;
+  }
+
   protected override render() {
     const s = strings.settings;
     const status = this._status;
@@ -257,6 +312,7 @@ export class EfSettings extends LiveView {
                 <h2>${s.collectors}</h2>
                 ${this._collectors(status)}
               </section>
+              ${this._extras(status)}
               <section class="card">
                 <h2>${s.worker}</h2>
                 <table>

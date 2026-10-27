@@ -58,6 +58,10 @@ class Source(StrEnum):
     CLOUD = "cloud"
 
 
+# Actor name of a change made outside Home Assistant; the panel translates it.
+OUTSIDE_ACTOR: Final = "outside"
+
+
 class ChangeKind(StrEnum):
     """What kind of object a settings change touched."""
 
@@ -72,6 +76,10 @@ class ChangeKind(StrEnum):
     RECORDER = "recorder"
     IP_BAN = "ip_ban"
     LOGIN_PROTECTION = "login_protection"
+    APP = "app"
+    FILES = "files"
+    INTEGRATION_HEALTH = "integration_health"
+    FORWARDING = "forwarding"
 
 
 class ChangeAction(StrEnum):
@@ -96,6 +104,25 @@ class ChangeAction(StrEnum):
     ATTACK_ENDED = "attack_ended"
     SLOWDOWN_ENDED = "slowdown_ended"
     COUNTRIES_CLEARED = "countries_cleared"
+    INSTALLED = "installed"
+    UNINSTALLED = "uninstalled"
+    STARTED = "started"
+    STOPPED = "stopped"
+    RESTARTED = "restarted"
+    REBUILT = "rebuilt"
+    SETTINGS_CHANGED = "settings_changed"
+    REPOSITORY_ADDED = "repository_added"
+    REPOSITORY_REMOVED = "repository_removed"
+    FILES_CHANGED = "files_changed"
+    FILES_MATCH = "files_match"
+    BASELINE_RECORDED = "baseline_recorded"
+    BASELINE_RENEWED = "baseline_renewed"
+    ARCHIVED = "archived"
+    REMOVED_FROM_STORE = "removed_from_store"
+    UNMAINTAINED = "unmaintained"
+    RECOVERED = "recovered"
+    FORWARDING_FAILED = "forwarding_failed"
+    FORWARDING_RECOVERED = "forwarding_recovered"
 
 
 @dataclass(slots=True)

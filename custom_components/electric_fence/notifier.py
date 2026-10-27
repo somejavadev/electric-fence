@@ -21,6 +21,7 @@ from .models import (
     UserExists,
 )
 from .privacy import inline_text, mask_username, md_code
+from .redact import LIST_CAP, TRUNCATED_SUFFIX
 from .runtime import Runtime
 from .storage import FenceStore
 
@@ -108,6 +109,18 @@ def _changed(details: dict[str, Any]) -> list[str]:
     """Return the changed setting names (a list of text), else empty."""
     names = details.get("changed")
     return [str(n) for n in names] if isinstance(names, list) else []
+
+
+def changed_fields(details: dict[str, Any]) -> dict[str, Any]:
+    """Return `changed` capped at `LIST_CAP` names, flagged when cut.
+
+    A file check can list thousands of files; the recorder keeps events of
+    at most 32 KB.
+    """
+    names = _changed(details)
+    if len(names) <= LIST_CAP:
+        return {"changed": names}
+    return {"changed": names[:LIST_CAP], "changed" + TRUNCATED_SUFFIX: True}
 
 
 def _str(value: Any) -> str | None:
@@ -220,7 +233,7 @@ class Notifier:
                     "changed_by_name": record.actor_name,
                     "ip": record.actor_ip,
                     # Names only: never `values`.
-                    "changed": _changed(record.details),
+                    **changed_fields(record.details),
                 },
             )
         elif record.result is LoginResult.SUCCESS:

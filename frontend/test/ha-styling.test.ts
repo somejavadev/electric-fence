@@ -1,7 +1,9 @@
 import type { CSSResultGroup } from "lit";
 import { afterEach, describe, expect, it } from "vitest";
 import { EfAnswerCard } from "../src/components/ef-answer-card.ts";
+import { EfDownloadMenu } from "../src/components/ef-download-menu.ts";
 import { EfFilterBar } from "../src/components/ef-filter-bar.ts";
+import { EfFilterPane } from "../src/components/ef-filter-pane.ts";
 import { EfLoginRow } from "../src/components/ef-login-row.ts";
 import { EfPostureList } from "../src/components/ef-posture-list.ts";
 import { EfOverview } from "../src/views/ef-overview.ts";
@@ -25,7 +27,9 @@ const SHEETS: Record<string, string> = {
   rowStyles: cssText(rowStyles),
   viewStyles: cssText(viewStyles),
   "ef-answer-card": cssText(EfAnswerCard.styles),
+  "ef-download-menu": cssText(EfDownloadMenu.styles),
   "ef-filter-bar": cssText(EfFilterBar.styles),
+  "ef-filter-pane": cssText(EfFilterPane.styles),
   "ef-login-row": cssText(EfLoginRow.styles),
   "ef-posture-list": cssText(EfPostureList.styles),
   "ef-overview": cssText(EfOverview.styles),

@@ -293,13 +293,60 @@ function protectionDetails(
   </div>`;
 }
 
-/** Details of any change: protection facts, or the changed settings. */
+/** Names in a list of `{slug, name}` objects (an app burst). */
+const appNames = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.flatMap((entry): string[] => {
+        if (!isRecord(entry)) {
+          return [];
+        }
+        const label = entry["name"] ?? entry["slug"];
+        return typeof label === "string" && label !== "" ? [label] : [];
+      })
+    : [];
+
+/** A burst's apps, or the files of an integration check. */
+function listDetails(
+  item: ChangeItem,
+  limit?: number,
+): TemplateResult | typeof nothing {
+  const a = strings.audit;
+  const d = item.details;
+  const groups: { label: string; values: string[] }[] =
+    item.kind === "app"
+      ? [{ label: a.apps, values: appNames(d["apps"]) }]
+      : [
+          { label: a.fileLists.changed, values: names(d["changed"]) },
+          { label: a.fileLists.missing, values: names(d["missing"]) },
+          { label: a.fileLists.added, values: names(d["added"]) },
+          { label: a.fileLists.unreadable, values: names(d["unreadable"]) },
+        ];
+  const shown = groups.filter((g) => g.values.length > 0);
+  if (shown.length === 0) {
+    return item.kind === "app" ? changeDetails(d, limit) : nothing;
+  }
+  return html`<div class="details">
+    ${shown.map((g) => groupTemplate(g.label, g.values))}
+  </div>`;
+}
+
+/** Details of any change: protection facts, lists, or the changed settings. */
 export function changeLines(
   item: ChangeItem,
   hass: HomeAssistant,
   limit?: number,
 ): TemplateResult | typeof nothing {
-  return isProtectionChange(item)
-    ? protectionDetails(item.details, hass)
-    : changeDetails(item.details, limit);
+  if (isProtectionChange(item)) {
+    return protectionDetails(item.details, hass);
+  }
+  if (item.kind === "files") {
+    return listDetails(item, limit);
+  }
+  if (item.kind === "app" && Array.isArray(item.details["apps"])) {
+    return listDetails(item, limit);
+  }
+  if (item.kind === "integration_health" || item.kind === "forwarding") {
+    return nothing;
+  }
+  return changeDetails(item.details, limit);
 }

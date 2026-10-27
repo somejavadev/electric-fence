@@ -10,12 +10,15 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.core import CALLBACK_TYPE, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from . import ElectricFenceConfigEntry
 from .attribution import auth_users
+from .const import SIGNAL_FORWARDING_UPDATED
 from .entity import REFRESH_INTERVAL, AsyncFenceEntity, FenceEntity
+from .forwarding.forwarder import forwarding_state
 from .models import ChangeKind, LoginAttempt, LoginResult, Record, SettingsChange
 from .posture import async_admins_without_mfa
 from .privacy import inline_text
@@ -24,6 +27,7 @@ from .storage import FAILED_OR_BLOCKED, FenceStore, LoginFilter
 _LOGGER = logging.getLogger(__name__)
 
 BANS_RECHECK = timedelta(minutes=1)
+FORWARDING_REFRESH = timedelta(minutes=1)
 _NAME_LIMIT = 64
 
 
@@ -332,3 +336,37 @@ class GeoipUpdatedSensor(FenceEntity, SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Re-read the status regularly; the updater has no signal."""
         self._track_interval(self.async_write_ha_state, REFRESH_INTERVAL)
+
+
+class ForwardingSensor(FenceEntity, SensorEntity):
+    """The state of the log forwarding to the SIEM."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["connected", "failing", "off"]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ElectricFenceConfigEntry) -> None:
+        """Initialise the sensor."""
+        super().__init__(entry, "forwarding")
+
+    @property
+    def native_value(self) -> str:
+        """Return connected, failing or off."""
+        return forwarding_state(self._entry.runtime_data.forwarder)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, int]:
+        """Return the queue and the counts."""
+        forwarder = self._entry.runtime_data.forwarder
+        if forwarder is None:
+            return {}
+        stats = forwarder.stats()
+        return {"queued": stats.queued, "dropped": stats.dropped, "sent": stats.sent}
+
+    async def async_added_to_hass(self) -> None:
+        """Follow the link state and the options; refresh the counts."""
+        self._listen_settings(self._write)
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, SIGNAL_FORWARDING_UPDATED, self._write)
+        )
+        self._track_interval(self.async_write_ha_state, FORWARDING_REFRESH)

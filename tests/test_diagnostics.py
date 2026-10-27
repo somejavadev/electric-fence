@@ -108,6 +108,7 @@ async def test_diagnostics_redacts_and_has_no_personal_data(
         "config_entries",
         "users",
         "core_config",
+        "apps",
     ]
     login = diag["collectors"][0]
     assert login == {"name": "login", "enabled": True, "reason": None, "errors": 0}
@@ -203,3 +204,23 @@ async def test_diagnostics_for_entry_not_loaded(
         "reason": entry.reason,
     }
     assert "requires Home Assistant 2026.11.0" in diag["reason"]
+
+
+async def test_diagnostics_hide_forwarding(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CA text is left out and the forward host is only set or empty."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    settings = Settings(forward_host="siem.example", forward_ca_pem="PEM-TEXT")
+    entry = MockConfigEntry(domain=DOMAIN, options=settings.to_options())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    assert "forward_ca_pem" not in diag["settings"]
+    assert diag["settings"]["forward_host"] == "set"
+    text = json.dumps(diag)
+    assert "siem.example" not in text
+    assert "PEM-TEXT" not in text

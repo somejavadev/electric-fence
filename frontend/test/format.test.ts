@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatDate,
   formatTime,
+  rangeBounds,
   reasonLabel,
   truncate,
 } from "../src/format.ts";
@@ -64,5 +65,18 @@ describe("formatDate", () => {
       "2026-10-01T00:00:00Z",
     );
     expect(formatDate("2026-13-45", fakeHass("UTC"))).toBe("2026-13-45");
+  });
+});
+
+describe("rangeBounds", () => {
+  it("swaps a custom range whose start is after its end", () => {
+    expect(rangeBounds("custom", "2026-10-03", "2026-10-01")).toEqual(
+      rangeBounds("custom", "2026-10-01", "2026-10-03"),
+    );
+  });
+  it("keeps a one-sided custom range as it is", () => {
+    const only = rangeBounds("custom", "2026-10-03", "");
+    expect(only.since).toBe(new Date(2026, 9, 3).toISOString());
+    expect(only.until).toBeUndefined();
   });
 });

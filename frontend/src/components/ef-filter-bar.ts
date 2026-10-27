@@ -1,23 +1,8 @@
 import { LitElement, css, html } from "lit";
 import { fireEvent } from "../fire-event.ts";
+import type { FilterChange, FilterField } from "./ef-filter-pane.ts";
 
-export interface FilterOption {
-  value: string;
-  label: string;
-}
-
-/** One labelled control. A checkbox's value is "1" when on, else "". */
-export interface FilterField {
-  name: string;
-  label: string;
-  type: "select" | "text" | "checkbox";
-  options?: FilterOption[];
-}
-
-export interface FilterChange {
-  name: string;
-  value: string;
-}
+export type { FilterChange, FilterField };
 
 /**
  * A row of labelled filter controls. Emits `filter-changed` with
