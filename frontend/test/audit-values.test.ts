@@ -505,6 +505,25 @@ describe("sentences for apps, files and forwarding", () => {
     );
   });
 
+  it("accepted files and a version change", () => {
+    expect(changeSentence(files("baseline_accepted", { files: 3 }))).toBe(
+      "accepted the installed files of Thing as the baseline",
+    );
+    expect(
+      changeSentence(
+        files("files_changed", {
+          changed: ["a.py"],
+          missing: [],
+          added: [],
+          unreadable: [],
+          version_before: "0.9.0",
+        }),
+      ),
+    ).toBe(
+      "files of Thing differ from the recorded copy after a version change from 0.9.0 (1 file)",
+    );
+  });
+
   it("lists changed files in the details", async () => {
     const el = await mountAudit(
       { changed: ["a.py"], missing: ["b.py"], added: [], unreadable: ["d.py"] },

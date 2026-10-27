@@ -85,6 +85,7 @@ const ACTIONS = [
   "files_match",
   "baseline_recorded",
   "baseline_renewed",
+  "baseline_accepted",
   "archived",
   "removed_from_store",
   "unmaintained",

@@ -21,6 +21,7 @@ from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..repairs import (
     INTEGRATION_ARCHIVED,
     INTEGRATION_FILES_CHANGED,
+    INTEGRATION_FILES_CHANGED_MANUAL,
     INTEGRATION_UNMAINTAINED,
     async_report_integration_issue,
     async_sync_integration_issues,
@@ -35,7 +36,7 @@ from .inventory import (
     _marketplace_repositories as marketplace_repositories,
     async_inventory,
 )
-from .reference import FileResult, verify
+from .reference import FileResult, accept_baseline, verify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -347,16 +348,25 @@ class IntegrityScheduler:
     def apply_repairs(self) -> None:
         """Raise the repairs of the current findings; remove the others."""
         settings = self.runtime.settings
-        wanted: dict[str, tuple[str, dict[str, str]]] = {}
+        wanted: dict[
+            str, tuple[str, dict[str, str], dict[str, str | int | float | None] | None]
+        ] = {}
         if settings.integration_repairs:
             months = str(settings.unmaintained_months)
             for status in self._results:
                 domain, name = status.domain, status.name
                 state = self._files.get(domain)
                 if settings.verify_files and state and _status_of(state) == "changed":
+                    # A manual install's baseline is Electric Fence's own: an
+                    # admin can accept new files. A Marketplace one is the
+                    # official copy, so there is nothing to accept.
+                    manual = state.get("source") == "manual"
                     wanted[f"{INTEGRATION_FILES_CHANGED}_{domain}"] = (
-                        INTEGRATION_FILES_CHANGED,
+                        INTEGRATION_FILES_CHANGED_MANUAL
+                        if manual
+                        else INTEGRATION_FILES_CHANGED,
                         {"name": _markdown_text(name), "files": _files_text(state)},
+                        {"domain": domain} if manual else None,
                     )
                 # Never one for `removed`: the Marketplace raises its own.
                 health = self._health.get(domain)
@@ -369,10 +379,49 @@ class IntegrityScheduler:
                 wanted[f"{key}_{domain}"] = (
                     key,
                     {"name": _markdown_text(name), "months": months},
+                    None,
                 )
         async_sync_integration_issues(self.hass, set(wanted))
-        for issue_id, (key, placeholders) in wanted.items():
-            async_report_integration_issue(self.hass, issue_id, key, placeholders)
+        for issue_id, (key, placeholders, data) in wanted.items():
+            async_report_integration_issue(self.hass, issue_id, key, placeholders, data)
+
+    async def async_accept_files(
+        self, domain: str, user_id: str | None, user_name: str | None
+    ) -> bool:
+        """Accept the installed files of a manual install as its baseline.
+
+        Records who did it and rechecks soon. False when the integration is
+        gone, is a Marketplace install, or the files can't be read.
+        """
+        items = await async_inventory(self.hass)
+        item = next((i for i in items if i.domain == domain), None)
+        if item is None or item.source != "manual":
+            return False
+        try:
+            count = await accept_baseline(self.hass, self.runtime, item)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Electric Fence could not accept the files of %s: %s",
+                domain,
+                type(err).__name__,
+            )
+            return False
+        name = await _async_name(self.hass, domain)
+        self._record(
+            ChangeKind.FILES,
+            ChangeAction.BASELINE_ACCEPTED,
+            domain,
+            name,
+            {"files": count, "version": item.version},
+            dt_util.utcnow(),
+            actor_user_id=user_id,
+            actor_name=user_name,
+        )
+        # Until the recheck, the old finding must not raise the repair again.
+        self._files.pop(domain, None)
+        self.apply_repairs()
+        self._schedule_rescan()
+        return True
 
     async def _async_run(self) -> list[IntegrationStatus]:
         try:
@@ -590,6 +639,8 @@ class IntegrityScheduler:
         elif status == "baseline_renewed":
             action = ChangeAction.BASELINE_RENEWED
             details["version_before"] = result.version_before
+        if action is ChangeAction.FILES_CHANGED and result.version_before is not None:
+            details["version_before"] = result.version_before
         if action is not None:
             self._record(ChangeKind.FILES, action, item.domain, name, details, now)
         if state != prev:
@@ -643,6 +694,9 @@ class IntegrityScheduler:
         name: str,
         details: dict[str, Any],
         at: datetime,
+        *,
+        actor_user_id: str | None = None,
+        actor_name: str | None = None,
     ) -> None:
         self.runtime.worker.submit(
             SettingsChange(
@@ -652,8 +706,8 @@ class IntegrityScheduler:
                 target_id=domain,
                 target_name=name,
                 details=details,
-                actor_user_id=None,
-                actor_name=None,
+                actor_user_id=actor_user_id,
+                actor_name=actor_name,
                 actor_ip=None,
             )
         )

@@ -1,7 +1,15 @@
-"""Repair issues raised by Electric Fence."""
+"""Repair issues raised by Electric Fence, and the fix flow some of them have."""
 
+from typing import Any
+
+import probatio
+
+from homeassistant.auth.models import User
+from homeassistant.components.http.const import KEY_HASS_USER
+from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.http import current_request
 
 from .const import DOMAIN
 
@@ -73,7 +81,30 @@ def async_clear_ip_ban_disabled(hass: HomeAssistant) -> None:
     ir.async_delete_issue(hass, DOMAIN, IP_BAN_DISABLED)
 
 
+STORAGE_LIMIT = "storage_limit_reached"
+
+
+def async_report_storage_limit(hass: HomeAssistant, limit_mb: int) -> None:
+    """Raise a repair issue: old failed logins were removed to stay under the limit."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        STORAGE_LIMIT,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=STORAGE_LIMIT,
+        translation_placeholders={"limit": str(limit_mb)},
+    )
+
+
+def async_clear_storage_limit(hass: HomeAssistant) -> None:
+    """Remove the repair issue for the database size limit."""
+    ir.async_delete_issue(hass, DOMAIN, STORAGE_LIMIT)
+
+
 INTEGRATION_FILES_CHANGED = "integration_files_changed"
+# The same issue for a manual install, with a step to accept the files.
+INTEGRATION_FILES_CHANGED_MANUAL = "integration_files_changed_manual"
 INTEGRATION_ARCHIVED = "integration_archived"
 INTEGRATION_UNMAINTAINED = "integration_unmaintained"
 _INTEGRATION_PREFIXES = tuple(
@@ -87,17 +118,25 @@ _INTEGRATION_PREFIXES = tuple(
 
 
 def async_report_integration_issue(
-    hass: HomeAssistant, issue_id: str, key: str, placeholders: dict[str, str]
+    hass: HomeAssistant,
+    issue_id: str,
+    key: str,
+    placeholders: dict[str, str],
+    data: dict[str, str | int | float | None] | None = None,
 ) -> None:
-    """Raise (or update) a repair issue about one custom integration."""
+    """Raise (or update) a repair issue about one custom integration.
+
+    With `data` the issue is fixable: its fix flow gets the data.
+    """
     ir.async_create_issue(
         hass,
         DOMAIN,
         issue_id,
-        is_fixable=False,
+        is_fixable=data is not None,
         severity=ir.IssueSeverity.WARNING,
         translation_key=key,
         translation_placeholders=placeholders,
+        data=data,
     )
 
 
@@ -110,3 +149,59 @@ def async_sync_integration_issues(hass: HomeAssistant, keep: set[str]) -> None:
             and issue_id not in keep
         ):
             ir.async_delete_issue(hass, DOMAIN, issue_id)
+
+
+class AcceptFilesFlow(RepairsFlow):
+    """Accept the installed files of a manual install as its new baseline."""
+
+    def __init__(self, domain: str) -> None:
+        """Initialise for one integration."""
+        self._domain = domain
+
+    async def async_step_init(
+        self, user_input: dict[str, str] | None = None
+    ) -> RepairsFlowResult:
+        """Go to the confirmation."""
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(
+        self, user_input: dict[str, str] | None = None
+    ) -> RepairsFlowResult:
+        """Ask, then accept the files in the name of the admin who confirmed."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="confirm",
+                data_schema=probatio.Schema({}),
+                description_placeholders=self._placeholders(),
+            )
+        entries = self.hass.config_entries.async_loaded_entries(DOMAIN)
+        scheduler = entries[0].runtime_data.integrity if entries else None
+        user = _request_user()
+        if scheduler is None or not await scheduler.async_accept_files(
+            self._domain,
+            user.id if user else None,
+            user.name if user else None,
+        ):
+            return self.async_abort(
+                reason="accept_failed", description_placeholders=self._placeholders()
+            )
+        return self.async_create_entry(data={})
+
+    def _placeholders(self) -> dict[str, str] | None:
+        issue = ir.async_get(self.hass).async_get_issue(DOMAIN, self.issue_id)
+        return dict(issue.translation_placeholders or {}) if issue else None
+
+
+def _request_user() -> User | None:
+    """Return the user of the HTTP request running the flow (an admin)."""
+    request = current_request.get()
+    user = request.get(KEY_HASS_USER) if request is not None else None
+    return user if isinstance(user, User) else None
+
+
+async def async_create_fix_flow(
+    hass: HomeAssistant, issue_id: str, data: dict[str, Any] | None
+) -> RepairsFlow:
+    """Return the fix flow of a fixable issue (only the manual files one)."""
+    domain = data.get("domain") if data else None
+    return AcceptFilesFlow(domain if isinstance(domain, str) else "")

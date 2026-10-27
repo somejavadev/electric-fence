@@ -79,6 +79,7 @@ export const status = (attribution: string | null = null): Status => ({
     notify_failed_login: true,
     ha_login_notification: "replace",
     retention_days: 90,
+    max_db_mb: 200,
     geoip_provider: "dbip_lite",
     maxmind_account_id: null,
     reverse_dns: false,

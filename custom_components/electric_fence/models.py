@@ -117,6 +117,8 @@ class ChangeAction(StrEnum):
     FILES_MATCH = "files_match"
     BASELINE_RECORDED = "baseline_recorded"
     BASELINE_RENEWED = "baseline_renewed"
+    # An admin accepted the installed files of a manual install from its repair.
+    BASELINE_ACCEPTED = "baseline_accepted"
     ARCHIVED = "archived"
     REMOVED_FROM_STORE = "removed_from_store"
     UNMAINTAINED = "unmaintained"

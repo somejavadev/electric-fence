@@ -853,3 +853,92 @@ def test_signals_are_cores_own() -> None:
     assert scheduler.INSTALL_PROGRESS_SIGNAL == (
         MarketplaceSignal.REPOSITORY_INSTALL_PROGRESS
     )
+
+
+def _manual_changed(version_before: str | None = "0.9.0") -> FileResult:
+    return replace(
+        files("changed", changed=["a.py"]),
+        source="manual",
+        version_before=version_before,
+    )
+
+
+async def test_manual_changed_repair_can_be_accepted(
+    hass: HomeAssistant, fake: Fake, setup_entry: MockConfigEntry
+) -> None:
+    """A changed manual install raises a fixable repair; the version is recorded."""
+    fake.items = [make_item(source="manual", repository=None)]
+    fake.files["demo"] = _manual_changed()
+    await integrity(setup_entry).scan()
+    await flush_worker(hass)
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "integration_files_changed_demo")
+    assert issue is not None
+    assert issue.is_fixable is True
+    assert issue.translation_key == "integration_files_changed_manual"
+    assert issue.data == {"domain": "demo"}
+    [row] = file_rows(hass)
+    assert row.action == ChangeAction.FILES_CHANGED
+    assert row.details["version_before"] == "0.9.0"
+
+
+async def test_marketplace_changed_repair_not_fixable(
+    hass: HomeAssistant, fake: Fake, setup_entry: MockConfigEntry
+) -> None:
+    """Marketplace files are compared with the official copy: nothing to accept."""
+    fake.files["demo"] = files("changed", changed=["a.py"])
+    await integrity(setup_entry).scan()
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "integration_files_changed_demo")
+    assert issue is not None
+    assert issue.is_fixable is False
+    assert issue.translation_key == "integration_files_changed"
+
+
+async def test_accept_files(
+    hass: HomeAssistant,
+    fake: Fake,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accepting records the baseline, who did it, and rechecks."""
+    accept = AsyncMock(return_value=3)
+    monkeypatch.setattr(scheduler, "accept_baseline", accept)
+    fake.items = [make_item(source="manual", repository=None, version="1.0.0")]
+    fake.files["demo"] = _manual_changed()
+    sched = integrity(setup_entry)
+    await sched.scan()
+
+    assert await sched.async_accept_files("demo", "user-1", "Anna") is True
+    await flush_worker(hass)
+
+    accept.assert_awaited_once()
+    assert accept.await_args is not None
+    assert accept.await_args.args[2].domain == "demo"
+    assert our_issues(hass) == set()
+    rows = file_rows(hass)
+    assert [r.action for r in rows] == [
+        ChangeAction.FILES_CHANGED,
+        ChangeAction.BASELINE_ACCEPTED,
+    ]
+    accepted = rows[1]
+    assert (accepted.actor_user_id, accepted.actor_name) == ("user-1", "Anna")
+    assert accepted.details == {"files": 3, "version": "1.0.0"}
+    assert sched._pending is not None  # noqa: SLF001
+
+
+async def test_accept_files_refused(
+    hass: HomeAssistant,
+    fake: Fake,
+    setup_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a manual install that is still there can be accepted."""
+    accept = AsyncMock(return_value=1)
+    monkeypatch.setattr(scheduler, "accept_baseline", accept)
+    sched = integrity(setup_entry)
+    assert await sched.async_accept_files("demo", None, None) is False
+    assert await sched.async_accept_files("gone", None, None) is False
+    accept.side_effect = OSError
+    fake.items = [make_item(source="manual", repository=None)]
+    assert await sched.async_accept_files("demo", None, None) is False
+    accept.assert_awaited_once()

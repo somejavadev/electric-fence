@@ -230,8 +230,11 @@ author published, which may mean someone altered the code.
 - **Unverified** means Electric Fence has no official copy to compare with,
   because the integration was copied by hand. The first time it sees one, it
   records a local baseline (file hashes), and flags any file that changes
-  afterwards. When the integration's `manifest.json` version changes, the
-  baseline is renewed and the audit log says so.
+  afterwards. A new version in `manifest.json` doesn't renew the baseline by
+  itself, since whoever can change the files can change the version too. The
+  files are flagged as changed until an admin accepts them: open the repair
+  **Files of … were changed** and select **Submit**. The audit log records who
+  accepted them.
 - **Couldn't check** means the official copy wasn't reachable: no release
   asset, a 404, an archive over the size limit, a timeout, an install at a
   commit, or the Marketplace not being set up. It is retried on the next daily

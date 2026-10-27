@@ -43,6 +43,7 @@ them; nothing else refers to them.
 | 100510 | 10    | A custom integration removed from the Marketplace.   |
 | 100511 | 6     | A custom integration's repository archived.          |
 | 100512 | 3     | Forwarding recovered after an outage.                |
+| 100513 | 10    | Changed integration files accepted by an admin.      |
 
 The first matching rule wins, so the specific rules are listed first in the
 file and the generic user and outside rules (100505, 100506) come last. Keep

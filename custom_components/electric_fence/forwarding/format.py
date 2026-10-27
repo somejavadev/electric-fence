@@ -30,6 +30,7 @@ _WARNING_ACTIONS = frozenset(
     {
         ChangeAction.BANNED,
         ChangeAction.FILES_CHANGED,
+        ChangeAction.BASELINE_ACCEPTED,
         ChangeAction.REMOVED_FROM_STORE,
         ChangeAction.ARCHIVED,
         ChangeAction.FORWARDING_FAILED,

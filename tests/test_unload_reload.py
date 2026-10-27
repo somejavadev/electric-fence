@@ -172,7 +172,8 @@ async def test_unload_removes_panel_sensor_listeners(
     assert worker._listeners  # noqa: SLF001
     assert _listener_counts(hass) != before
     assert timers == {
-        "async_track_time_interval": [False],
+        # The daily purge and the 10-minute size check.
+        "async_track_time_interval": [False, False],
         "async_call_later": [False],
     }
 
@@ -184,7 +185,7 @@ async def test_unload_removes_panel_sensor_listeners(
     assert not worker._listeners  # noqa: SLF001
     assert _listener_counts(hass) == before
     assert timers == {
-        "async_track_time_interval": [True],
+        "async_track_time_interval": [True, True],
         "async_call_later": [True],
     }
 

@@ -53,7 +53,9 @@ from .repairs import (
     async_clear_disabled_collector,
     async_clear_ip_ban_disabled,
     async_clear_schema_too_new,
+    async_clear_storage_limit,
     async_report_schema_too_new,
+    async_report_storage_limit,
     async_sync_integration_issues,
 )
 from .runtime import Runtime
@@ -77,6 +79,12 @@ DB_FILENAME = "electric_fence.db"
 DATA_DIRNAME = "electric_fence"
 PURGE_INTERVAL = timedelta(hours=24)
 FIRST_PURGE_DELAY = timedelta(minutes=5)
+# The database size is checked this often; a flood of failed logins must not
+# fill the disk between daily purges.
+SIZE_CHECK_INTERVAL = timedelta(minutes=10)
+MB_BYTES = 1024 * 1024
+# The size repair goes away once the database is under this share of its limit.
+_SIZE_CLEAR_FRACTION = 0.8
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 # Each collector task appends its class here.
@@ -285,6 +293,19 @@ async def async_setup_entry(
         )
     )
 
+    async def _async_enforce_size(_now: datetime | None = None) -> None:
+        await async_enforce_size(hass, runtime)
+
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            _async_enforce_size,
+            SIZE_CHECK_INTERVAL,
+            name="electric_fence size check",
+            cancel_on_shutdown=True,
+        )
+    )
+
     # Applies option changes live; it never reloads, so the hooks stay put.
     entry.async_on_unload(entry.add_update_listener(async_apply_settings))
 
@@ -295,6 +316,33 @@ async def async_setup_entry(
 
     # Last, so nothing that can fail runs after the platform is forwarded.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+
+async def async_enforce_size(hass: HomeAssistant, runtime: Runtime) -> None:
+    """Keep the database under its size limit; never raises.
+
+    The oldest failed logins are deleted first, and a repair issue says so.
+    It goes away once the database is well under the limit again.
+    """
+    limit_mb = runtime.settings.max_db_mb
+    limit = limit_mb * MB_BYTES
+    store = runtime.store
+    try:
+        deleted = await hass.async_add_executor_job(store.trim_failed, limit)
+        used = await hass.async_add_executor_job(store.used_bytes)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Electric Fence size check failed: %s", type(err).__name__)
+        return
+    if deleted:
+        _LOGGER.warning(
+            "Electric Fence database reached its %d MB limit; removed the %d "
+            "oldest failed logins",
+            limit_mb,
+            deleted,
+        )
+        async_report_storage_limit(hass, limit_mb)
+    elif used < limit * _SIZE_CLEAR_FRACTION:
+        async_clear_storage_limit(hass)
 
 
 async def async_purge(hass: HomeAssistant, runtime: Runtime) -> None:
@@ -452,6 +500,8 @@ async def async_apply_settings(
                 "Electric Fence could not update integration repairs: %s",
                 type(err).__name__,
             )
+    if settings.max_db_mb < old.max_db_mb:
+        await async_enforce_size(hass, runtime)
     if settings.retention_days < old.retention_days:
         try:
             await async_purge(hass, runtime)
