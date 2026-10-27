@@ -1,6 +1,13 @@
-import { truncate } from "./format.ts";
-import type { BanItem, ChangeItem, PostureItem } from "./types.ts";
+import { monthsSince, truncate } from "./format.ts";
+import type {
+  BanItem,
+  ChangeItem,
+  IntegrationItem,
+  PostureItem,
+} from "./types.ts";
 import { showIp } from "./mask.ts";
+
+const OUTSIDE_ACTOR = "outside";
 
 /** Limit a value the server or a user supplied before it joins a sentence. */
 const cut = (text: string): string => truncate(text, 64).short;
@@ -16,12 +23,76 @@ export const strings = {
     changes: "Settings changes · 7d",
     success: "Recent successful logins",
     posture: "Posture",
+    integrations: "Custom integrations",
   },
   empty: {
     failed: "No failed logins in the last 24 hours",
     changes: "No settings changes in the last 7 days",
     success: "No successful logins recorded yet",
     posture: "No checks to show",
+  },
+  outside: "Outside Home Assistant",
+  integrations: {
+    checkNow: "Check now",
+    started: "Started",
+    recent: "A check is already running or ran in the last 5 minutes",
+    scanError: "Could not start the check. Try again.",
+    empty: "No custom integrations",
+    unavailable: "Integration checks unavailable",
+    open: "Show details",
+    close: "Close",
+    scannedAt: (when: string): string => `Last check ${when}`,
+    sources: { marketplace: "Marketplace", unverified: "Unverified" } as Record<
+      string,
+      string
+    >,
+    version: (v: string): string => `Version ${v}`,
+    files: {
+      match: "Files match",
+      changed: "Files changed",
+      unchecked: "Couldn't check",
+      baseline_recorded: "Baseline recorded",
+      baseline_renewed: "Baseline renewed",
+      off: "Checks off",
+    } as Record<string, string>,
+    health: {
+      ok: "Up to date",
+      archived: "Archived",
+      removed: "Removed from the Marketplace",
+      unknown: "Source unknown",
+    } as Record<string, string>,
+    unmaintained: (months: number | null): string =>
+      months === null
+        ? "Not updated recently"
+        : `Not updated for ${months} ${months === 1 ? "month" : "months"}`,
+    headings: {
+      changed: "Changed files",
+      missing: "Missing files",
+      added: "Added files",
+      unreadable: "Unreadable files",
+      symlinks: "Symbolic links",
+    },
+    noFiles: "No file differences",
+    repository: "Repository",
+    ref: "Compared with",
+    status: "Files",
+    healthLabel: "Health",
+    why: "Why it couldn't be checked",
+    healthReason: "Reason",
+    lastUpdated: "Last updated",
+    truncated: "The lists are shortened.",
+    /** Why a check could not run; others show as-is. */
+    reasons: {
+      no_reference: "No official copy to compare with",
+      too_large: "The official copy is over the 25 MB limit",
+      unreachable: "The official copy could not be downloaded",
+      not_found: "The official copy was not found",
+      bad_archive: "The official copy could not be read",
+      rate_limited: "GitHub is limiting requests right now",
+      contract_failed: "The Marketplace integration is not compatible",
+      check_failed: "The check failed",
+      install_in_progress: "An install or update is in progress",
+    } as Record<string, string>,
   },
   loading: "Loading…",
   loadError: "Could not load this information from Home Assistant.",
@@ -63,7 +134,13 @@ export const strings = {
       legacy_api_password: "API password",
     } as Record<string, string>,
   },
-  level: { ok: "OK", warning: "Warning", error: "Problem" },
+  level: {
+    ok: "OK",
+    info: "Info",
+    warning: "Warning",
+    error: "Problem",
+    critical: "Critical",
+  },
   filters: {
     result: "Result",
     anyResult: "Any result",
@@ -79,6 +156,17 @@ export const strings = {
     ip: "IP address",
     country: "Country code",
     range: "Time range",
+    search: "Search",
+    searchPlaceholder: "Search",
+    filters: "Filters",
+    clear: "Clear",
+    on: "On",
+    off: "Off",
+    done: "Done",
+    any: "Any",
+    from: "From",
+    to: "To",
+    customRange: "Custom range",
     kind: "Kind",
     anyKind: "Any kind",
     kinds: {
@@ -93,6 +181,52 @@ export const strings = {
       recorder: "Recorder",
       ip_ban: "IP bans",
       login_protection: "Login protection",
+      app: "Apps",
+      files: "Integration files",
+      integration_health: "Integration health",
+      forwarding: "Log forwarding",
+    },
+    anyAction: "Any action",
+    action: "Action",
+    actions: {
+      added: "Added",
+      removed: "Removed",
+      updated: "Updated",
+      reconfigured: "Reconfigured",
+      options_changed: "Options changed",
+      enabled: "Enabled",
+      disabled: "Disabled",
+      password_changed: "Password changed",
+      restore_requested: "Restore requested",
+      confirmed: "Confirmed",
+      purged: "Purged",
+      withdrawn: "Withdrawn",
+      banned: "Banned",
+      unbanned: "Unbanned",
+      expired: "Expired",
+      attack_started: "Attack started",
+      attack_ended: "Attack ended",
+      slowdown_ended: "Slowdown ended",
+      countries_cleared: "Countries cleared",
+      installed: "Installed",
+      uninstalled: "Uninstalled",
+      started: "Started",
+      stopped: "Stopped",
+      restarted: "Restarted",
+      rebuilt: "Rebuilt",
+      settings_changed: "Settings changed",
+      repository_added: "Repository added",
+      repository_removed: "Repository removed",
+      files_changed: "Files changed",
+      files_match: "Files match",
+      baseline_recorded: "Baseline recorded",
+      baseline_renewed: "Baseline renewed",
+      archived: "Archived",
+      removed_from_store: "Removed from store",
+      unmaintained: "Unmaintained",
+      recovered: "Recovered",
+      forwarding_failed: "Forwarding failed",
+      forwarding_recovered: "Forwarding recovered",
     },
     actor: "Actor",
     anyActor: "Anyone",
@@ -123,6 +257,13 @@ export const strings = {
     settingNames: { location_name: "Home name" } as Record<string, string>,
     hiddenValue: "changed (hidden)",
     noValue: "—",
+    apps: "Apps",
+    fileLists: {
+      changed: "Changed files",
+      missing: "Missing files",
+      added: "Added files",
+      unreadable: "Unreadable files",
+    },
     /** Detail lines of ban and login protection changes. */
     protection: {
       failures: "Failed attempts",
@@ -141,6 +282,15 @@ export const strings = {
     },
   },
   loadMore: "Load more",
+  download: {
+    menu: "More actions",
+    csv: "Download data (CSV)",
+    json: "Download data (JSON)",
+    preparing: (n: number): string => `Preparing… ${n} rows`,
+    failed: "Could not prepare the download. Nothing was saved.",
+    truncated: (n: number): string =>
+      `The download holds the newest ${n} rows only.`,
+  },
   users: {
     heading: "Users",
     empty: "No users to show",
@@ -263,6 +413,20 @@ export const strings = {
     queued: "Queued",
     dropped: "Dropped",
     storageErrors: "Storage errors",
+    apps: "Apps",
+    appAuditing: "App auditing",
+    appsNotAvailable: "Not available on this install type",
+    appsDisabled:
+      "App auditing is turned off because Home Assistant changed (see Repairs)",
+    forwarding: "Log forwarding",
+    forwardingState: "Forwarding",
+    forwardingStates: { connected: "Connected", failing: "Failing" } as Record<
+      string,
+      string
+    >,
+    integrationChecks: "Integration checks",
+    fileChecks: "File checks",
+    repairs: "Repairs",
     open: "Open settings",
     openHint:
       "Options are changed in Home Assistant's integration settings, not here.",
@@ -406,11 +570,163 @@ function protectionSentence(item: ChangeItem): string | undefined {
   return undefined;
 }
 
+/** A System change: no user, and not made outside Home Assistant. */
+export function isSystemChange(
+  item: Pick<ChangeItem, "actor_user_id" | "actor_name">,
+): boolean {
+  return item.actor_user_id === null && item.actor_name !== OUTSIDE_ACTOR;
+}
+
+/** Who made a change: a user, System, or a change made outside Home Assistant. */
+export function actorLabel(
+  item: Pick<ChangeItem, "actor_user_id" | "actor_name">,
+): string {
+  if (item.actor_user_id === null && item.actor_name === OUTSIDE_ACTOR) {
+    return strings.outside;
+  }
+  return item.actor_name ?? strings.system;
+}
+
+const text = (value: unknown): string | undefined =>
+  typeof value === "string" && value !== "" ? value : undefined;
+
+/** "version 6.5 → 6.6" when both are known. */
+function versions(details: Record<string, unknown>): string {
+  const before = text(details["version_before"]);
+  const after = text(details["version_after"]);
+  return before !== undefined && after !== undefined
+    ? ` (version ${cut(before)} → ${cut(after)})`
+    : "";
+}
+
+function appSentence(item: ChangeItem): string {
+  const d = item.details;
+  const apps = d["apps"];
+  const fallback = Array.isArray(apps) ? `${apps.length} apps` : "unknown app";
+  const name = cut(item.target_name ?? item.target_id ?? fallback);
+  const background = d["background"] === true;
+  switch (item.action) {
+    case "installed":
+      return background
+        ? `started installing ${name}`
+        : `installed app ${name}`;
+    case "uninstalled":
+      return `uninstalled app ${name}`;
+    case "updated":
+      return background
+        ? `started updating ${name}`
+        : `updated ${name}${versions(d)}`;
+    case "started":
+    case "stopped":
+    case "restarted":
+    case "rebuilt":
+      return `${item.action} ${name}`;
+    case "options_changed":
+      return d["outside"] === true
+        ? `changed options of ${name} (values not recorded)`
+        : `changed options of ${name}`;
+    case "settings_changed":
+      return `changed settings of ${name}`;
+    case "repository_added":
+      return item.target_id === null
+        ? "added an app repository"
+        : `added app repository ${cut(item.target_id)}`;
+    case "repository_removed":
+      return item.target_id === null
+        ? "removed an app repository"
+        : `removed app repository ${cut(item.target_id)}`;
+    default:
+      return `changed ${name}`;
+  }
+}
+
+function listLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function filesSentence(item: ChangeItem): string {
+  const name = cut(item.target_name ?? item.target_id ?? "unknown");
+  switch (item.action) {
+    case "files_changed": {
+      const d = item.details;
+      const n =
+        listLength(d["changed"]) +
+        listLength(d["missing"]) +
+        listLength(d["added"]) +
+        listLength(d["unreadable"]);
+      return n === 0
+        ? `files of ${name} differ from the official copy`
+        : `files of ${name} differ from the official copy (${n} ${n === 1 ? "file" : "files"})`;
+    }
+    case "files_match":
+      return `files of ${name} match the official copy`;
+    case "baseline_recorded":
+      return `recorded the files of ${name} as the baseline`;
+    case "baseline_renewed":
+      return `renewed the file baseline of ${name} after an update`;
+    default:
+      return `changed the file check of ${name}`;
+  }
+}
+
+function healthSentence(item: ChangeItem): string {
+  const name = cut(item.target_name ?? item.target_id ?? "unknown");
+  switch (item.action) {
+    case "removed_from_store":
+      return `${name} was removed from the Marketplace`;
+    case "archived":
+      return `the repository of ${name} was archived`;
+    case "unmaintained": {
+      const months = item.details["months"];
+      return typeof months === "number"
+        ? `${name} has not been updated for ${months} ${months === 1 ? "month" : "months"}`
+        : `${name} has not been updated for a while`;
+    }
+    case "recovered":
+      return `${name} is healthy again`;
+    default:
+      return `changed the health of ${name}`;
+  }
+}
+
+function forwardingSentence(item: ChangeItem): string {
+  if (item.action === "forwarding_failed") {
+    const error = text(item.details["error"]);
+    return error === undefined
+      ? "forwarding to the log server failed"
+      : `forwarding to the log server failed (${cut(error)})`;
+  }
+  if (item.action === "forwarding_recovered") {
+    return "forwarding to the log server recovered";
+  }
+  return "changed log forwarding";
+}
+
+/** Sentence for an app, file check, health or forwarding change. */
+function auditSentence(item: ChangeItem): string | undefined {
+  switch (item.kind) {
+    case "app":
+      return appSentence(item);
+    case "files":
+      return filesSentence(item);
+    case "integration_health":
+      return healthSentence(item);
+    case "forwarding":
+      return forwardingSentence(item);
+    default:
+      return undefined;
+  }
+}
+
 /** Sentence for a settings change, such as "added integration Tuya". */
 export function changeSentence(item: ChangeItem): string {
   const protection = protectionSentence(item);
   if (protection !== undefined) {
     return protection;
+  }
+  const audit = auditSentence(item);
+  if (audit !== undefined) {
+    return audit;
   }
   const fixed = systemSentence(item);
   if (fixed !== undefined) {
@@ -450,6 +766,11 @@ export function changeSentence(item: ChangeItem): string {
       return `changed ${subject}`;
   }
 }
+
+const plural = (n: number): string =>
+  `${n} custom ${n === 1 ? "integration" : "integrations"}`;
+
+const domains = (list: string[]): string => list.map(cut).join(", ");
 
 /** Friendly sentence for one posture check. */
 export function postureText(item: PostureItem): string {
@@ -521,8 +842,79 @@ export function postureText(item: PostureItem): string {
       const { storage_errors, last_error } = item.params;
       return `Electric Fence could not save ${storage_errors} ${storage_errors === 1 ? "record" : "records"}.${last_error === null ? "" : ` Last error: ${cut(last_error)}`}`;
     }
+    case "forwarding_failing": {
+      const p = item.params;
+      if (item.level === "ok" || !("queued" in p)) {
+        return "Forwarding logs to your log server is working.";
+      }
+      const dropped =
+        p.dropped > 0
+          ? ` and ${p.dropped} ${p.dropped === 1 ? "was" : "were"} dropped`
+          : "";
+      const why = p.last_error === null ? "" : ` (${cut(p.last_error)})`;
+      return `Forwarding logs to your log server is failing${why}. ${p.queued} ${p.queued === 1 ? "event is" : "events are"} waiting${dropped}.`;
+    }
+    case "integration_files_changed": {
+      const list =
+        "integrations" in item.params ? item.params.integrations : [];
+      return list.length === 0
+        ? "Custom integration files match their official copies."
+        : `${plural(list.length)} differ${list.length === 1 ? "s" : ""} from their official copy: ${domains(list)}.`;
+    }
+    case "integration_health": {
+      const { removed, archived, unmaintained } =
+        "removed" in item.params
+          ? item.params
+          : { removed: [], archived: [], unmaintained: [] };
+      const parts: string[] = [];
+      if (removed.length > 0) {
+        parts.push(
+          `${plural(removed.length)} ${removed.length === 1 ? "was" : "were"} removed from the Marketplace: ${domains(removed)}.`,
+        );
+      }
+      if (archived.length > 0) {
+        parts.push(
+          `${archived.length} ${archived.length === 1 ? "is" : "are"} archived: ${domains(archived)}.`,
+        );
+      }
+      if (unmaintained.length > 0) {
+        parts.push(
+          `${unmaintained.length} ${unmaintained.length === 1 ? "has" : "have"} not been updated for a while: ${domains(unmaintained)}.`,
+        );
+      }
+      return parts.length === 0
+        ? "Custom integrations are maintained."
+        : parts.join(" ");
+    }
+    case "integration_checks_unchecked": {
+      const list =
+        "integrations" in item.params ? item.params.integrations : [];
+      return list.length === 0
+        ? "Every custom integration could be checked."
+        : `${plural(list.length)} could not be checked: ${domains(list)}.`;
+    }
     default:
       // An id from a newer integration: say so rather than guess.
       return "This check is not known to this version of the panel.";
   }
+}
+
+/** The health of an integration in a few words. */
+export function integrationHealth(item: IntegrationItem): string {
+  const t = strings.integrations;
+  const h = item.health;
+  if (h.status === "unmaintained") {
+    return t.unmaintained(monthsSince(h.last_updated));
+  }
+  return Object.hasOwn(t.health, h.status)
+    ? (t.health[h.status] ?? "")
+    : h.status;
+}
+
+/** The file check of an integration in a few words. */
+export function integrationFiles(item: IntegrationItem): string {
+  const t = strings.integrations;
+  return item.files === null
+    ? (t.files["off"] ?? "")
+    : (t.files[item.files.status] ?? item.files.status);
 }

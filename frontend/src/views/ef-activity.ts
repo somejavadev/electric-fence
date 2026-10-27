@@ -1,10 +1,24 @@
 import { html, nothing } from "lit";
+import { activityCsv } from "../export.ts";
+import type { ExportFormat } from "../export.ts";
 import { fetchLogins, fetchUsers } from "../api.ts";
-import "../components/ef-filter-bar.ts";
-import type { FilterChange, FilterField } from "../components/ef-filter-bar.ts";
+import { NarrowController } from "../components/ef-filter-pane.ts";
+import "../components/ef-filter-pane.ts";
+import type {
+  FilterChange,
+  FilterField,
+} from "../components/ef-filter-pane.ts";
 import "../components/ef-login-row.ts";
-import { TIME_RANGES, sinceFor, truncate } from "../format.ts";
-import type { TimeRange } from "../format.ts";
+import {
+  TIME_RANGES,
+  asciiLower,
+  containsText,
+  isDayOrEmpty,
+  rangeBounds,
+  truncate,
+  withinBounds,
+} from "../format.ts";
+import type { RangeChoice, TimeRange } from "../format.ts";
 import { strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type {
@@ -31,14 +45,19 @@ export interface ActivityFilters {
   username: string;
   ip: string;
   country: string;
-  range: TimeRange;
+  range: RangeChoice;
+  /** `YYYY-MM-DD` days, used only when the range is custom. */
+  from: string;
+  to: string;
+  search: string;
 }
 
-/** SQLite LIKE folds ASCII letters only; so does this. */
-const asciiLower = (text: string): string =>
-  text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+const CUSTOM = { field: "range", equals: "custom" } as const;
 
 const clean = (value: string | null): string => (value ?? "").trim();
+
+const day = (value: string | null): string =>
+  isDayOrEmpty(clean(value)) ? clean(value) : "";
 
 /** Filters from a query string such as `?result=failed`. Bad values drop. */
 export function filtersFromQuery(search: string): ActivityFilters {
@@ -51,20 +70,40 @@ export function filtersFromQuery(search: string): ActivityFilters {
     username: clean(q.get("username")),
     ip: clean(q.get("ip")),
     country: clean(q.get("country")).toUpperCase(),
-    range: TIME_RANGES.find((r) => r === range) ?? DEFAULT_RANGE,
+    range:
+      range === "custom"
+        ? "custom"
+        : (TIME_RANGES.find((r) => r === range) ?? DEFAULT_RANGE),
+    from: day(q.get("from")),
+    to: day(q.get("to")),
+    search: clean(q.get("search")),
   };
 }
 
 /** The query string for filters; defaults are left out. */
 export function queryFromFilters(filters: ActivityFilters): string {
   const q = new URLSearchParams();
-  for (const key of ["result", "user", "username", "ip", "country"] as const) {
+  for (const key of [
+    "result",
+    "user",
+    "username",
+    "ip",
+    "country",
+    "search",
+  ] as const) {
     if (filters[key] !== "") {
       q.set(key, filters[key]);
     }
   }
   if (filters.range !== DEFAULT_RANGE) {
     q.set("range", filters.range);
+  }
+  if (filters.range === "custom") {
+    for (const key of ["from", "to"] as const) {
+      if (filters[key] !== "") {
+        q.set(key, filters[key]);
+      }
+    }
   }
   return q.toString();
 }
@@ -90,11 +129,13 @@ export function loginFilter(
   if (filters.country !== "") {
     out.country = filters.country;
   }
-  const since = sinceFor(filters.range, now);
-  if (since !== undefined) {
-    out.since = since;
+  if (filters.search !== "") {
+    out.search = filters.search;
   }
-  return out;
+  return {
+    ...out,
+    ...rangeBounds(filters.range, filters.from, filters.to, now),
+  };
 }
 
 /** Whether a pushed login belongs under the active filters (as the server filters). */
@@ -128,8 +169,25 @@ export function matchesLogin(
   if (filters.country !== "" && item.country_code !== filters.country) {
     return false;
   }
-  const since = sinceFor(filters.range, now);
-  return since === undefined || Date.parse(item.ts) >= Date.parse(since);
+  if (
+    !containsText(
+      [
+        item.username_typed,
+        item.ip,
+        item.hostname,
+        item.client_name,
+        item.client_id,
+        item.user_agent,
+      ],
+      filters.search,
+    )
+  ) {
+    return false;
+  }
+  return withinBounds(
+    item.ts,
+    rangeBounds(filters.range, filters.from, filters.to, now),
+  );
 }
 
 /** Activity tab: every login attempt, filtered, with live additions. */
@@ -213,10 +271,22 @@ export class EfActivity extends LiveView {
     }
     if (
       name === "range" &&
+      value !== "custom" &&
       !(TIME_RANGES as readonly string[]).includes(value)
     ) {
       return;
     }
+    if ((name === "from" || name === "to") && !isDayOrEmpty(value)) {
+      return;
+    }
+    this._apply(next);
+  };
+
+  private _onCleared = (): void => {
+    this._apply(filtersFromQuery(""));
+  };
+
+  private _apply(next: ActivityFilters): void {
     this._filters = next;
     this._resetList();
     const query = queryFromFilters(next);
@@ -226,7 +296,7 @@ export class EfActivity extends LiveView {
       `${location.pathname}${query === "" ? "" : `?${query}`}`,
     );
     void this._refresh();
-  };
+  }
 
   protected override _resetRun(): void {
     this._loadingMore = false;
@@ -270,6 +340,18 @@ export class EfActivity extends LiveView {
     }
   }
 
+  private _startDownload = (format: ExportFormat): void => {
+    void this._download<LoginItem>(
+      format,
+      "activity",
+      loginFilter(this._filters),
+      (filter) => fetchLogins(this.hass, filter),
+      activityCsv,
+    );
+  };
+
+  private _narrow = new NarrowController(this);
+
   private _fields(): FilterField[] {
     const f = strings.filters;
     return [
@@ -301,8 +383,13 @@ export class EfActivity extends LiveView {
         name: "range",
         label: f.range,
         type: "select",
-        options: TIME_RANGES.map((r) => ({ value: r, label: f.ranges[r] })),
+        options: [
+          ...TIME_RANGES.map((r) => ({ value: r, label: f.ranges[r] })),
+          { value: "custom", label: f.customRange },
+        ],
       },
+      { name: "from", label: f.from, type: "date", when: CUSTOM },
+      { name: "to", label: f.to, type: "date", when: CUSTOM },
     ];
   }
 
@@ -311,49 +398,54 @@ export class EfActivity extends LiveView {
     return html`
       <h2 class="visually-hidden">${strings.activity.heading}</h2>
       ${this._banners()}
-      <ef-filter-bar
+      <ef-filter-pane
         .fields=${this._fields()}
         .values=${this._filters}
+        .defaults=${{ ...filtersFromQuery("") }}
+        .narrow=${this._narrow.narrow}
         @filter-changed=${this._onFilter}
-      ></ef-filter-bar>
-      ${
-        this._phase === "loading"
-          ? html`<p class="loading">${strings.loading}</p>`
-          : items.length === 0 && this._phase === "ready"
-            ? html`<div class="card">
-                <p class="empty">${strings.activity.empty}</p>
+        @filters-cleared=${this._onCleared}
+      >
+        ${this._downloadMenu(this._startDownload)}
+        ${
+          this._phase === "loading"
+            ? html`<p class="loading">${strings.loading}</p>`
+            : items.length === 0 && this._phase === "ready"
+              ? html`<div class="card">
+                  <p class="empty">${strings.activity.empty}</p>
+                </div>`
+              : html`<div class="card">
+                  <ul>
+                    ${items.map(
+                      (item) =>
+                        html`<li>
+                          <ef-login-row
+                            .hass=${this.hass}
+                            .item=${item}
+                            variant=${
+                              item.result === "success" ? "success" : "failed"
+                            }
+                            detailed
+                          ></ef-login-row>
+                        </li>`,
+                    )}
+                  </ul>
+                </div>`
+        }
+        ${
+          this._next !== null
+            ? html`<div class="more">
+                <button
+                  type="button"
+                  ?disabled=${this._loadingMore}
+                  @click=${() => void this._loadMore()}
+                >
+                  ${strings.loadMore}
+                </button>
               </div>`
-            : html`<div class="card">
-                <ul>
-                  ${items.map(
-                    (item) =>
-                      html`<li>
-                        <ef-login-row
-                          .hass=${this.hass}
-                          .item=${item}
-                          variant=${
-                            item.result === "success" ? "success" : "failed"
-                          }
-                          detailed
-                        ></ef-login-row>
-                      </li>`,
-                  )}
-                </ul>
-              </div>`
-      }
-      ${
-        this._next !== null
-          ? html`<div class="more">
-              <button
-                type="button"
-                ?disabled=${this._loadingMore}
-                @click=${() => void this._loadMore()}
-              >
-                ${strings.loadMore}
-              </button>
-            </div>`
-          : nothing
-      }
+            : nothing
+        }
+      </ef-filter-pane>
     `;
   }
 }

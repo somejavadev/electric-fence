@@ -1,6 +1,7 @@
 """Runtime data for Electric Fence."""
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .collectors.base import BaseCollector
@@ -10,8 +11,11 @@ from .worker import Enricher, FenceWorker
 
 if TYPE_CHECKING:
     from .alerts import Alerter
+    from .collectors.apps_outside import OutsideAppWatcher
+    from .forwarding.forwarder import Forwarder
     from .geo.base import GeoStatus
     from .geo.updater import GeoUpdater
+    from .integrity.scheduler import IntegrityScheduler
     from .notifier import Notifier
     from .protection.bans import BanManager
     from .protection.policy import IpPolicy
@@ -35,3 +39,7 @@ class Runtime:
     ip_policy: IpPolicy | None = None
     username_guard: UsernameGuard | None = None
     alerts: Alerter | None = None
+    forwarder: Forwarder | None = None
+    app_watcher: OutsideAppWatcher | None = None
+    integrity: IntegrityScheduler | None = None
+    forward_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

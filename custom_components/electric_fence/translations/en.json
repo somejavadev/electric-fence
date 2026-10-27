@@ -38,6 +38,14 @@
       },
       "geoip_updated": {
         "name": "GeoIP updated"
+      },
+      "forwarding": {
+        "name": "Forwarding",
+        "state": {
+          "connected": "Connected",
+          "failing": "Failing",
+          "off": "Off"
+        }
       }
     },
     "binary_sensor": {
@@ -68,6 +76,18 @@
     "schema_too_new": {
       "title": "Electric Fence database is from a newer version",
       "description": "The Electric Fence database uses schema version {version}, but this version of Electric Fence supports up to {supported}. It was probably written by a newer Electric Fence. Electric Fence did not load and left the database unchanged. Update Electric Fence to that newer version. Logins are not affected."
+    },
+    "integration_files_changed": {
+      "title": "Files of {name} were changed",
+      "description": "The installed files of the custom integration {name} differ from its published copy or from the copy Electric Fence recorded: {files}. If you didn't change them, someone else may have. Reinstall {name} from its source to restore its files. Home Assistant is not affected otherwise."
+    },
+    "integration_archived": {
+      "title": "{name} is archived",
+      "description": "The author of the custom integration {name} archived its repository, so it gets no more updates, including security fixes. Consider replacing it with an integration that is still maintained."
+    },
+    "integration_unmaintained": {
+      "title": "{name} has not been updated in a long time",
+      "description": "The custom integration {name} has had no update in more than {months} months, so it may no longer get security fixes. Check whether it is still maintained, or replace it."
     }
   },
   "options": {
@@ -145,6 +165,44 @@
               "notify_ban_ended": "Send a message when a ban expires or is lifted.",
               "notify_targets": "Notify entities, such as phones, that also receive these messages."
             }
+          },
+          "integration_checks": {
+            "name": "Integration checks",
+            "description": "Check installed integrations for changed files and for integrations that are no longer maintained.",
+            "data": {
+              "verify_files": "Verify files",
+              "integration_repairs": "Create repairs",
+              "unmaintained_months": "Unmaintained after",
+              "scan_delay_minutes": "First scan delay",
+              "ignored_files": "Ignored files"
+            },
+            "data_description": {
+              "verify_files": "Compare installed integration files with the official copy.",
+              "integration_repairs": "Raise a repair when a check finds a problem.",
+              "unmaintained_months": "Months without a release before an integration counts as unmaintained, from 1 to 36.",
+              "scan_delay_minutes": "Minutes to wait after startup before the first scan, from 1 to 1440.",
+              "ignored_files": "One file per line: the integration folder, a slash, then the path inside it, for example my_integration/data.json."
+            }
+          },
+          "forwarding": {
+            "name": "Log forwarding",
+            "description": "Send events to a syslog collector or SIEM. Forwarding never affects logins.",
+            "data": {
+              "forward_enabled": "Forward events",
+              "forward_host": "Host",
+              "forward_port": "Port",
+              "forward_protocol": "Protocol",
+              "forward_verify_tls": "Verify the certificate",
+              "forward_ca_pem": "CA certificate"
+            },
+            "data_description": {
+              "forward_enabled": "Send each event to the collector as a syslog message.",
+              "forward_host": "Host name or IP address of the collector.",
+              "forward_port": "Port of the collector, from 1 to 65535.",
+              "forward_protocol": "Wazuh's own syslog listener accepts TCP and UDP. Use TLS only with a collector that supports it, such as rsyslog.",
+              "forward_verify_tls": "Check the collector's certificate when using TLS.",
+              "forward_ca_pem": "Optional PEM text of the certificate authority that signed the collector's certificate."
+            }
           }
         }
       },
@@ -163,7 +221,9 @@
     },
     "error": {
       "invalid_maxmind_credentials": "MaxMind rejected the account ID or license key.",
-      "cannot_connect": "Could not reach MaxMind. Check the connection and try again."
+      "cannot_connect": "Could not reach MaxMind. Check the connection and try again.",
+      "forward_host_required": "Enter a host to forward events to.",
+      "forward_ca_invalid": "The CA certificate is not valid PEM text."
     }
   },
   "selector": {
@@ -171,6 +231,13 @@
       "options": {
         "replace": "Replace it with Electric Fence's notification",
         "keep": "Keep it"
+      }
+    },
+    "forward_protocol": {
+      "options": {
+        "tcp": "TCP",
+        "udp": "UDP",
+        "tls": "TLS"
       }
     },
     "geoip_provider": {
