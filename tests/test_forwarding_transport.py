@@ -162,10 +162,17 @@ async def test_peer_close_after_first_line_is_noticed() -> None:
 def cert(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Path, Path, str]:
     """Self-signed certificate for 127.0.0.1: (cert file, key file, cert PEM).
 
-    A CA certificate by default; parametrize with False for a plain server
-    certificate, as most self-signed collectors have.
+    A CA certificate by default. Parametrize with "server" for a plain server
+    certificate, as most self-signed collectors have, or "named" for one that
+    names only collector.example.
     """
-    is_ca = getattr(request, "param", True)
+    kind = getattr(request, "param", "ca")
+    is_ca = kind == "ca"
+    alt_name: x509.GeneralName = (
+        x509.DNSName("collector.example")
+        if kind == "named"
+        else x509.IPAddress(ipaddress.ip_address("127.0.0.1"))
+    )
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
     now = datetime.now(UTC)
@@ -178,9 +185,7 @@ def cert(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Path, Path, st
         .not_valid_before(now - timedelta(days=1))
         .not_valid_after(now + timedelta(days=1))
         .add_extension(
-            x509.SubjectAlternativeName(
-                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
-            ),
+            x509.SubjectAlternativeName([alt_name]),
             critical=False,
         )
         .add_extension(x509.BasicConstraints(ca=is_ca, path_length=None), critical=True)
@@ -251,7 +256,7 @@ def test_tls_context_always_verifies(cert: tuple[Path, Path, str]) -> None:
         assert context.check_hostname
 
 
-@pytest.mark.parametrize("cert", [False], indirect=True)
+@pytest.mark.parametrize("cert", ["server"], indirect=True)
 async def test_tls_trusts_a_pasted_self_signed_certificate(
     tls_server: tuple[int, bytearray], cert: tuple[Path, Path, str]
 ) -> None:
@@ -266,12 +271,13 @@ async def test_tls_trusts_a_pasted_self_signed_certificate(
         await transport.close()
 
 
-async def test_tls_rejects_a_name_the_certificate_is_not_for(
+@pytest.mark.parametrize("cert", ["named"], indirect=True)
+async def test_tls_rejects_an_address_the_certificate_is_not_for(
     tls_server: tuple[int, bytearray], cert: tuple[Path, Path, str]
 ) -> None:
-    """A trusted certificate for 127.0.0.1 is refused when connecting as localhost."""
+    """A trusted certificate for a host name is refused when connecting by IP."""
     port, _ = tls_server
-    transport = SyslogTransport("localhost", port, "tls", build_ssl_context(cert[2]))
-    with pytest.raises(ssl.SSLCertVerificationError, match="localhost"):
+    transport = SyslogTransport("127.0.0.1", port, "tls", build_ssl_context(cert[2]))
+    with pytest.raises(ssl.SSLCertVerificationError, match="127.0.0.1"):
         await transport.connect()
     assert not transport.connected
