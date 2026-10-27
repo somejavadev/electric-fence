@@ -10,6 +10,17 @@ from pytest_homeassistant_custom_component.common import (
     mock_platform,
 )
 
+# pytest-aiohttp defines these fixtures too, and whichever plugin pytest loads
+# last wins. The load order follows the install, so it changes between
+# machines. pytest-aiohttp's client lets the server freeze its routes, and then
+# setting up the frontend after a test client has started fails. Fixtures in a
+# conftest always win, so importing Home Assistant's versions here makes them
+# the ones every test gets.
+from pytest_homeassistant_custom_component.plugins import (  # noqa: F401
+    aiohttp_client,
+    aiohttp_client_cls,
+)
+
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.geo.updater import GeoUpdater
 from custom_components.electric_fence.settings import Settings
