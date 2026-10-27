@@ -48,7 +48,7 @@ from .protection.backend import CoreBanBackend
 from .protection.bans import BanManager
 from .protection.network import normalise_ip
 from .protection.policy import IpPolicy
-from .protection.throttle import UsernameGuard
+from .protection.throttle import KNOWN_DEVICE_WINDOW, UsernameGuard
 from .repairs import (
     async_clear_disabled_collector,
     async_clear_ip_ban_disabled,
@@ -213,21 +213,24 @@ async def async_setup_entry(
 
     ip_policy = IpPolicy(hass, runtime)
     runtime.ip_policy = ip_policy
+    username_guard = UsernameGuard(hass, runtime)
+    runtime.username_guard = username_guard
+    # Recent successes: trusted (address, username) pairs for the IP policy,
+    # known devices for the username guard.
     try:
-        trusted = await hass.async_add_executor_job(
-            store.last_success_ips_since,
-            dt_util.utcnow() - settings.trusted_window,
+        successes = await hass.async_add_executor_job(
+            store.last_successes_since,
+            dt_util.utcnow() - max(settings.trusted_window, KNOWN_DEVICE_WINDOW),
         )
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
-            "Electric Fence could not load trusted addresses: %s", type(err).__name__
+            "Electric Fence could not load recent logins: %s", type(err).__name__
         )
     else:
-        ip_policy.seed_trusted(trusted)
+        ip_policy.seed_trusted(successes)
+        username_guard.seed_known(successes)
     entry.async_on_unload(worker.add_listener(ip_policy.on_record))
 
-    username_guard = UsernameGuard(hass, runtime)
-    runtime.username_guard = username_guard
     await username_guard.async_start()
     entry.async_on_unload(worker.add_listener(username_guard.on_record))
 

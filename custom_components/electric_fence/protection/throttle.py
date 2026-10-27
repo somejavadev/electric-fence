@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import OrderedDict, deque
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import partial
@@ -26,8 +26,8 @@ from ..models import (
     UserExists,
 )
 from ..notifier import EVENT_USERNAME_ATTACK, display_name, exists_of
-from ..privacy import sanitise_text
-from .network import is_exempt, normalise_ip
+from ..privacy import sanitise_text, username_key
+from .network import IpAddress, address_key, is_exempt, normalise_ip
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -50,6 +50,9 @@ UPDATE_INTERVAL = timedelta(seconds=10)
 # username out, so a waiter gives up after this and goes on to Core.
 ACQUIRE_TIMEOUT = (MAX_WAITING + 1) * MAX_DELAY + 30.0
 EVENT_MAX_IPS = 20
+# A device that logged in as a username this recently skips its slow-down,
+# so an attacker can't lock the owner out.
+KNOWN_DEVICE_WINDOW = timedelta(days=30)
 
 # Patched in tests.
 _sleep = asyncio.sleep
@@ -160,6 +163,8 @@ class UsernameGuard:
         self._runtime = runtime
         self._failures: OrderedDict[str, deque[tuple[datetime, str]]] = OrderedDict()
         self._attacks: dict[str, _Attack] = {}
+        # (username key, address key) -> latest confirmed success
+        self._known: OrderedDict[tuple[str, str], datetime] = OrderedDict()
         self._listeners: list[Callable[[], None]] = []
         self._stopped = False
         self._attempt_guard = FailOpen("username guard")
@@ -169,9 +174,7 @@ class UsernameGuard:
     @staticmethod
     def key(username: str | None) -> str | None:
         """Return the key a username is counted under, None for none."""
-        if username is None:
-            return None
-        return (sanitise_text(username) or "").strip().casefold() or None
+        return username_key(username)
 
     @callback
     def on_attempt(
@@ -187,8 +190,35 @@ class UsernameGuard:
 
     @callback
     def on_record(self, record: Record) -> None:
-        """Take countries from an enriched record (worker listener)."""
+        """Take countries and known devices from a record (worker listener)."""
         self._record_guard.call(self._on_record, record)
+
+    def seed_known(self, successes: Iterable[tuple[str, str | None, datetime]]) -> None:
+        """Know the devices of (address, username) successes before this run."""
+        for ip, username, when in sorted(successes, key=lambda item: item[2]):
+            if (addr := normalise_ip(ip)) is not None:
+                self._remember(username, addr, when)
+
+    def _exempt(self, ip: str | IpAddress | None) -> bool:
+        return is_exempt(
+            self._hass, ip, exempt_local=self._runtime.settings.exempt_local
+        )
+
+    def _device(self, addr: IpAddress) -> str:
+        return address_key(addr, self._runtime.settings.ipv6_prefix)
+
+    def _remember(self, username: str | None, addr: IpAddress, when: datetime) -> None:
+        if (user := self.key(username)) is None:
+            return
+        known = (user, self._device(addr))
+        self._known[known] = max(when, self._known.get(known, when))
+        self._known.move_to_end(known)
+        while len(self._known) > MAX_TRACKED:
+            self._known.popitem(last=False)
+
+    def _is_known(self, key: str, addr: IpAddress) -> bool:
+        when = self._known.get((key, self._device(addr)))
+        return when is not None and dt_util.utcnow() - when < KNOWN_DEVICE_WINDOW
 
     async def async_enter(self, username: str | None, ip: str | None) -> _Slot | None:
         """Wait for this attempt's turn; None means go straight to Core."""
@@ -206,11 +236,11 @@ class UsernameGuard:
         return [a.view() for a in attacks]
 
     async def async_end(
-        self, username_key: str, by_user_id: str | None, by_name: str | None
+        self, username: str, by_user_id: str | None, by_name: str | None
     ) -> bool:
         """End an attack's slow-down; False when it isn't under attack."""
         try:
-            key = self.key(username_key)
+            key = self.key(username)
             attack = self._attacks.get(key) if key is not None else None
             if attack is None:
                 return False
@@ -263,7 +293,7 @@ class UsernameGuard:
         if reason not in COUNTED_FAILURES or (key := self.key(username)) is None:
             return
         addr = normalise_ip(ip)
-        if addr is None or is_exempt(self._hass, addr):
+        if addr is None or self._exempt(addr):
             return
         assert username is not None
         ip_key = str(addr)
@@ -329,6 +359,13 @@ class UsernameGuard:
             return
         if (
             record.result is LoginResult.SUCCESS
+            and record.confirmed
+            and (addr := normalise_ip(record.ip)) is not None
+        ):
+            self._remember(record.username_typed, addr, record.ts)
+            return
+        if (
+            record.result is LoginResult.SUCCESS
             or record.reason not in COUNTED_FAILURES
         ):
             return
@@ -337,7 +374,7 @@ class UsernameGuard:
             return
         attack.user_exists |= record.user_exists is UserExists.YES
         addr = normalise_ip(record.ip)
-        if addr is not None and not is_exempt(self._hass, addr):
+        if addr is not None and not self._exempt(addr):
             if len(attack.ips) < MAX_TRACKED:
                 attack.ips.add(str(addr))
         if record.country_code:
@@ -435,7 +472,8 @@ class UsernameGuard:
         attack = self._attacks.get(key)
         if attack is None or not self._runtime.settings.username_protection:
             return None
-        if is_exempt(self._hass, ip):
+        addr = normalise_ip(ip)
+        if addr is None or self._exempt(addr) or self._is_known(key, addr):
             return None
         if attack.waiting >= MAX_WAITING:
             raise Refused

@@ -30,6 +30,7 @@ from custom_components.electric_fence.protection.throttle import (
     ACQUIRE_TIMEOUT,
     BASE_DELAY,
     EVENT_MAX_IPS,
+    KNOWN_DEVICE_WINDOW,
     MAX_DELAY,
     MAX_WAITING,
     Refused,
@@ -254,9 +255,9 @@ async def test_ignores_exempt_uncounted_and_old(
     guard: UsernameGuard,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Local, uncounted and out-of-window failures never start an attack."""
+    """Loopback, uncounted and out-of-window failures never start an attack."""
     for _ in range(20):
-        guard.on_attempt("admin", "192.168.1.2", *FAIL)
+        guard.on_attempt("admin", "127.0.0.1", *FAIL)
         guard.on_attempt("admin", None, *FAIL)
         guard.on_attempt("admin", IPS[0], LoginResult.FAILED, LoginReason.INVALID_TOKEN)
         guard.on_attempt("admin", IPS[1], LoginResult.SUCCESS, LoginReason.OK)
@@ -353,14 +354,130 @@ async def test_queue_refuses_fifth(
     assert len(sleeps) == 1 + MAX_WAITING
 
 
-async def test_local_ip_not_throttled(
+async def test_loopback_not_throttled(
     hass: HomeAssistant, guard: UsernameGuard, sleeps: list[float]
 ) -> None:
-    """A local address goes straight to Core during an attack."""
+    """Loopback goes straight to Core during an attack."""
     await _attacked(hass, guard)
-    assert await guard.async_enter("admin", "192.168.1.2") is None
+    assert await guard.async_enter("admin", "127.0.0.1") is None
     assert await guard.async_enter("admin", None) is None
     assert sleeps == []
+
+
+async def test_local_counted_and_throttled(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    guard: UsernameGuard,
+    sleeps: list[float],
+) -> None:
+    """LAN and Tailscale addresses start attacks and wait like any other."""
+    lan = ("192.168.1.2", "10.0.0.3", "100.101.102.103")
+    for i in range(10):
+        guard.on_attempt("admin", lan[i % 3], *FAIL)
+    await hass.async_block_till_done()
+    assert len(guard.active_attacks()) == 1
+    slot = await guard.async_enter("admin", "192.168.1.50")
+    assert slot is not None
+    slot.release()
+    assert len(sleeps) == 1
+
+    runtime.settings = replace(runtime.settings, exempt_local=True)
+    assert await guard.async_enter("admin", "192.168.1.50") is None
+    assert len(sleeps) == 1
+
+
+def _success_record(
+    user: str = "admin", ip: str = IP, *, confirmed: bool = True
+) -> LoginAttempt:
+    record = _record(
+        user=user, ip=ip, result=LoginResult.SUCCESS, reason=LoginReason.OK
+    )
+    record.confirmed = confirmed
+    return record
+
+
+async def test_known_device_skips_slowdown(
+    hass: HomeAssistant, guard: UsernameGuard, sleeps: list[float]
+) -> None:
+    """A device that logged in as this username goes straight to Core.
+
+    Even with the queue full: an attacker can't lock the owner out.
+    """
+    guard.on_record(_success_record("Admin"))
+    await _attacked(hass, guard)
+    guard._attacks["admin"].waiting = MAX_WAITING  # noqa: SLF001
+    assert await guard.async_enter(" ADMIN", IP) is None
+    assert sleeps == []
+    with pytest.raises(Refused):
+        await guard.async_enter("admin", "198.51.100.99")
+
+
+async def test_known_device_is_per_username(
+    hass: HomeAssistant, guard: UsernameGuard, sleeps: list[float]
+) -> None:
+    """A device known for another username waits like any other."""
+    guard.on_record(_success_record("guest"))
+    await _attacked(hass, guard)
+    slot = await guard.async_enter("admin", IP)
+    assert slot is not None
+    slot.release()
+    assert len(sleeps) == 1
+
+
+async def test_known_device_per_prefix_and_expiry(
+    hass: HomeAssistant,
+    guard: UsernameGuard,
+    sleeps: list[float],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """IPv6 is known per /64 (privacy addresses change); it lasts 30 days."""
+    guard.on_record(_success_record(ip="2001:db8:1:2::aaaa"))
+    await _attacked(hass, guard)
+    assert await guard.async_enter("admin", "2001:db8:1:2::bbbb") is None
+    freezer.tick(KNOWN_DEVICE_WINDOW + timedelta(seconds=1))
+    _fail(guard, 1)  # keep the attack going
+    slot = await guard.async_enter("admin", "2001:db8:1:2::bbbb")
+    assert slot is not None
+    slot.release()
+
+
+async def test_unconfirmed_success_not_known(
+    hass: HomeAssistant, guard: UsernameGuard, sleeps: list[float]
+) -> None:
+    """Only a confirmed success makes a device known."""
+    guard.on_record(_success_record(confirmed=False))
+    await _attacked(hass, guard)
+    slot = await guard.async_enter("admin", IP)
+    assert slot is not None
+    slot.release()
+
+
+async def test_seed_known(
+    hass: HomeAssistant, guard: UsernameGuard, sleeps: list[float]
+) -> None:
+    """Successes from the store make devices known; bad rows are skipped."""
+    now = dt_util.utcnow()
+    guard.seed_known([(IP, "admin", now), ("nope", "admin", now), (IP, None, now)])
+    await _attacked(hass, guard)
+    assert await guard.async_enter("admin", IP) is None
+    assert sleeps == []
+
+
+async def test_known_devices_bounded(
+    hass: HomeAssistant,
+    guard: UsernameGuard,
+    sleeps: list[float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The oldest known devices are dropped first."""
+    monkeypatch.setattr(throttle_module, "MAX_TRACKED", 2)
+    for n in (1, 2, 3):
+        guard.on_record(_success_record(ip=f"198.51.100.{n}"))
+    await _attacked(hass, guard)
+    slot = await guard.async_enter("admin", "198.51.100.1")
+    assert slot is not None
+    slot.release()
+    assert await guard.async_enter("admin", "198.51.100.3") is None
 
 
 async def test_ends_when_quiet(
@@ -610,7 +727,7 @@ async def test_countries_from_records(
         await hass.async_block_till_done()
         assert update.call_count == 1
         guard.on_record(_record(user="Admin", ip="198.51.100.8", country="DE"))
-        guard.on_record(_record(country=None, ip="10.0.0.1"))
+        guard.on_record(_record(country=None, ip="127.0.0.1"))
         guard.on_record(_record(country="FR", reason=LoginReason.INVALID_TOKEN))
         guard.on_record(_record(country="FR", result=LoginResult.SUCCESS))
         guard.on_record(_record(user="other", country="FR"))

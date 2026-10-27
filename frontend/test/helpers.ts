@@ -88,6 +88,8 @@ export const status = (attribution: string | null = null): Status => ({
     ban_window_minutes: 15,
     ban_hours: 24,
     ban_repeat_offenders: false,
+    ipv6_prefix: 64,
+    exempt_local: false,
     username_protection: true,
     attack_threshold: 10,
     attack_min_ips: 3,

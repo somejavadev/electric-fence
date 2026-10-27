@@ -141,6 +141,8 @@ export class EfSettings extends LiveView {
           [s.banAfter, s.banRule(v.ban_threshold, v.ban_window_minutes)],
           [s.banLength, v.ban_hours === 0 ? s.permanent : s.hours(v.ban_hours)],
           [s.repeatOffenders, onOff(v.ban_repeat_offenders)],
+          [s.ipv6Prefix, `/${v.ipv6_prefix}`],
+          [s.exemptLocal, onOff(v.exempt_local)],
         ])}
       </section>
       <section class="card">

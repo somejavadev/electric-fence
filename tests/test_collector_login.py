@@ -1013,6 +1013,72 @@ async def _step(
     )
 
 
+async def test_banned_prefix_refused(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An address in the prefix of a ban is refused before Core checks anything.
+
+    The refusal is recorded as `banned` and counted by neither policy, so it
+    can't lead to more bans.
+    """
+    await setup_forwarded_http(hass)
+    await create_hass_user(hass, "alice", "right")
+    await _setup(hass, monkeypatch)
+    runtime = _collector(hass).runtime
+    assert runtime.bans is not None
+    assert await runtime.bans.async_ban("2001:db8:1:2::5", 5, None, None)
+    client = await hass_client_no_auth()
+    sibling = {"X-Forwarded-For": "2001:db8:1:2::9"}
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers=sibling,
+    )
+    flow_id = str((await resp.json())["flow_id"])
+
+    with patch.object(
+        HassAuthProvider, "async_validate_login", autospec=True
+    ) as validate:
+        resp = await client.post(
+            f"/auth/login_flow/{flow_id}",
+            json={"client_id": CLIENT_ID, "username": "alice", "password": "right"},
+            headers=sibling,
+        )
+    assert resp.status == 403
+    assert await resp.json() == {"message": THROTTLE_MESSAGE}
+    validate.assert_not_called()
+    assert not _policy(hass)._failures
+    assert not _guard(hass)._failures
+    await flush_worker(hass)
+    (row,) = store_rows(hass)
+    assert (row.result, row.reason, row.ip) == ("failed", "banned", "2001:db8:1:2::9")
+
+    # Another prefix goes through.
+    resp = await client.post(
+        "/auth/login_flow",
+        json={
+            "client_id": CLIENT_ID,
+            "handler": ["homeassistant", None],
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers={"X-Forwarded-For": "2001:db8:1:3::9"},
+    )
+    flow_id = str((await resp.json())["flow_id"])
+    resp = await client.post(
+        f"/auth/login_flow/{flow_id}",
+        json={"client_id": CLIENT_ID, "username": "alice", "password": "right"},
+        headers={"X-Forwarded-For": "2001:db8:1:3::9"},
+    )
+    assert (await resp.json())["type"] == "create_entry"
+    runtime.bans.async_stop()
+
+
 async def test_refused_returns_403_message(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
@@ -1208,6 +1274,12 @@ async def test_observe_feeds_policies(
         (FORWARDED_IP, LoginResult.BLOCKED, LoginReason.BLOCKED_LOCAL_ONLY),
         (FORWARDED_IP, LoginResult.BLOCKED, LoginReason.BLOCKED_INACTIVE),
         (FORWARDED_IP, LoginResult.SUCCESS, LoginReason.OK),
+    ]
+    assert [c.kwargs for c in ip_attempt.call_args_list] == [
+        {"username": " Alice "},
+        {"username": "alice"},
+        {"username": "alice"},
+        {"username": "alice"},
     ]
     assert [c.args for c in name_attempt.call_args_list] == [
         (" Alice ", FORWARDED_IP, *FAIL_EXISTS),

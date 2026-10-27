@@ -317,31 +317,36 @@ def test_end_open_attacks(store: FenceStore) -> None:
     assert rows[done].ended_at == NOW
 
 
-def test_last_success_ips_since(store: FenceStore) -> None:
-    """The latest success time per IP is returned; failures are ignored."""
+def test_last_successes_since(store: FenceStore) -> None:
+    """The latest confirmed success per (IP, username); failures are ignored."""
+    unconfirmed = _login(NOW - timedelta(hours=1), LoginResult.SUCCESS, "203.0.113.5")
+    unconfirmed.confirmed = False
     store.insert(
         [
             _login(NOW - timedelta(hours=3), LoginResult.SUCCESS, "203.0.113.1"),
             _login(NOW - timedelta(hours=1), LoginResult.SUCCESS, "203.0.113.1"),
+            _login(NOW - timedelta(hours=2), LoginResult.SUCCESS, "203.0.113.1", "b"),
             _login(NOW - timedelta(hours=2), LoginResult.SUCCESS, "203.0.113.2"),
             _login(NOW - timedelta(hours=1), LoginResult.FAILED, "203.0.113.3"),
             _login(NOW - timedelta(days=3), LoginResult.SUCCESS, "203.0.113.4"),
+            unconfirmed,
         ]
     )
-    assert store.last_success_ips_since(NOW - timedelta(days=1)) == {
-        "203.0.113.1": NOW - timedelta(hours=1),
-        "203.0.113.2": NOW - timedelta(hours=2),
-    }
+    assert sorted(store.last_successes_since(NOW - timedelta(days=1))) == [
+        ("203.0.113.1", "a", NOW - timedelta(hours=1)),
+        ("203.0.113.1", "b", NOW - timedelta(hours=2)),
+        ("203.0.113.2", "a", NOW - timedelta(hours=2)),
+    ]
 
 
-def _login(ts: datetime, result: LoginResult, ip: str) -> LoginAttempt:
+def _login(ts: datetime, result: LoginResult, ip: str, user: str = "a") -> LoginAttempt:
     return LoginAttempt(
         ts=ts,
         result=result,
         reason=LoginReason.OK
         if result is LoginResult.SUCCESS
         else LoginReason.WRONG_PASSWORD,
-        username_typed="a",
+        username_typed=user,
         user_exists=UserExists.YES,
         user_id="u",
         provider=None,
