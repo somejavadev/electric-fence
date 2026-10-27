@@ -11,8 +11,9 @@ from pathlib import Path
 import re
 import socket
 import tarfile
+import threading
 import time
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 import zlib
 
 from aiohttp import ClientSession, web
@@ -28,7 +29,7 @@ from custom_components.electric_fence.geo.base import (
     GeoStatus,
     classify_ip,
 )
-from custom_components.electric_fence.geo.enrich import GeoEnricher
+from custom_components.electric_fence.geo.enrich import RDNS_MAX_BACKLOG, GeoEnricher
 from custom_components.electric_fence.geo.maxmind import DOWNLOAD_URL, MaxMindProvider
 from custom_components.electric_fence.geo.rdns import ReverseDns
 from custom_components.electric_fence.geo.updater import GeoUpdater, geoip_dir
@@ -905,3 +906,78 @@ async def test_retry_happens_once(
     await upd.async_wait()
     assert aioclient_mock.call_count == calls
     await upd.async_stop()
+
+
+async def test_enrich_skips_rdns_under_backlog(
+    hass: HomeAssistant, updater: GeoUpdater
+) -> None:
+    """With many records waiting, hostnames are skipped so the queue drains."""
+    enricher = _enricher(hass, updater)
+    assert enricher.runtime is not None
+    with (
+        patch.object(
+            type(enricher.runtime.worker),
+            "queued",
+            new_callable=PropertyMock,
+            return_value=RDNS_MAX_BACKLOG + 1,
+        ),
+        patch("socket.gethostbyaddr") as rdns,
+    ):
+        rec = _attempt("8.8.8.7")
+        await enricher.async_enrich(rec)
+    rdns.assert_not_called()
+    assert (rec.country_code, rec.hostname) == ("US", None)
+
+
+async def test_rdns_running_lookups_capped(hass: HomeAssistant) -> None:
+    """Past the cap, a lookup returns None at once and isn't cached.
+
+    Lookups still blocked in a thread after their timeout count too, so a
+    hostile resolver can't use up Home Assistant's executor.
+    """
+    rdns = ReverseDns(hass, timeout=0.01, max_running=2)
+    release = threading.Event()
+
+    def stuck(_: str) -> tuple[str, list[str], list[str]]:
+        release.wait(5)
+        return ("late.example", [], [])
+
+    try:
+        with patch("socket.gethostbyaddr", side_effect=stuck) as call:
+            assert await rdns.async_lookup("8.8.8.1") is None  # timed out
+            assert await rdns.async_lookup("8.8.8.2") is None  # timed out
+            assert await rdns.async_lookup("8.8.8.3") is None  # capped
+            assert call.call_count == 2
+    finally:
+        release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    for _ in range(50):
+        if rdns.running == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert rdns.running == 0
+    # The capped address wasn't cached as a miss: it is looked up now.
+    with patch("socket.gethostbyaddr", return_value=("h.example", [], [])):
+        assert await rdns.async_lookup("8.8.8.3") == "h.example"
+
+
+async def test_rdns_ipv6_miss_cached_per_prefix(hass: HomeAssistant) -> None:
+    """A miss for one IPv6 address answers for its whole /64."""
+    rdns = ReverseDns(hass)
+    with patch("socket.gethostbyaddr", side_effect=socket.herror) as miss:
+        assert await rdns.async_lookup("2606:4700:1:2::1") is None
+        assert await rdns.async_lookup("2606:4700:1:2::99") is None
+    assert miss.call_count == 1
+    with patch("socket.gethostbyaddr", return_value=("h.example", [], [])):
+        assert await rdns.async_lookup("2606:4700:1:3::1") == "h.example"
+
+
+async def test_rdns_prefix_misses_bounded(hass: HomeAssistant) -> None:
+    """The /64 miss cache drops its oldest entries; junk addresses have none."""
+    rdns = ReverseDns(hass, maxsize=1)
+    with patch("socket.gethostbyaddr", side_effect=socket.herror):
+        assert await rdns.async_lookup("2606:4700:1:1::1") is None
+        assert await rdns.async_lookup("2606:4700:1:2::1") is None
+        assert await rdns.async_lookup("not an ip") is None
+    with patch("socket.gethostbyaddr", return_value=("h.example", [], [])):
+        assert await rdns.async_lookup("2606:4700:1:1::2") == "h.example"

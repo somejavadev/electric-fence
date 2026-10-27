@@ -72,6 +72,7 @@ SECTIONS = {
 }
 TOP_LEVEL = (
     "retention_days",
+    "max_db_mb",
     "geoip_provider",
     "reverse_dns",
     "record_values",

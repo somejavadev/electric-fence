@@ -40,7 +40,12 @@ describe("csvSafe", () => {
     ["+cmd", "'+cmd"],
     ["@SUM", "'@SUM"],
     ["-1", "'-1"],
-    ["\tx", "'\tx"],
+    ["\tx", '"\'\tx"'],
+    // Excel in `;`-separator locales (and TAB) would split these into a new
+    // cell starting with `=`: quoted, they stay one cell.
+    ["x;=1+1", '"x;=1+1"'],
+    ["x\t=1+1", '"x\t=1+1"'],
+    ["x;=cmd|'/C calc'!A0", `"x;=cmd|'/C calc'!A0"`],
     ["\rx", '"\'\rx"'],
     ["a,b", '"a,b"'],
     ["line1\nline2", '"line1\nline2"'],
@@ -235,7 +240,7 @@ describe("audit download", () => {
     const lines = saved.calls[0]?.body.split("\r\n") ?? [];
     expect(lines[0]).toMatch(/,changed,details,values$/);
     expect(lines[1]).toContain(
-      'a; b,"{""changed"":[""a"",""b""]}","{""a"":1}"',
+      '"a; b","{""changed"":[""a"",""b""]}","{""a"":1}"',
     );
   });
 

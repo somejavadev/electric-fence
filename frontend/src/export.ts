@@ -9,7 +9,9 @@ export const EXPORT_PAGE = 200;
 
 const BOM = String.fromCharCode(0xfeff);
 const FORMULA_START = /^[=+\-@\t\r]/;
-const NEEDS_QUOTES = /[,"\n\r]|^ | $/;
+// `;` and TAB too: Excel in many locales splits on them, and the cell after
+// one would start unchecked (`x;=1+1`).
+const NEEDS_QUOTES = /[,;"\t\n\r]|^ | $/;
 
 /**
  * One CSV field. A leading `= + - @ \t \r` gets a `'` in front so a

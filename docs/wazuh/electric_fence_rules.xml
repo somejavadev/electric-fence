@@ -36,6 +36,12 @@
       <match>"action":"files_changed"</match>
       <description>Electric Fence: files of integration $(target_name) changed.</description>
     </rule>
+    <rule id="100513" level="10">
+      <if_sid>100500</if_sid>
+      <field name="event_type">^settings_changed$</field>
+      <match>"action":"baseline_accepted"</match>
+      <description>Electric Fence: changed files of integration $(target_name) accepted by $(actor_name).</description>
+    </rule>
     <rule id="100510" level="10">
       <if_sid>100500</if_sid>
       <field name="event_type">^settings_changed$</field>

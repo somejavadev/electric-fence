@@ -221,6 +221,7 @@ export const strings = {
       files_match: "Files match",
       baseline_recorded: "Baseline recorded",
       baseline_renewed: "Baseline renewed",
+      baseline_accepted: "Files accepted",
       archived: "Archived",
       removed_from_store: "Removed from store",
       unmaintained: "Unmaintained",
@@ -656,9 +657,12 @@ function filesSentence(item: ChangeItem): string {
         listLength(d["missing"]) +
         listLength(d["added"]) +
         listLength(d["unreadable"]);
-      return n === 0
-        ? `files of ${name} differ from the official copy`
-        : `files of ${name} differ from the official copy (${n} ${n === 1 ? "file" : "files"})`;
+      const before = d["version_before"];
+      const what =
+        typeof before === "string"
+          ? `files of ${name} differ from the recorded copy after a version change from ${cut(before)}`
+          : `files of ${name} differ from the official copy`;
+      return n === 0 ? what : `${what} (${n} ${n === 1 ? "file" : "files"})`;
     }
     case "files_match":
       return `files of ${name} match the official copy`;
@@ -666,6 +670,8 @@ function filesSentence(item: ChangeItem): string {
       return `recorded the files of ${name} as the baseline`;
     case "baseline_renewed":
       return `renewed the file baseline of ${name} after an update`;
+    case "baseline_accepted":
+      return `accepted the installed files of ${name} as the baseline`;
     default:
       return `changed the file check of ${name}`;
   }

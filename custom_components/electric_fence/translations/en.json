@@ -96,6 +96,24 @@
     "ban_limit_reached": {
       "title": "Electric Fence reached its limit of active bans",
       "description": "Electric Fence has {limit} active bans, the most it keeps, so it is not banning more addresses. This usually means an attack from very many addresses. Failed logins are still recorded and usernames under attack are still slowed down. Check the Bans tab in the Electric Fence panel. This message goes away once bans expire or are lifted."
+    },
+    "storage_limit_reached": {
+      "title": "Electric Fence database reached its size limit",
+      "description": "The Electric Fence database reached its limit of {limit} MB, so Electric Fence removed the oldest failed logins to stay under it. This usually means a flood of failed logins, for example an attack from many addresses. Successful logins, settings changes and bans are kept. Check the Activity tab in the Electric Fence panel, or raise the limit under Database size limit in the Electric Fence settings. This message goes away once the database is well under the limit again."
+    },
+    "integration_files_changed_manual": {
+      "title": "Files of {name} were changed",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Files of {name} were changed",
+            "description": "The installed files of the custom integration {name} differ from the copy Electric Fence recorded: {files}. {name} was installed by hand, so Electric Fence can't compare it with a published copy.\n\nIf you updated or edited {name} yourself, select **Submit** to accept the installed files. They become the new copy Electric Fence compares with, and the audit log records that you accepted them.\n\nIf you didn't change them, someone else may have: don't accept them. Reinstall {name} from its source instead."
+          }
+        },
+        "abort": {
+          "accept_failed": "Electric Fence couldn't accept the files: {name} may no longer be installed, or its files can't be read. Nothing was changed."
+        }
+      }
     }
   },
   "options": {
@@ -108,14 +126,16 @@
           "geoip_provider": "GeoIP provider",
           "reverse_dns": "Reverse DNS lookups",
           "record_values": "Record before and after values",
-          "mask_ips": "Mask IP addresses in the panel"
+          "mask_ips": "Mask IP addresses in the panel",
+          "max_db_mb": "Database size limit"
         },
         "data_description": {
           "retention_days": "Days of history to keep, from 1 to 3650.",
           "geoip_provider": "Where country lookups come from. DB-IP Lite needs no account. MaxMind GeoLite2 needs an account ID and license key.",
           "reverse_dns": "Look up host names for IP addresses.",
           "record_values": "Store what each setting was and what it became. Passwords, secrets, tokens, keys and coordinates are always hidden. Turning this off also removes the values already stored.",
-          "mask_ips": "Show only the start of each IP address (203.x.x.x, 2001:db8:x:x:x:x:x:x) and hide host names and the address of the Home Assistant a browser logged in through in the Electric Fence panel, for example for screenshots. Full addresses are still recorded, and notifications and the logbook are unchanged."
+          "mask_ips": "Show only the start of each IP address (203.x.x.x, 2001:db8:x:x:x:x:x:x) and hide host names and the address of the Home Assistant a browser logged in through in the Electric Fence panel, for example for screenshots. Full addresses are still recorded, and notifications and the logbook are unchanged.",
+          "max_db_mb": "Largest size of the Electric Fence database, from 20 to 10000 MB. Over it, the oldest failed logins are removed first; successful logins, settings changes and bans are kept."
         },
         "sections": {
           "bans": {

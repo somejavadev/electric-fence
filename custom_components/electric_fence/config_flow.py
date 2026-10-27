@@ -159,6 +159,17 @@ class OptionsFlowHandler(OptionsFlow):
                     )
                 ),
                 probatio.Required(
+                    "max_db_mb", default=shown["max_db_mb"]
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=20,
+                        max=10000,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="MB",
+                    )
+                ),
+                probatio.Required(
                     "geoip_provider", default=shown["geoip_provider"]
                 ): SelectSelector(
                     SelectSelectorConfig(

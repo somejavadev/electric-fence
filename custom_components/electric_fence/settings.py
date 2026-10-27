@@ -14,6 +14,8 @@ class Settings:
     notify_failed_login: bool = True
     ha_login_notification: Literal["replace", "keep"] = "replace"
     retention_days: int = 90
+    # The database's size limit; the oldest failed logins go first.
+    max_db_mb: int = 200
     geoip_provider: Literal["dbip_lite", "maxmind", "none"] = "dbip_lite"
     maxmind_account_id: str | None = None
     maxmind_license_key: str | None = None
@@ -122,6 +124,7 @@ class Settings:
             notify_failed_login=flag("notify_failed_login"),
             ha_login_notification=choice("ha_login_notification", ("replace", "keep")),
             retention_days=number("retention_days", 1, 3650),
+            max_db_mb=number("max_db_mb", 20, 10000),
             geoip_provider=choice("geoip_provider", ("dbip_lite", "maxmind", "none")),
             maxmind_account_id=text("maxmind_account_id"),
             maxmind_license_key=text("maxmind_license_key"),

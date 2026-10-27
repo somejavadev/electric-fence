@@ -35,6 +35,8 @@ SCHEMA_VERSION = 3
 # A `LoginFilter.result` for failed and blocked attempts together.
 FAILED_OR_BLOCKED: Final = "failed_or_blocked"
 _MAX_LIMIT = 500
+# Rows deleted per step when trimming to the size limit.
+_TRIM_BATCH = 500
 _AND = " AND "
 
 _VACUUM_FRACTION = 0.2
@@ -872,6 +874,46 @@ class FenceStore:
                     db.execute("VACUUM")
                 except sqlite3.Error:
                     _LOGGER.debug("VACUUM failed after purge")
+        return deleted
+
+    def used_bytes(self) -> int:
+        """Return the bytes of the pages in use (free pages are reused first)."""
+        with self._lock:
+            return self._used_bytes(self._conn())
+
+    @staticmethod
+    def _used_bytes(db: sqlite3.Connection) -> int:
+        pages = db.execute("PRAGMA page_count").fetchone()[0]
+        free = db.execute("PRAGMA freelist_count").fetchone()[0]
+        size = db.execute("PRAGMA page_size").fetchone()[0]
+        return int((pages - free) * size)
+
+    def trim_failed(self, max_bytes: int) -> int:
+        """Delete the oldest failed or blocked logins until under `max_bytes`.
+
+        Successes, settings changes, bans and attacks are kept. Returns the
+        number of rows deleted; 0 when already under the limit.
+        """
+        deleted = 0
+        with self._lock:
+            db = self._conn()
+            while self._used_bytes(db) > max_bytes:
+                db.execute("BEGIN")
+                try:
+                    count = db.execute(
+                        "DELETE FROM login_attempts WHERE id IN ("
+                        "SELECT id FROM login_attempts WHERE result != ? "
+                        "ORDER BY id LIMIT ?)",
+                        (str(LoginResult.SUCCESS), _TRIM_BATCH),
+                    ).rowcount
+                    db.execute("COMMIT")
+                except BaseException:
+                    with contextlib.suppress(sqlite3.Error):
+                        db.execute("ROLLBACK")
+                    raise
+                if not count:
+                    break
+                deleted += count
         return deleted
 
     @contextlib.contextmanager

@@ -159,6 +159,7 @@ def test_syslog_line_shape() -> None:
         ({"event_type": "new_country_login"}, 132),
         ({"event_type": "settings_changed", "action": "banned"}, 132),
         ({"event_type": "settings_changed", "action": "files_changed"}, 132),
+        ({"event_type": "settings_changed", "action": "baseline_accepted"}, 132),
         ({"event_type": "settings_changed", "action": "forwarding_failed"}, 132),
         ({"event_type": "settings_changed", "action": "updated"}, 133),
     ],

@@ -1,6 +1,6 @@
 """Fetch the published files of an integration and verify the installed copy."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import io
 import logging
@@ -237,18 +237,34 @@ async def verify(
             store.save_baseline, item.domain, version, actual.files
         )
         return FileResult(item.domain, "manual", "baseline_recorded", ref=version)
-    if before != version:
+    result = _compared(item, _without_ignored(baseline, ignore), actual, version)
+    if before != version and result.status == "match":
+        # Nothing changed but the version string: safe to follow it.
         await hass.async_add_executor_job(
-            store.save_baseline, item.domain, version, actual.files
+            store.save_baseline, item.domain, version, baseline
         )
-        return FileResult(
-            item.domain,
-            "manual",
-            "baseline_renewed",
-            ref=version,
-            version_before=before,
-        )
-    return _compared(item, _without_ignored(baseline, ignore), actual, version)
+    elif before != version:
+        # A new version is still compared with the old baseline: whoever can
+        # change the files can change the version too. An admin accepts the
+        # new files from the repair (`accept_baseline`).
+        return replace(result, version_before=before)
+    return result
+
+
+async def accept_baseline(
+    hass: HomeAssistant, runtime: Runtime, item: InstalledIntegration
+) -> int:
+    """Record the installed files of a manual install as its baseline.
+
+    Returns the number of files recorded.
+    """
+    actual = await hass.async_add_executor_job(
+        hash_tree, item.path, _ignore(runtime, item)
+    )
+    await hass.async_add_executor_job(
+        runtime.store.save_baseline, item.domain, item.version, actual.files
+    )
+    return len(actual.files)
 
 
 def _compared(

@@ -119,6 +119,7 @@ export type ChangeAction =
   | "files_match"
   | "baseline_recorded"
   | "baseline_renewed"
+  | "baseline_accepted"
   | "archived"
   | "removed_from_store"
   | "unmaintained"
@@ -350,6 +351,7 @@ export interface Status {
     notify_failed_login: boolean;
     ha_login_notification: "replace" | "keep";
     retention_days: number;
+    max_db_mb: number;
     geoip_provider: GeoProvider;
     maxmind_account_id: string | null;
     reverse_dns: boolean;

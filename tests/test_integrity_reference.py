@@ -1,5 +1,6 @@
 """Official file set and verification."""
 
+from dataclasses import replace
 import hashlib
 import io
 import json
@@ -14,6 +15,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from custom_components.electric_fence.integrity.inventory import InstalledIntegration
 from custom_components.electric_fence.integrity.reference import (
     Unchecked,
+    accept_baseline,
     fetch_reference,
     reference_url,
     verify,
@@ -271,7 +273,7 @@ async def test_symlinked_marketplace(
     assert aioclient_mock.call_count == 0
 
 
-async def test_manual_baseline_then_change_then_renew(
+async def test_manual_baseline_then_change(
     hass: HomeAssistant, tmp_path: Path, runtime: Runtime
 ) -> None:
     """A manual install is compared with its own baseline."""
@@ -284,20 +286,56 @@ async def test_manual_baseline_then_change_then_renew(
     assert changed.status == "changed"
     assert changed.report is not None
     assert changed.report.changed == ["__init__.py"]
-    renewed = await verify(
-        hass,
-        runtime,
-        _item(
-            tmp_path,
-            source="manual",
-            repository=None,
-            installed_version=None,
-            version="1.3.0",
+
+
+async def test_manual_version_change_needs_acceptance(
+    hass: HomeAssistant, tmp_path: Path, runtime: Runtime
+) -> None:
+    """A new version is compared with the old baseline until it is accepted.
+
+    Bumping the manifest version must not make tampered files the baseline.
+    """
+    item = _item(tmp_path, source="manual", repository=None, installed_version=None)
+    assert (await verify(hass, runtime, item)).status == "baseline_recorded"
+    (item.path / "__init__.py").write_bytes(b"tampered")
+    bumped = _item(
+        tmp_path,
+        source="manual",
+        repository=None,
+        installed_version=None,
+        version="1.3.0",
+    )
+    for _ in range(2):  # stays changed: nothing is renewed by itself
+        result = await verify(hass, runtime, bumped)
+        assert result.status == "changed"
+        assert result.version_before == "1.2.0"
+        assert result.ref == "1.3.0"
+        assert result.report is not None
+        assert result.report.changed == ["__init__.py"]
+
+    assert await accept_baseline(hass, runtime, bumped) == 2
+    accepted = await verify(hass, runtime, bumped)
+    assert accepted.status == "match"
+    assert accepted.version_before is None
+
+
+async def test_manual_version_change_same_files(
+    hass: HomeAssistant, tmp_path: Path, runtime: Runtime
+) -> None:
+    """With identical files (manifest ignored), only the version is updated."""
+    rt = cast(
+        Runtime,
+        SimpleNamespace(
+            settings=Settings(ignored_files=("demo/manifest.json",)),
+            store=runtime.store,
         ),
     )
-    assert renewed.status == "baseline_renewed"
-    assert renewed.version_before == "1.2.0"
-    assert renewed.ref == "1.3.0"
+    item = _item(tmp_path, source="manual", repository=None, installed_version=None)
+    assert (await verify(hass, rt, item)).status == "baseline_recorded"
+    bumped = replace(item, version="1.3.0")
+    first = await verify(hass, rt, bumped)
+    assert (first.status, first.version_before) == ("match", None)
+    assert runtime.store.baseline("demo")[0] == "1.3.0"
 
 
 async def test_manual_empty_folder_baseline_stable(

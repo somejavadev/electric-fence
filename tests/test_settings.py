@@ -119,3 +119,10 @@ def test_ignored_for() -> None:
     s = Settings(ignored_files=("a/x.json", "a/sub/y", "b/z"))
     assert s.ignored_for("a") == frozenset({"x.json", "sub/y"})
     assert s.ignored_for("c") == frozenset()
+
+
+def test_settings_db_size_limit() -> None:
+    """The database is capped at 200 MB by default, between 20 and 10000."""
+    assert Settings().max_db_mb == 200
+    assert Settings.from_options({"max_db_mb": 1}).max_db_mb == 20
+    assert Settings.from_options({"max_db_mb": 99999}).max_db_mb == 10000

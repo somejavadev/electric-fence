@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Hostnames are skipped while more records than this wait in the worker: a
+# reverse zone that never answers must not stall the queue until it drops
+# records.
+RDNS_MAX_BACKLOG = 20
+
 
 class GeoEnricher:
     """Adds source, country and hostname. Every failure leaves None."""
@@ -45,7 +50,7 @@ class GeoEnricher:
                 )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("GeoIP lookup failed: %s", type(err).__name__)
-        if runtime.settings.reverse_dns:
+        if runtime.settings.reverse_dns and runtime.worker.queued <= RDNS_MAX_BACKLOG:
             try:
                 record.hostname = await self._rdns.async_lookup(ip)
             except Exception as err:  # noqa: BLE001
