@@ -48,7 +48,6 @@ class Settings:
     forward_host: str = ""
     forward_port: int = 514
     forward_protocol: Literal["tcp", "udp", "tls"] = "tcp"
-    forward_verify_tls: bool = True
     forward_ca_pem: str = ""
 
     @property
@@ -154,7 +153,6 @@ class Settings:
             forward_host=string("forward_host").strip(),
             forward_port=number("forward_port", 1, 65535),
             forward_protocol=choice("forward_protocol", ("tcp", "udp", "tls")),
-            forward_verify_tls=flag("forward_verify_tls"),
             forward_ca_pem=string("forward_ca_pem"),
         )
 

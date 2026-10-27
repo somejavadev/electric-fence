@@ -73,6 +73,27 @@ def async_clear_ip_ban_disabled(hass: HomeAssistant) -> None:
     ir.async_delete_issue(hass, DOMAIN, IP_BAN_DISABLED)
 
 
+TLS_CHECK_REQUIRED = "tls_check_required"
+
+
+def async_report_tls_check_required(hass: HomeAssistant) -> None:
+    """Raise a repair issue: TLS forwarding had its certificate check off."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        TLS_CHECK_REQUIRED,
+        is_fixable=False,
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=TLS_CHECK_REQUIRED,
+    )
+
+
+def async_clear_tls_check_required(hass: HomeAssistant) -> None:
+    """Remove the repair issue for the removed TLS certificate check setting."""
+    ir.async_delete_issue(hass, DOMAIN, TLS_CHECK_REQUIRED)
+
+
 BAN_LIMIT = "ban_limit_reached"
 
 

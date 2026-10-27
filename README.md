@@ -158,14 +158,13 @@ audit log, and the entities are unaffected.
 
 **Log forwarding**
 
-| Setting                    | What it does                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------------- |
-| **Forward events**         | Sends each event to your collector as a syslog message. Off by default.                 |
-| **Host**                   | Host name or IP address of the collector. Required when forwarding is on.               |
-| **Port**                   | From 1 to 65535. The default is 514.                                                    |
-| **Protocol**               | `tcp` (the default), `udp`, or `tls`. Wazuh's own listener accepts TCP and UDP only.    |
-| **Verify the certificate** | Checks the collector's certificate when using TLS. On by default.                       |
-| **CA certificate**         | Optional PEM text of the certificate authority that signed the collector's certificate. |
+| Setting            | What it does                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **Forward events** | Sends each event to your collector as a syslog message. Off by default.                                    |
+| **Host**           | Host name or IP address of the collector. Required when forwarding is on.                                  |
+| **Port**           | From 1 to 65535. The default is 514.                                                                       |
+| **Protocol**       | `tcp` (the default), `udp`, or `tls`. Wazuh's own listener accepts TCP and UDP only.                       |
+| **CA certificate** | For TLS: PEM text of a self-signed or private certificate, or of the certificate authority that signed it. |
 
 ## App changes (Supervisor installs)
 
@@ -300,10 +299,13 @@ forwarding** section of the settings.
   and flagged, until it fits.
 - **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
   Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
-  certificate is checked unless you turn that off, and you can paste your own
-  CA certificate. Over TCP and TLS each message ends with a newline, with no
-  length prefix, which is what Wazuh and Splunk's raw TCP input expect. Over
-  UDP each message is one datagram.
+  collector's certificate and name are always checked, because events go out
+  unmasked. For a self-signed or private certificate, paste it, or the
+  certificate authority that signed it, into **CA certificate**, and set
+  **Host** to the name or address the certificate is for. TCP and UDP aren't
+  encrypted, so use them only on a network you trust. Over TCP and TLS each
+  message ends with a newline, with no length prefix, which is what Wazuh and
+  Splunk's raw TCP input expect. Over UDP each message is one datagram.
 - **Reliability.** Forwarding never makes a login wait. If the collector is
   down or its name doesn't resolve, events queue up to 1,000 and the oldest
   are dropped first. Reconnects back off from 1 second to 5 minutes, and the

@@ -252,7 +252,6 @@ class OptionsFlowHandler(OptionsFlow):
                                     mode=SelectSelectorMode.DROPDOWN,
                                 )
                             ),
-                            **flag("forward_verify_tls"),
                             **text("forward_ca_pem", multiline=True),
                         }
                     ),
