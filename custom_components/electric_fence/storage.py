@@ -1247,15 +1247,17 @@ class FenceStore:
         )
         return [r[0] for r in rows]
 
-    def last_success_ips_since(self, since: datetime) -> dict[str, datetime]:
-        """Return each IP's latest successful login at or after a time."""
+    def last_successes_since(
+        self, since: datetime
+    ) -> list[tuple[str, str | None, datetime]]:
+        """Return (IP, typed username, latest time) of confirmed successes since a time."""
         rows = self._read(
-            "SELECT ip, MAX(ts) FROM login_attempts "
+            "SELECT ip, username_typed, MAX(ts) FROM login_attempts "
             "WHERE result = ? AND confirmed = 1 AND ip IS NOT NULL AND ts >= ? "
-            "GROUP BY ip",
+            "GROUP BY ip, username_typed",
             (str(LoginResult.SUCCESS), _to_text(since)),
         )
-        return {r[0]: _from_text(r[1]) for r in rows}
+        return [(r[0], r[1], _from_text(r[2])) for r in rows]
 
     def stats(self) -> StoreStats:
         """Return row counts and the database size on disk."""

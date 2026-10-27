@@ -73,8 +73,8 @@ reach at all. For remote access, in order of preference:
 
 Electric Fence is useful in every case: it records who logs in and who changes
 what, and warns about admins without two-factor authentication. Over a VPN,
-logins come from local network addresses, which are never banned or slowed
-down, but they're still recorded and alerted on.
+logins come from local network addresses. Those are banned and slowed down
+like any other, unless you exempt local addresses (see [IP bans](#ip-bans)).
 
 ## Install
 
@@ -158,14 +158,13 @@ audit log, and the entities are unaffected.
 
 **Log forwarding**
 
-| Setting                    | What it does                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------------- |
-| **Forward events**         | Sends each event to your collector as a syslog message. Off by default.                 |
-| **Host**                   | Host name or IP address of the collector. Required when forwarding is on.               |
-| **Port**                   | From 1 to 65535. The default is 514.                                                    |
-| **Protocol**               | `tcp` (the default), `udp`, or `tls`. Wazuh's own listener accepts TCP and UDP only.    |
-| **Verify the certificate** | Checks the collector's certificate when using TLS. On by default.                       |
-| **CA certificate**         | Optional PEM text of the certificate authority that signed the collector's certificate. |
+| Setting            | What it does                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **Forward events** | Sends each event to your collector as a syslog message. Off by default.                                    |
+| **Host**           | Host name or IP address of the collector. Required when forwarding is on.                                  |
+| **Port**           | From 1 to 65535. The default is 514.                                                                       |
+| **Protocol**       | `tcp` (the default), `udp`, or `tls`. Wazuh's own listener accepts TCP and UDP only.                       |
+| **CA certificate** | For TLS: PEM text of a self-signed or private certificate, or of the certificate authority that signed it. |
 
 ## App changes (Supervisor installs)
 
@@ -240,9 +239,13 @@ author published, which may mean someone altered the code.
   commit, or the Marketplace not being set up. It is retried on the next daily
   scan and never treated as altered.
 - A symlink inside an integration folder is flagged and never followed.
-  Unreadable files are reported as unreadable, not as changed. `__pycache__`
-  and `*.pyc` are always ignored; use **Ignored files** for integrations that
-  write their own files into their folder.
+  Unreadable files are reported as unreadable, not as changed. Bytecode in
+  `__pycache__` isn't hashed, since Python rewrites it. Instead, every file
+  there that Python would load in place of its source is compiled from that
+  source and compared; one that differs is flagged as changed. A `*.pyc`
+  outside `__pycache__` can be imported on its own, so it is compared like any
+  other file. Use **Ignored files** for integrations that write their own
+  files into their folder.
 
 **Integration health** warns about Marketplace integrations whose repository is
 archived, removed from the Marketplace, or not updated in more than 4 months
@@ -299,10 +302,13 @@ forwarding** section of the settings.
   and flagged, until it fits.
 - **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
   Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
-  certificate is checked unless you turn that off, and you can paste your own
-  CA certificate. Over TCP and TLS each message ends with a newline, with no
-  length prefix, which is what Wazuh and Splunk's raw TCP input expect. Over
-  UDP each message is one datagram.
+  collector's certificate and name are always checked, because events go out
+  unmasked. For a self-signed or private certificate, paste it, or the
+  certificate authority that signed it, into **CA certificate**, and set
+  **Host** to the name or address the certificate is for. TCP and UDP aren't
+  encrypted, so use them only on a network you trust. Over TCP and TLS each
+  message ends with a newline, with no length prefix, which is what Wazuh and
+  Splunk's raw TCP input expect. Over UDP each message is one datagram.
 - **Reliability.** Forwarding never makes a login wait. If the collector is
   down or its name doesn't resolve, events queue up to 1,000 and the oldest
   are dropped first. Reconnects back off from 1 second to 5 minutes, and the
@@ -431,7 +437,15 @@ The admin panel is in the sidebar and at `/electric-fence`.
 When an address fails to log in too many times within the window (5 in 15
 minutes by default), Electric Fence adds it to Home Assistant's own ban list
 (`ip_bans.yaml`). Home Assistant then refuses every request from it. Bans last
-24 hours by default, and expire by themselves. Failures that count are an
+24 hours by default, and expire by themselves.
+
+IPv6 is counted per prefix, a /64 by default (**IPv6 prefix length**). One
+IPv6 host usually holds a whole /64, so changing address doesn't escape the
+count. While an address is banned, logins from the rest of its prefix are
+refused too, recorded as `banned`. Those refusals don't count toward new bans.
+Electric Fence keeps at most 500 active bans. Past that, it raises a repair
+issue and stops banning until bans expire or are lifted; failed logins are
+still recorded, and username protection still works. Failures that count are an
 unknown username, a wrong password, wrong credentials, a wrong two-factor
 code, and a throttled attempt. Invalid tokens and blocked users don't count.
 
@@ -439,12 +453,19 @@ code, and a throttled attempt. Invalid tokens and blocked users don't count.
   ban. This works on bans Home Assistant added itself, too. Lifting a ban also
   resets Home Assistant's own failure counter for that address, so one more
   typo doesn't ban it again at once.
-- **Never banned.** Local network addresses (loopback, private ranges,
-  100.64.0.0/10, link-local, and IPv6 unique-local), the Supervisor, and your
-  trusted proxies.
-- **Trusted after success.** An address with a successful login within the ban
-  length (24 hours if bans never expire) isn't banned automatically. A
-  successful login resets that address's count.
+- **Never banned.** This machine (loopback), the Supervisor, and your trusted
+  proxies.
+- **Local addresses.** Private ranges, 100.64.0.0/10 (including Tailscale),
+  link-local and IPv6 unique-local addresses are counted and banned like any
+  other: a compromised device on your network is an attacker too. Turn on
+  **Never ban or slow down local addresses** to exempt them. Do that if Home
+  Assistant runs in Docker without host networking, where every device on
+  your network can appear as the same address.
+- **Trusted after success.** A successful login trusts its address for that
+  username, within the ban length (24 hours if bans never expire). The address
+  isn't banned for that user's own typos, but failures for any other username
+  still ban it. A successful login resets the count of its own username's
+  failures only.
 - **Repeat offenders.** With **Lengthen bans for repeat offenders** on, each
   further ban of the same address within 30 days doubles the length. The fourth
   is permanent. A ban length of 0 is always permanent.
@@ -475,8 +496,10 @@ Electric Fence treats it as an attack and slows down logins to that username
 until it stops. Attempts are handled one at a time. Each failed attempt makes
 the next wait longer, starting at 2 seconds, doubling, and capped at 30
 seconds. At most 3 attempts wait. Any more are refused with "Too many login
-attempts. Try again later." Your own addresses on the local network aren't
-slowed down. Attacks show in the panel, in the **Login attack** entity, and in
+attempts. Try again later." A known device isn't slowed down or refused: an
+address (for IPv6, its prefix) that logged in successfully as that username
+within the last 30 days. An attacker can't lock you out by filling the queue.
+Attacks show in the panel, in the **Login attack** entity, and in
 the `electric_fence_username_attack` event.
 
 ### New country alerts

@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass, replace
 import hashlib
+import io
 import logging
-from tempfile import SpooledTemporaryFile
 from typing import IO, Literal
 import zipfile
 import zlib
@@ -177,7 +177,7 @@ async def fetch_reference(
             if declared.isdigit() and int(declared) > MAX_ARCHIVE_BYTES:
                 return Unchecked("too_large")
             # Held in memory: the cap keeps it small and nothing touches disk.
-            with SpooledTemporaryFile(max_size=MAX_ARCHIVE_BYTES + _CHUNK) as spool:
+            with io.BytesIO() as spool:
                 size = 0
                 async for chunk in response.content.iter_chunked(_CHUNK):
                     size += len(chunk)

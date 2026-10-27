@@ -147,6 +147,26 @@ async def test_archive_trimmed_to_domain(
     assert (await verify(hass, runtime, item)).status == "match"
 
 
+async def test_sourceless_bytecode_is_compared(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    runtime: Runtime,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """A `.pyc` outside `__pycache__` is importable, so it is hashed on both sides."""
+    item = _item(tmp_path, zip_release=False)
+    (item.path / "extra.pyc").write_bytes(b"installed")
+    members = {
+        f"demo-1.2.0/custom_components/demo/{k}": v for k, v in _members(item).items()
+    }
+    members["demo-1.2.0/custom_components/demo/extra.pyc"] = b"published"
+    aioclient_mock.get(TAG, content=_zip(members))
+    result = await verify(hass, runtime, item)
+    assert result.status == "changed"
+    assert result.report is not None
+    assert result.report.changed == ["extra.pyc"]
+
+
 async def test_content_in_root(
     hass: HomeAssistant,
     tmp_path: Path,

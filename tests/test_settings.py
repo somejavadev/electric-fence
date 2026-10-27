@@ -40,6 +40,22 @@ def test_settings_clamps() -> None:
     assert s.notify_targets == ("notify.phone",)
 
 
+def test_settings_address_defaults() -> None:
+    """Local addresses are counted, and IPv6 is counted per /64, by default."""
+    s = Settings()
+    assert s.exempt_local is False
+    assert s.ipv6_prefix == 64
+
+
+def test_settings_address_clamps() -> None:
+    """The IPv6 prefix stays between 48 and 128; the flag must be a bool."""
+    assert Settings.from_options({"ipv6_prefix": 8}).ipv6_prefix == 48
+    assert Settings.from_options({"ipv6_prefix": 200}).ipv6_prefix == 128
+    assert Settings.from_options({"ipv6_prefix": "x"}).ipv6_prefix == 64
+    assert Settings.from_options({"exempt_local": "yes"}).exempt_local is False
+    assert Settings.from_options({"exempt_local": True}).exempt_local is True
+
+
 def test_settings_round_trip() -> None:
     """Stored options (lists after JSON) parse back to the same settings."""
     s = Settings(notify_targets=("notify.a", "notify.b"), ban_hours=0)
@@ -71,7 +87,6 @@ def test_settings_v03_defaults() -> None:
     assert s.forward_host == ""
     assert s.forward_port == 514
     assert s.forward_protocol == "tcp"
-    assert s.forward_verify_tls is True
     assert s.forward_ca_pem == ""
 
 

@@ -32,7 +32,8 @@ export type LoginReason =
   | "invalid_token"
   | "blocked_inactive_user"
   | "blocked_local_only"
-  | "throttled";
+  | "throttled"
+  | "banned";
 
 export type Source = "local" | "remote" | "cloud";
 
@@ -361,6 +362,9 @@ export interface Status {
     /** 0 means bans never expire. */
     ban_hours: number;
     ban_repeat_offenders: boolean;
+    /** IPv6 failures and bans count per prefix of this length. */
+    ipv6_prefix: number;
+    exempt_local: boolean;
     username_protection: boolean;
     attack_threshold: number;
     attack_min_ips: number;

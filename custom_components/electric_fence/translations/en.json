@@ -69,6 +69,10 @@
       "title": "Electric Fence cannot write to its database",
       "description": "Electric Fence could not write to its database: {error}. Logins are not affected, but new records are being dropped until this is fixed."
     },
+    "tls_check_required": {
+      "title": "Log forwarding now checks the collector's certificate",
+      "description": "Log forwarding over TLS was set not to check the collector's certificate. That setting has been removed: events are forwarded unmasked, and without the check anyone between Home Assistant and the collector could receive or change them. Forwarding fails until the certificate can be checked. To fix it, go to Settings > Devices & services > Electric Fence > Configure > Forwarding. Paste the collector's certificate, or the certificate authority that signed it, into CA certificate, and set Host to the name or address the certificate is for. If the collector is on a network you trust, you can choose TCP instead. Saving the settings removes this message. Logins are not affected."
+    },
     "ip_ban_disabled": {
       "title": "Home Assistant IP bans are switched off",
       "description": "Electric Fence bans addresses through Home Assistant's own IP ban, which is switched off, so Electric Fence cannot block any address. To switch it on, go to Settings > System > Network > HTTP server > IP banning, turn on Enable IP banning, and save. Saving restarts Home Assistant. Logins are not affected."
@@ -88,6 +92,10 @@
     "integration_unmaintained": {
       "title": "{name} has not been updated in a long time",
       "description": "The custom integration {name} has had no update in more than {months} months, so it may no longer get security fixes. Check whether it is still maintained, or replace it."
+    },
+    "ban_limit_reached": {
+      "title": "Electric Fence reached its limit of active bans",
+      "description": "Electric Fence has {limit} active bans, the most it keeps, so it is not banning more addresses. This usually means an attack from very many addresses. Failed logins are still recorded and usernames under attack are still slowed down. Check the Bans tab in the Electric Fence panel. This message goes away once bans expire or are lifted."
     },
     "storage_limit_reached": {
       "title": "Electric Fence database reached its size limit",
@@ -112,7 +120,7 @@
     "step": {
       "init": {
         "title": "Electric Fence settings",
-        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away. Local network addresses are never banned or slowed down.",
+        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away. This machine, the Supervisor and trusted proxies are never banned or slowed down; other local addresses are, unless you exempt them under Bans.",
         "data": {
           "retention_days": "History retention",
           "geoip_provider": "GeoIP provider",
@@ -138,14 +146,18 @@
               "ban_threshold": "Failed attempts",
               "ban_window_minutes": "Within",
               "ban_hours": "Ban length",
-              "ban_repeat_offenders": "Lengthen bans for repeat offenders"
+              "ban_repeat_offenders": "Lengthen bans for repeat offenders",
+              "ipv6_prefix": "IPv6 prefix length",
+              "exempt_local": "Never ban or slow down local addresses"
             },
             "data_description": {
               "auto_ban": "Ban an IP address that fails too many logins.",
-              "ban_threshold": "Failed logins from one address before it is banned, from 1 to 100.",
+              "ban_threshold": "Failed logins from one address (for IPv6, one prefix) before it is banned, from 1 to 100.",
               "ban_window_minutes": "The period in which the failed logins are counted, from 1 to 1440 minutes.",
               "ban_hours": "How long a ban lasts, up to 8760 hours. 0 means the ban never expires.",
-              "ban_repeat_offenders": "Double the ban for each further ban of the same address within 30 days. The fourth is permanent."
+              "ban_repeat_offenders": "Double the ban for each further ban of the same address within 30 days. The fourth is permanent.",
+              "ipv6_prefix": "IPv6 failures are counted, and bans enforced, per prefix of this length, from 48 to 128. One IPv6 host usually holds a whole /64, so it can't escape a ban by changing address. 128 counts single addresses.",
+              "exempt_local": "Off by default: a compromised device on your network, or a Tailscale peer, is treated like any other address. Turn on to exempt LAN, Docker, Tailscale and other local addresses, as earlier versions did. Loopback, the Supervisor and trusted proxies are always exempt. If Home Assistant runs in Docker without host networking, every device on your network may share one address; turn this on there."
             }
           },
           "username_protection": {
@@ -212,7 +224,6 @@
               "forward_host": "Host",
               "forward_port": "Port",
               "forward_protocol": "Protocol",
-              "forward_verify_tls": "Verify the certificate",
               "forward_ca_pem": "CA certificate"
             },
             "data_description": {
@@ -220,8 +231,7 @@
               "forward_host": "Host name or IP address of the collector.",
               "forward_port": "Port of the collector, from 1 to 65535.",
               "forward_protocol": "Wazuh's own syslog listener accepts TCP and UDP. Use TLS only with a collector that supports it, such as rsyslog.",
-              "forward_verify_tls": "Check the collector's certificate when using TLS.",
-              "forward_ca_pem": "Optional PEM text of the certificate authority that signed the collector's certificate."
+              "forward_ca_pem": "With TLS the collector's certificate is always checked. For a self-signed or private certificate, paste the certificate, or the certificate authority that signed it, as PEM text."
             }
           }
         }

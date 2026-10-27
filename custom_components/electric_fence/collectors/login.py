@@ -171,6 +171,14 @@ class LoginCollector(BaseCollector):
             # The deliberate exception to "Core's call runs first": the
             # spec's slow-down runs before Core's step, during an attack only.
             gate = self.guard.call(self._gate_args, args, kwargs, info)
+            if self.guard.call(self._banned, gate):
+                self.guard.call(
+                    self._observe_refused, args, kwargs, info, gate, LoginReason.BANNED
+                )
+                raise web.HTTPForbidden(
+                    text=json.dumps({"message": THROTTLE_MESSAGE}),
+                    content_type="application/json",
+                )
             try:
                 slot = await self._async_gate(gate)
             except Refused:
@@ -211,6 +219,11 @@ class LoginCollector(BaseCollector):
         ip = self._attempt_ip(info, request)
         return typed, str(ip) if ip is not None else None
 
+    def _banned(self, gate: tuple[str | None, str | None] | None) -> bool:
+        """Return whether the step's address is in the prefix of an active ban."""
+        bans = self.runtime.bans
+        return gate is not None and bans is not None and bans.is_blocked(gate[1])
+
     async def _async_gate(
         self, gate: tuple[str | None, str | None] | None
     ) -> _Slot | None:
@@ -232,8 +245,9 @@ class LoginCollector(BaseCollector):
         kwargs: dict[str, Any],
         info: _FlowInfo | None,
         gate: tuple[str | None, str | None] | None,
+        reason: LoginReason = LoginReason.THROTTLED,
     ) -> None:
-        """Queue and count a step refused because the queue is full."""
+        """Queue a refused step; a full queue is counted, a banned prefix is not."""
         flow_id = _arg(args, kwargs, 0, "flow_id")
         typed = gate[0] if gate is not None else None
         handler = info.handler if info else None
@@ -243,8 +257,9 @@ class LoginCollector(BaseCollector):
             typed,
             handler,
             LoginResult.FAILED,
-            LoginReason.THROTTLED,
+            reason,
             self._user_exists(handler, typed),
+            count=reason is not LoginReason.BANNED,
         )
 
     def _typed_username(self, flow_id: Any, user_input: Any) -> str | None:
@@ -408,6 +423,7 @@ class LoginCollector(BaseCollector):
         *,
         mfa_module: str | None = None,
         credentials: Credentials | None = None,
+        count: bool = True,
     ) -> None:
         """Queue a login attempt, mark the request and count it for the policies."""
         request = current_request.get()
@@ -428,12 +444,14 @@ class LoginCollector(BaseCollector):
         )
         if blocked is not None:
             outcome, reason = LoginResult.BLOCKED, blocked
+        if not count:
+            return
         # Counted even when the record can't be built or queued (the worker's
         # queue is full, a lookup failed): a flood must not switch protection
         # off. Each policy in its own guard, so one failing never skips the
         # other.
         if (policy := self.runtime.ip_policy) is not None:
-            self.guard.call(policy.on_attempt, ip_text, outcome, reason)
+            self.guard.call(policy.on_attempt, ip_text, outcome, reason, username=typed)
         if (guard := self.runtime.username_guard) is not None:
             self.guard.call(guard.on_attempt, typed, ip_text, outcome, reason, exists)
 

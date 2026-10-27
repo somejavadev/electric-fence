@@ -31,6 +31,11 @@ class Settings:
     attack_threshold: int = 10
     attack_min_ips: int = 3
     attack_window_minutes: int = 15
+    # Local addresses (LAN, Docker, Tailscale, ...) are counted like any other
+    # unless this is set. Loopback, the Supervisor and trusted proxies never are.
+    exempt_local: bool = False
+    # IPv6 failures and bans are counted per prefix of this length.
+    ipv6_prefix: int = 64
     notify_ip_banned: bool = True
     notify_username_attack: bool = True
     notify_new_country: bool = True
@@ -45,7 +50,6 @@ class Settings:
     forward_host: str = ""
     forward_port: int = 514
     forward_protocol: Literal["tcp", "udp", "tls"] = "tcp"
-    forward_verify_tls: bool = True
     forward_ca_pem: str = ""
 
     @property
@@ -136,6 +140,8 @@ class Settings:
             attack_threshold=number("attack_threshold", 2, 1000),
             attack_min_ips=number("attack_min_ips", 1, 100),
             attack_window_minutes=number("attack_window_minutes", 1, 1440),
+            exempt_local=flag("exempt_local"),
+            ipv6_prefix=number("ipv6_prefix", 48, 128),
             notify_ip_banned=flag("notify_ip_banned"),
             notify_username_attack=flag("notify_username_attack"),
             notify_new_country=flag("notify_new_country"),
@@ -150,7 +156,6 @@ class Settings:
             forward_host=string("forward_host").strip(),
             forward_port=number("forward_port", 1, 65535),
             forward_protocol=choice("forward_protocol", ("tcp", "udp", "tls")),
-            forward_verify_tls=flag("forward_verify_tls"),
             forward_ca_pem=string("forward_ca_pem"),
         )
 

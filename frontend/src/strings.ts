@@ -440,6 +440,8 @@ export const strings = {
     hours: (n: number): string => `${n} h`,
     permanent: "Permanent",
     repeatOffenders: "Lengthen bans for repeat offenders",
+    ipv6Prefix: "IPv6 counted per",
+    exemptLocal: "Exempt local addresses",
     usernameProtection: "Username protection",
     protectUsernames: "Protect usernames",
     slowDownAfter: "Slow down after",

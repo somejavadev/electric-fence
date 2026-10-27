@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
@@ -44,6 +44,7 @@ def runtime(hass: HomeAssistant, store: FenceStore) -> Runtime:
     bans = MagicMock()
     bans.available = True
     bans.async_ban = AsyncMock(return_value=True)
+    bans.is_blocked = Mock(return_value=False)
     rt.bans = bans
     return rt
 
@@ -59,12 +60,13 @@ def _success(
     *,
     confirmed: bool = True,
     result: LoginResult = LoginResult.SUCCESS,
+    user: str = "alice",
 ) -> LoginAttempt:
     return LoginAttempt(
         ts=dt_util.utcnow(),
         result=result,
         reason=LoginReason.OK,
-        username_typed="alice",
+        username_typed=user,
         user_exists=UserExists.YES,
         user_id="u1",
         provider=None,
@@ -77,9 +79,11 @@ def _success(
     )
 
 
-def _fail(policy: IpPolicy, times: int, ip: str = IP) -> None:
+def _fail(
+    policy: IpPolicy, times: int, ip: str = IP, user: str | None = "alice"
+) -> None:
     for _ in range(times):
-        policy.on_attempt(ip, *FAIL)
+        policy.on_attempt(ip, *FAIL, username=user)
 
 
 async def test_bans_at_threshold(
@@ -152,7 +156,7 @@ async def test_trusted_after_success(
     freezer: FrozenDateTimeFactory,
 ) -> None:
     """A recent confirmed success protects the address until the window ends."""
-    policy.on_attempt(IP, *OK)
+    policy.on_attempt(IP, *OK, username="alice")
     policy.on_record(_success())
     _fail(policy, 5)
     await hass.async_block_till_done()
@@ -169,9 +173,9 @@ async def test_success_resets_count(
     policy: IpPolicy,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """A success clears the failures counted so far."""
+    """A success clears the failures counted so far for its username."""
     _fail(policy, 4)
-    policy.on_attempt(IP, *OK)
+    policy.on_attempt(IP, *OK, username="Alice")
     freezer.tick(runtime.settings.trusted_window + timedelta(seconds=1))
     _fail(policy, 4)
     await hass.async_block_till_done()
@@ -211,8 +215,9 @@ async def test_blocked_does_not_trust(
 async def test_seed_trusted(
     hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
 ) -> None:
-    """Addresses seeded from the store are trusted."""
-    policy.seed_trusted({f"::ffff:{IP}": dt_util.utcnow(), "bad": dt_util.utcnow()})
+    """Successes seeded from the store trust their address for their username."""
+    now = dt_util.utcnow()
+    policy.seed_trusted([(f"::ffff:{IP}", "alice", now), ("bad", "alice", now)])
     _fail(policy, 5)
     await hass.async_block_till_done()
     runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
@@ -248,16 +253,105 @@ async def test_exempt_never_trusted(
     hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
 ) -> None:
     """Exempt addresses take no space in the trusted map."""
-    policy.seed_trusted({"10.0.0.5": dt_util.utcnow()})
-    policy.on_record(_success("10.0.0.6"))
+    policy.seed_trusted([("127.0.0.1", "alice", dt_util.utcnow())])
+    policy.on_record(_success("::1"))
     assert not policy._trusted  # noqa: SLF001
 
 
 async def test_exempt_ip_never_counted(
     hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
 ) -> None:
-    """Private addresses are never counted."""
+    """Loopback is never counted."""
+    _fail(policy, 10, "127.0.0.1")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("ip", ["10.0.0.5", "172.17.0.1", "100.101.102.103", "fd7a::1"])
+async def test_local_counted(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy, ip: str
+) -> None:
+    """A local address is banned like any other by default."""
+    _fail(policy, 5, ip)
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once_with(ip, 5, None, None)  # type: ignore[union-attr]
+
+
+async def test_local_exempt_when_set(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """With exempt_local (read live) local addresses are not counted."""
+    runtime.settings = replace(runtime.settings, exempt_local=True)
     _fail(policy, 10, "10.0.0.5")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
+
+
+async def test_ipv6_counted_per_prefix(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """Rotating addresses inside one /64 still bans, on the fifth failure."""
+    for n in range(1, 6):
+        _fail(policy, 1, f"2001:db8:1:2::{n}")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once_with("2001:db8:1:2::5", 5, None, None)  # type: ignore[union-attr]
+
+
+async def test_ipv6_prefixes_counted_apart(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """Different /64s are counted apart; a /128 setting counts addresses."""
+    _fail(policy, 4, "2001:db8:1:2::1")
+    _fail(policy, 4, "2001:db8:1:3::1")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
+    runtime.settings = replace(runtime.settings, ipv6_prefix=128)
+    for n in range(1, 6):
+        _fail(policy, 1, f"2001:db8:9:9::{n}")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
+
+
+async def test_trust_is_per_username(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """A guest's success doesn't stop a ban for failures on another username."""
+    policy.on_attempt(IP, *OK, username="guest")
+    policy.on_record(_success(user="guest"))
+    _fail(policy, 5, user="admin")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once_with(IP, 5, None, None)  # type: ignore[union-attr]
+
+
+async def test_trust_needs_every_failure_trusted(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """Mixed usernames ban, even when some are the trusted user's typos."""
+    policy.on_record(_success(user="alice"))
+    _fail(policy, 3, user="ALICE ")
+    _fail(policy, 1, user="admin")
+    _fail(policy, 1, user=None)
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once()  # type: ignore[union-attr]
+
+
+async def test_success_keeps_other_usernames_failures(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """A guest login between admin guesses doesn't reset the admin failures."""
+    for _ in range(5):
+        _fail(policy, 1, user="admin")
+        policy.on_attempt(IP, *OK, username="guest")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_awaited_once_with(IP, 5, None, None)  # type: ignore[union-attr]
+
+
+async def test_trust_is_per_prefix(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """A success trusts its whole /64: privacy addresses change."""
+    policy.on_record(_success(ip="2001:db8:1:2::aaaa"))
+    _fail(policy, 5, "2001:db8:1:2::bbbb")
     await hass.async_block_till_done()
     runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
 
@@ -284,7 +378,7 @@ async def test_memory_bounded(
     _fail(policy, 1, "203.0.113.1")
     now = dt_util.utcnow()
     policy.seed_trusted(
-        {f"198.51.100.{n}": now + timedelta(seconds=n) for n in (1, 2, 3, 4)}
+        [(f"198.51.100.{n}", "alice", now + timedelta(seconds=n)) for n in (1, 2, 3, 4)]
     )
     _fail(policy, 5, "198.51.100.1")
     _fail(policy, 5, "198.51.100.4")
@@ -303,3 +397,27 @@ async def test_never_raises(
     # Broken settings raise inside on_attempt itself, which the guard absorbs.
     runtime.settings = None  # type: ignore[assignment]
     _fail(policy, 1)
+
+
+async def test_trusted_users_bounded(
+    monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant, runtime: Runtime
+) -> None:
+    """Per address, the user who logged in longest ago is dropped first."""
+    monkeypatch.setattr(policy_module, "MAX_TRUSTED_USERS", 2)
+    policy = IpPolicy(hass, runtime)
+    now = dt_util.utcnow()
+    policy.seed_trusted(
+        [(IP, f"user{n}", now - timedelta(minutes=10 - n)) for n in (1, 2, 3)]
+    )
+    assert policy._trusted_users(IP, now) == {"user2", "user3"}  # noqa: SLF001
+
+
+async def test_no_ban_request_when_already_blocked(
+    hass: HomeAssistant, runtime: Runtime, policy: IpPolicy
+) -> None:
+    """An address its prefix ban already covers asks for no further ban."""
+    runtime.bans.is_blocked = Mock(return_value=True)  # type: ignore[union-attr]
+    _fail(policy, 10, "2001:db8::7")
+    await hass.async_block_till_done()
+    runtime.bans.async_ban.assert_not_awaited()  # type: ignore[union-attr]
+    runtime.bans.is_blocked.assert_called_with("2001:db8::7")  # type: ignore[union-attr]

@@ -15,13 +15,12 @@ CONNECT_TIMEOUT = 10.0
 UDP_MAX = 8192
 
 
-def build_ssl_context(verify: bool, ca_pem: str) -> ssl.SSLContext:
-    """Return the TLS context. Loads files, so it runs in the executor."""
-    if not verify:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        return context
+def build_ssl_context(ca_pem: str) -> ssl.SSLContext:
+    """Return the TLS context. Loads files, so it runs in the executor.
+
+    The certificate and host name are always checked: events go out unmasked,
+    so an unchecked connection would hand them to whoever answers.
+    """
     if ca_pem.strip():
         return ssl.create_default_context(cadata=ca_pem)
     return ssl.create_default_context()

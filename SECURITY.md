@@ -27,3 +27,18 @@ Problems in Home Assistant itself go to
 ## Supported versions
 
 Only the latest release gets security fixes. Please update before reporting.
+
+## Verifying a release
+
+Each release's `electric_fence.zip`, which is what the Marketplace installs, is
+built by GitHub Actions from the release tag. It comes with a SHA-256 checksum
+(`electric_fence.zip.sha256`) and a signed build provenance attestation. To
+check a downloaded zip:
+
+```bash
+sha256sum --check electric_fence.zip.sha256
+gh attestation verify electric_fence.zip --repo somejavadev/electric-fence
+```
+
+The attestation shows that the zip was built by this repository's release
+workflow, from the tagged commit.

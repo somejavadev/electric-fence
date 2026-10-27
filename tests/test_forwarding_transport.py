@@ -159,8 +159,20 @@ async def test_peer_close_after_first_line_is_noticed() -> None:
 
 
 @pytest.fixture
-def cert(tmp_path: Path) -> tuple[Path, Path, str]:
-    """Self-signed certificate for 127.0.0.1: (cert file, key file, cert PEM)."""
+def cert(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Path, Path, str]:
+    """Self-signed certificate for 127.0.0.1: (cert file, key file, cert PEM).
+
+    A CA certificate by default. Parametrize with "server" for a plain server
+    certificate, as most self-signed collectors have, or "named" for one that
+    names only collector.example.
+    """
+    kind = getattr(request, "param", "ca")
+    is_ca = kind == "ca"
+    alt_name: x509.GeneralName = (
+        x509.DNSName("collector.example")
+        if kind == "named"
+        else x509.IPAddress(ipaddress.ip_address("127.0.0.1"))
+    )
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
     now = datetime.now(UTC)
@@ -173,12 +185,10 @@ def cert(tmp_path: Path) -> tuple[Path, Path, str]:
         .not_valid_before(now - timedelta(days=1))
         .not_valid_after(now + timedelta(days=1))
         .add_extension(
-            x509.SubjectAlternativeName(
-                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
-            ),
+            x509.SubjectAlternativeName([alt_name]),
             critical=False,
         )
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.BasicConstraints(ca=is_ca, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
     pem = certificate.public_bytes(serialization.Encoding.PEM)
@@ -224,15 +234,13 @@ async def test_tls_verify_and_custom_ca(
 ) -> None:
     """Tls verify and custom ca."""
     port, data = tls_server
-    strict = build_ssl_context(True, "")
+    strict = build_ssl_context("")
     failing = SyslogTransport("127.0.0.1", port, "tls", strict)
     with pytest.raises(OSError):
         await failing.connect()
     assert not failing.connected
 
-    trusted = SyslogTransport(
-        "127.0.0.1", port, "tls", build_ssl_context(True, cert[2])
-    )
+    trusted = SyslogTransport("127.0.0.1", port, "tls", build_ssl_context(cert[2]))
     try:
         await trusted.connect()
         await trusted.send(b"<132>tls")
@@ -241,15 +249,35 @@ async def test_tls_verify_and_custom_ca(
         await trusted.close()
 
 
-async def test_tls_without_verification(tls_server: tuple[int, bytearray]) -> None:
-    """Tls without verification."""
-    port, _ = tls_server
-    context = build_ssl_context(False, "")
-    assert context.verify_mode is ssl.CERT_NONE
-    assert not context.check_hostname
-    transport = SyslogTransport("127.0.0.1", port, "tls", context)
+def test_tls_context_always_verifies(cert: tuple[Path, Path, str]) -> None:
+    """The certificate and host name are checked, with or without a CA."""
+    for context in (build_ssl_context(""), build_ssl_context(cert[2])):
+        assert context.verify_mode is ssl.CERT_REQUIRED
+        assert context.check_hostname
+
+
+@pytest.mark.parametrize("cert", ["server"], indirect=True)
+async def test_tls_trusts_a_pasted_self_signed_certificate(
+    tls_server: tuple[int, bytearray], cert: tuple[Path, Path, str]
+) -> None:
+    """A self-signed server certificate pasted as the CA is trusted."""
+    port, data = tls_server
+    transport = SyslogTransport("127.0.0.1", port, "tls", build_ssl_context(cert[2]))
     try:
         await transport.connect()
-        assert transport.connected
+        await transport.send(b"<132>self-signed")
+        await _wait(lambda: bytes(data) == b"<132>self-signed\n")
     finally:
         await transport.close()
+
+
+@pytest.mark.parametrize("cert", ["named"], indirect=True)
+async def test_tls_rejects_an_address_the_certificate_is_not_for(
+    tls_server: tuple[int, bytearray], cert: tuple[Path, Path, str]
+) -> None:
+    """A trusted certificate for a host name is refused when connecting by IP."""
+    port, _ = tls_server
+    transport = SyslogTransport("127.0.0.1", port, "tls", build_ssl_context(cert[2]))
+    with pytest.raises(ssl.SSLCertVerificationError, match="127.0.0.1"):
+        await transport.connect()
+    assert not transport.connected

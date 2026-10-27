@@ -29,6 +29,9 @@ class LoginReason(StrEnum):
     BLOCKED_INACTIVE = "blocked_inactive_user"
     BLOCKED_LOCAL_ONLY = "blocked_local_only"
     THROTTLED = "throttled"
+    # Refused before Core: the address is in the prefix of an active ban.
+    # Never counted, so it can't lead to more bans.
+    BANNED = "banned"
 
 
 COUNTED_FAILURES: Final = frozenset(

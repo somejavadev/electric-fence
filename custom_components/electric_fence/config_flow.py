@@ -191,6 +191,8 @@ class OptionsFlowHandler(OptionsFlow):
                             **number("ban_window_minutes", 1, 1440, "minutes"),
                             **number("ban_hours", 0, 8760, "hours"),
                             **flag("ban_repeat_offenders"),
+                            **number("ipv6_prefix", 48, 128),
+                            **flag("exempt_local"),
                         }
                     ),
                     {"collapsed": True},
@@ -261,7 +263,6 @@ class OptionsFlowHandler(OptionsFlow):
                                     mode=SelectSelectorMode.DROPDOWN,
                                 )
                             ),
-                            **flag("forward_verify_tls"),
                             **text("forward_ca_pem", multiline=True),
                         }
                     ),

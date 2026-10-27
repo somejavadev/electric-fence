@@ -10,6 +10,7 @@ const REASON_LABELS: Record<LoginReason, string> = {
   blocked_inactive_user: "Blocked: inactive user",
   blocked_local_only: "Blocked: local only",
   throttled: "Too many attempts",
+  banned: "Blocked: address banned",
 };
 
 /** Longest user-supplied text shown before it is cut. */
