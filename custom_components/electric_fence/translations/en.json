@@ -181,7 +181,7 @@
               "integration_repairs": "Raise a repair when a check finds a problem.",
               "unmaintained_months": "Months without a release before an integration counts as unmaintained, from 1 to 36.",
               "scan_delay_minutes": "Minutes to wait after startup before the first scan, from 1 to 1440.",
-              "ignored_files": "One file per line, as <integration folder>/<path>, for example my_integration/data.json."
+              "ignored_files": "One file per line: the integration folder, a slash, then the path inside it, for example my_integration/data.json."
             }
           },
           "forwarding": {
