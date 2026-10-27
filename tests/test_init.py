@@ -1,6 +1,7 @@
 """Tests for Electric Fence setup and unload."""
 
 import asyncio
+from datetime import timedelta
 from ipaddress import ip_address
 from pathlib import Path
 import sqlite3
@@ -13,17 +14,24 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.electric_fence.collectors.base import BaseCollector
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.geo.enrich import GeoEnricher
+from custom_components.electric_fence.models import (
+    LoginAttempt,
+    LoginReason,
+    LoginResult,
+    Source,
+    UserExists,
+)
 from custom_components.electric_fence.protection.network import normalise_ip
 from custom_components.electric_fence.runtime import Runtime
 from custom_components.electric_fence.settings import Settings
-from custom_components.electric_fence.storage import SCHEMA_VERSION
+from custom_components.electric_fence.storage import SCHEMA_VERSION, FenceStore
 from homeassistant import config_entries
 from homeassistant.components.http.ban import KEY_BAN_MANAGER
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.util import yaml as yaml_util
+from homeassistant.util import dt as dt_util, yaml as yaml_util
 
 
 async def test_setup_and_unload(
@@ -288,3 +296,66 @@ async def test_remove_fails_open_on_unreadable_database(
     await hass.async_block_till_done()
     assert "could not read its bans on removal: DatabaseError" in caplog.text
     assert not db.exists()
+
+
+def _seeded_success(path: Path) -> None:
+    """Store one confirmed success from 203.0.113.9 as alice, ten days ago."""
+    store = FenceStore(path)
+    store.open()
+    try:
+        store.insert(
+            [
+                LoginAttempt(
+                    ts=dt_util.utcnow() - timedelta(days=10),
+                    result=LoginResult.SUCCESS,
+                    reason=LoginReason.OK,
+                    username_typed="alice",
+                    user_exists=UserExists.YES,
+                    user_id="u",
+                    provider=None,
+                    ip="203.0.113.9",
+                    source=Source.REMOTE,
+                    url=None,
+                    user_agent=None,
+                    client_id=None,
+                )
+            ]
+        )
+    finally:
+        store.close()
+
+
+async def test_recent_logins_seed_protection(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup makes recent successes known devices (30 days) and trusted pairs."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    path = Path(hass.config.path(".storage", "electric_fence.db"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _seeded_success(path)
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+    assert runtime.username_guard is not None
+    assert runtime.ip_policy is not None
+    assert runtime.username_guard._known.keys() == {("alice", "203.0.113.9")}  # noqa: SLF001
+    # Seeded, but older than the 24-hour trusted window: no ban is skipped.
+    assert runtime.ip_policy._trusted_users("203.0.113.9", dt_util.utcnow()) == set()  # noqa: SLF001
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_recent_logins_unreadable(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing read of recent logins only leaves protection unseeded."""
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    monkeypatch.setattr(FenceStore, "last_successes_since", Mock(side_effect=OSError))
+    entry = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.LOADED
+    assert "could not load recent logins: OSError" in caplog.text
+    assert await hass.config_entries.async_unload(entry.entry_id)

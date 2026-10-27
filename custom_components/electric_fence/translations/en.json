@@ -92,13 +92,17 @@
     "integration_unmaintained": {
       "title": "{name} has not been updated in a long time",
       "description": "The custom integration {name} has had no update in more than {months} months, so it may no longer get security fixes. Check whether it is still maintained, or replace it."
+    },
+    "ban_limit_reached": {
+      "title": "Electric Fence reached its limit of active bans",
+      "description": "Electric Fence has {limit} active bans, the most it keeps, so it is not banning more addresses. This usually means an attack from very many addresses. Failed logins are still recorded and usernames under attack are still slowed down. Check the Bans tab in the Electric Fence panel. This message goes away once bans expire or are lifted."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Electric Fence settings",
-        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away. Local network addresses are never banned or slowed down.",
+        "description": "IP geolocation by DB-IP ({dbip_url}) when DB-IP Lite is selected. Changes apply immediately. Shortening the history retention deletes older records right away. This machine, the Supervisor and trusted proxies are never banned or slowed down; other local addresses are, unless you exempt them under Bans.",
         "data": {
           "retention_days": "History retention",
           "geoip_provider": "GeoIP provider",
@@ -122,14 +126,18 @@
               "ban_threshold": "Failed attempts",
               "ban_window_minutes": "Within",
               "ban_hours": "Ban length",
-              "ban_repeat_offenders": "Lengthen bans for repeat offenders"
+              "ban_repeat_offenders": "Lengthen bans for repeat offenders",
+              "ipv6_prefix": "IPv6 prefix length",
+              "exempt_local": "Never ban or slow down local addresses"
             },
             "data_description": {
               "auto_ban": "Ban an IP address that fails too many logins.",
-              "ban_threshold": "Failed logins from one address before it is banned, from 1 to 100.",
+              "ban_threshold": "Failed logins from one address (for IPv6, one prefix) before it is banned, from 1 to 100.",
               "ban_window_minutes": "The period in which the failed logins are counted, from 1 to 1440 minutes.",
               "ban_hours": "How long a ban lasts, up to 8760 hours. 0 means the ban never expires.",
-              "ban_repeat_offenders": "Double the ban for each further ban of the same address within 30 days. The fourth is permanent."
+              "ban_repeat_offenders": "Double the ban for each further ban of the same address within 30 days. The fourth is permanent.",
+              "ipv6_prefix": "IPv6 failures are counted, and bans enforced, per prefix of this length, from 48 to 128. One IPv6 host usually holds a whole /64, so it can't escape a ban by changing address. 128 counts single addresses.",
+              "exempt_local": "Off by default: a compromised device on your network, or a Tailscale peer, is treated like any other address. Turn on to exempt LAN, Docker, Tailscale and other local addresses, as earlier versions did. Loopback, the Supervisor and trusted proxies are always exempt. If Home Assistant runs in Docker without host networking, every device on your network may share one address; turn this on there."
             }
           },
           "username_protection": {

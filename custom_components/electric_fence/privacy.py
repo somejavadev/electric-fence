@@ -19,6 +19,16 @@ def sanitise_text(value: str | None, limit: int = MAX_TEXT) -> str | None:
     return _CONTROL_RE.sub("", value)[:limit]
 
 
+def username_key(username: str | None) -> str | None:
+    """Return the key a typed username is counted under, None for none.
+
+    Matches Core's own normalising (strip, casefold) after sanitising.
+    """
+    if username is None:
+        return None
+    return (sanitise_text(username) or "").strip().casefold() or None
+
+
 def inline_text(value: str, limit: int = MAX_TEXT) -> str:
     """Return `value` as a single line, safe to mask or put in `md_code`.
 

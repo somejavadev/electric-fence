@@ -94,6 +94,27 @@ def async_clear_tls_check_required(hass: HomeAssistant) -> None:
     ir.async_delete_issue(hass, DOMAIN, TLS_CHECK_REQUIRED)
 
 
+BAN_LIMIT = "ban_limit_reached"
+
+
+def async_report_ban_limit(hass: HomeAssistant, limit: int) -> None:
+    """Raise a repair issue: the active-ban limit is reached."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        BAN_LIMIT,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=BAN_LIMIT,
+        translation_placeholders={"limit": str(limit)},
+    )
+
+
+def async_clear_ban_limit(hass: HomeAssistant) -> None:
+    """Remove the repair issue for the active-ban limit."""
+    ir.async_delete_issue(hass, DOMAIN, BAN_LIMIT)
+
+
 INTEGRATION_FILES_CHANGED = "integration_files_changed"
 INTEGRATION_ARCHIVED = "integration_archived"
 INTEGRATION_UNMAINTAINED = "integration_unmaintained"

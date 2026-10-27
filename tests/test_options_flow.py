@@ -37,6 +37,8 @@ SECTIONS = {
         "ban_window_minutes",
         "ban_hours",
         "ban_repeat_offenders",
+        "ipv6_prefix",
+        "exempt_local",
     ),
     "username_protection": (
         "username_protection",
@@ -762,17 +764,18 @@ async def test_options_description_link_is_a_placeholder(
     )
     description = strings["options"]["step"]["init"]["description"]
     assert "{dbip_url}" in description
-    assert "Local network addresses are never banned" in description
+    assert "Local network addresses are never banned" not in description
+    assert "unless you exempt them under Bans" in description
     assert "https://" not in json.dumps(strings)
 
 
 async def test_options_flow_shows_v03_sections(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
-    """The form has the integration checks and forwarding sections."""
+    """The form has the bans, integration checks and forwarding sections."""
     result = await _init(hass, setup_entry)
     schema = {str(k): v for k, v in result["data_schema"].schema.items()}
-    for name in ("integration_checks", "forwarding"):
+    for name in ("bans", "integration_checks", "forwarding"):
         assert isinstance(schema[name], section)
         keys = {str(k) for k in schema[name].schema.schema}
         assert keys == set(SECTIONS[name])

@@ -73,8 +73,8 @@ reach at all. For remote access, in order of preference:
 
 Electric Fence is useful in every case: it records who logs in and who changes
 what, and warns about admins without two-factor authentication. Over a VPN,
-logins come from local network addresses, which are never banned or slowed
-down, but they're still recorded and alerted on.
+logins come from local network addresses. Those are banned and slowed down
+like any other, unless you exempt local addresses (see [IP bans](#ip-bans)).
 
 ## Install
 
@@ -434,7 +434,15 @@ The admin panel is in the sidebar and at `/electric-fence`.
 When an address fails to log in too many times within the window (5 in 15
 minutes by default), Electric Fence adds it to Home Assistant's own ban list
 (`ip_bans.yaml`). Home Assistant then refuses every request from it. Bans last
-24 hours by default, and expire by themselves. Failures that count are an
+24 hours by default, and expire by themselves.
+
+IPv6 is counted per prefix, a /64 by default (**IPv6 prefix length**). One
+IPv6 host usually holds a whole /64, so changing address doesn't escape the
+count. While an address is banned, logins from the rest of its prefix are
+refused too, recorded as `banned`. Those refusals don't count toward new bans.
+Electric Fence keeps at most 500 active bans. Past that, it raises a repair
+issue and stops banning until bans expire or are lifted; failed logins are
+still recorded, and username protection still works. Failures that count are an
 unknown username, a wrong password, wrong credentials, a wrong two-factor
 code, and a throttled attempt. Invalid tokens and blocked users don't count.
 
@@ -442,12 +450,19 @@ code, and a throttled attempt. Invalid tokens and blocked users don't count.
   ban. This works on bans Home Assistant added itself, too. Lifting a ban also
   resets Home Assistant's own failure counter for that address, so one more
   typo doesn't ban it again at once.
-- **Never banned.** Local network addresses (loopback, private ranges,
-  100.64.0.0/10, link-local, and IPv6 unique-local), the Supervisor, and your
-  trusted proxies.
-- **Trusted after success.** An address with a successful login within the ban
-  length (24 hours if bans never expire) isn't banned automatically. A
-  successful login resets that address's count.
+- **Never banned.** This machine (loopback), the Supervisor, and your trusted
+  proxies.
+- **Local addresses.** Private ranges, 100.64.0.0/10 (including Tailscale),
+  link-local and IPv6 unique-local addresses are counted and banned like any
+  other: a compromised device on your network is an attacker too. Turn on
+  **Never ban or slow down local addresses** to exempt them. Do that if Home
+  Assistant runs in Docker without host networking, where every device on
+  your network can appear as the same address.
+- **Trusted after success.** A successful login trusts its address for that
+  username, within the ban length (24 hours if bans never expire). The address
+  isn't banned for that user's own typos, but failures for any other username
+  still ban it. A successful login resets the count of its own username's
+  failures only.
 - **Repeat offenders.** With **Lengthen bans for repeat offenders** on, each
   further ban of the same address within 30 days doubles the length. The fourth
   is permanent. A ban length of 0 is always permanent.
@@ -478,8 +493,10 @@ Electric Fence treats it as an attack and slows down logins to that username
 until it stops. Attempts are handled one at a time. Each failed attempt makes
 the next wait longer, starting at 2 seconds, doubling, and capped at 30
 seconds. At most 3 attempts wait. Any more are refused with "Too many login
-attempts. Try again later." Your own addresses on the local network aren't
-slowed down. Attacks show in the panel, in the **Login attack** entity, and in
+attempts. Try again later." A known device isn't slowed down or refused: an
+address (for IPv6, its prefix) that logged in successfully as that username
+within the last 30 days. An attacker can't lock you out by filling the queue.
+Attacks show in the panel, in the **Login attack** entity, and in
 the `electric_fence_username_attack` event.
 
 ### New country alerts

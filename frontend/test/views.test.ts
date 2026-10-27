@@ -1104,6 +1104,11 @@ describe("protection in Activity", () => {
     const root = await row({ reason: "throttled" });
     expect(tags(root)).toContain("Too many attempts");
   });
+
+  it("banned reason label", async () => {
+    const root = await row({ reason: "banned" });
+    expect(tags(root)).toContain("Blocked: address banned");
+  });
 });
 
 describe("Users details show flags", () => {
@@ -1151,6 +1156,8 @@ describe("protection in Settings", () => {
     expect(r["Ban after"]).toBe("5 failed attempts within 15 min");
     expect(r["Ban length"]).toBe("Permanent");
     expect(r["Lengthen bans for repeat offenders"]).toBe("Off");
+    expect(r["IPv6 counted per"]).toBe("/64");
+    expect(r["Exempt local addresses"]).toBe("Off");
     expect(r["Protect usernames"]).toBe("On");
     expect(r["Slow down after"]).toBe(
       "10 failed attempts from at least 3 addresses within 15 min",
