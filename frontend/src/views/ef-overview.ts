@@ -42,6 +42,13 @@ export const SCAN_POLL_MS = 2000;
 /** Later polls are further apart; give up on a scan after this long. */
 export const SCAN_SLOW_POLL_MS = 10_000;
 export const SCAN_GIVE_UP_MS = 5 * 60_000;
+/** A clean scheduled scan records nothing, so look again this often. */
+export const INTEGRATIONS_REFRESH_MS = 10 * 60_000;
+/** Changes that a finished scan records; they mean the card is stale. */
+const SCAN_KINDS: ReadonlySet<string> = new Set([
+  "files",
+  "integration_health",
+]);
 
 type Phase = "loading" | "ready" | "error" | "unloaded";
 
@@ -96,6 +103,9 @@ export class EfOverview extends LitElement {
   private _unsub: UnsubscribeFunc | undefined;
   private _timer: ReturnType<typeof setTimeout> | undefined;
   private _scanTimer: ReturnType<typeof setTimeout> | undefined;
+  private _integrationsTimer: ReturnType<typeof setInterval> | undefined;
+  /** A push since the last refresh came from a finished scan. */
+  private _scanChanged = false;
 
   static override styles = css`
     :host {
@@ -347,6 +357,15 @@ export class EfOverview extends LitElement {
     void this._subscribe(generation);
     void this._loadStatus(generation);
     void this._watchIntegrations(generation);
+    this._integrationsTimer = setInterval(() => {
+      // A hidden page or a running poll needs no extra look.
+      if (
+        document.visibilityState === "visible" &&
+        this._scanTimer === undefined
+      ) {
+        void this._watchIntegrations(this._generation);
+      }
+    }, INTEGRATIONS_REFRESH_MS);
   }
 
   /** Only the attribution needs the status; failing here costs nothing. */
@@ -466,6 +485,9 @@ export class EfOverview extends LitElement {
       clearTimeout(this._timer);
       this._timer = undefined;
     }
+    clearInterval(this._integrationsTimer);
+    this._integrationsTimer = undefined;
+    this._scanChanged = false;
   }
 
   private _dropSubscription(): void {
@@ -508,11 +530,19 @@ export class EfOverview extends LitElement {
       this._markUnloaded();
       return;
     }
+    if (event.type === "change" && SCAN_KINDS.has(event.item.kind)) {
+      this._scanChanged = true;
+    }
     // Pushes carry `id: null`; the refetch replaces the lists anyway. A
     // timer already running covers every push that arrives before it fires.
     this._timer ??= setTimeout(() => {
       this._timer = undefined;
       void this._refresh(this._generation);
+      // A running poll reloads the card by itself.
+      if (this._scanChanged && this._scanTimer === undefined) {
+        void this._watchIntegrations(this._generation);
+      }
+      this._scanChanged = false;
     }, REFRESH_DELAY_MS);
   }
 

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/components/ef-posture-list.ts";
-import { REFRESH_DELAY_MS, EfOverview } from "../src/views/ef-overview.ts";
+import {
+  INTEGRATIONS_REFRESH_MS,
+  REFRESH_DELAY_MS,
+  EfOverview,
+} from "../src/views/ef-overview.ts";
 import { changeSentence, postureText } from "../src/strings.ts";
 import {
   attack,
@@ -697,6 +701,56 @@ describe("custom integrations card", () => {
     await vi.advanceTimersByTimeAsync(3000);
     await settle(el);
     expect(button().disabled).toBe(false);
+  });
+
+  it("reloads the card when a scan records a change", async () => {
+    vi.useFakeTimers();
+    let scanned: string | null = null;
+    const { el, fake } = await mountCard(() => ({
+      items: [changed],
+      scanned_at: scanned,
+      running: false,
+      available: true,
+    }));
+    const before = fake.of("integrations").length;
+    scanned = "2026-10-27T03:00:00+00:00";
+    fake.push({ type: "change", item: change({ kind: "files" }) });
+    await vi.advanceTimersByTimeAsync(REFRESH_DELAY_MS);
+    await settle(el);
+    expect(fake.of("integrations").length).toBe(before + 1);
+    expect(squash(card(el).textContent)).toContain("Last check");
+  });
+
+  it("does not reload the card for other changes", async () => {
+    vi.useFakeTimers();
+    const { el, fake } = await mountCard({
+      items: [changed],
+      scanned_at: null,
+      running: false,
+      available: true,
+    });
+    const before = fake.of("integrations").length;
+    fake.push({ type: "change", item: change({ kind: "settings" }) });
+    await vi.advanceTimersByTimeAsync(REFRESH_DELAY_MS);
+    await settle(el);
+    expect(fake.of("integrations").length).toBe(before);
+  });
+
+  it("reloads the card now and then while the page is open", async () => {
+    vi.useFakeTimers();
+    const { el, fake } = await mountCard({
+      items: [changed],
+      scanned_at: null,
+      running: false,
+      available: true,
+    });
+    const before = fake.of("integrations").length;
+    await vi.advanceTimersByTimeAsync(INTEGRATIONS_REFRESH_MS);
+    await settle(el);
+    expect(fake.of("integrations").length).toBe(before + 1);
+    el.remove();
+    await vi.advanceTimersByTimeAsync(INTEGRATIONS_REFRESH_MS * 2);
+    expect(fake.of("integrations").length).toBe(before + 1);
   });
 
   it("says when a check ran recently", async () => {
