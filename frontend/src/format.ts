@@ -140,6 +140,10 @@ export function rangeBounds(
     const since = sinceFor(range, now);
     return since === undefined ? {} : { since };
   }
+  // A start after the end means the days were picked the wrong way round.
+  if (from !== "" && to !== "" && from > to) {
+    [from, to] = [to, from];
+  }
   const out: Bounds = {};
   const start = localDay(from, false);
   const end = localDay(to, true);

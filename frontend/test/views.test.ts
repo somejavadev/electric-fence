@@ -1406,6 +1406,19 @@ describe("filter pane in Audit", () => {
     expect(last).toMatchObject(dayBounds("2026-10-01", "2026-10-03"));
   });
 
+  it("reads a reversed custom range in date order", async () => {
+    const fake = api();
+    const el = await mount<EfAudit>("ef-audit", fake);
+    chooseOption(bar(el), "range", "custom");
+    await settle(el);
+    type(bar(el), "from", "2026-10-03");
+    await settle(el);
+    type(bar(el), "to", "2026-10-01");
+    await settle(el);
+    const last = fake.of("changes").at(-1);
+    expect(last).toMatchObject(dayBounds("2026-10-01", "2026-10-03"));
+  });
+
   it("hides from and to until the range is custom", async () => {
     const el = await mount<EfAudit>("ef-audit", api());
     expect(bar(el).querySelector("[name=from]")).toBeNull();
