@@ -138,12 +138,76 @@ async def test_ban_mapped_ipv6_is_ipv4(hass: HomeAssistant, runtime: Runtime) ->
 
 
 async def test_never_bans_exempt(hass: HomeAssistant, runtime: Runtime) -> None:
-    """Private and unparsable addresses are never banned."""
+    """Loopback and unparsable addresses are never banned."""
     manager = await _manager(hass, runtime)
     before = dict(_core(hass).ip_bans_lookup)
-    assert await manager.async_ban("192.168.1.9", 5, None, None) is False
+    assert await manager.async_ban("127.0.0.1", 5, None, None) is False
     assert await manager.async_ban("not an ip", 5, None, None) is False
     assert _core(hass).ip_bans_lookup == before
+    manager.async_stop()
+
+
+async def test_local_banned_unless_exempt(
+    hass: HomeAssistant, runtime: Runtime
+) -> None:
+    """A local address is banned by default, and not with exempt_local."""
+    manager = await _manager(hass, runtime)
+    runtime.settings = replace(runtime.settings, exempt_local=True)
+    assert await manager.async_ban("192.168.1.9", 5, None, None) is False
+    runtime.settings = replace(runtime.settings, exempt_local=False)
+    assert await manager.async_ban("192.168.1.9", 5, None, None) is True
+    manager.async_stop()
+
+
+async def test_prefix_blocked(hass: HomeAssistant, runtime: Runtime) -> None:
+    """While an IPv6 address is banned, its whole prefix is blocked."""
+    manager = await _manager(hass, runtime)
+    assert await manager.async_ban("2001:db8:1:2::5", 5, None, None)
+    assert await manager.async_ban(IP, 5, None, None)
+    assert manager.is_blocked("2001:db8:1:2::5") is True
+    assert manager.is_blocked("2001:db8:1:2:ffff::1") is True
+    assert manager.is_blocked("2001:db8:1:3::1") is False
+    assert manager.is_blocked("203.0.113.10") is False
+    assert manager.is_blocked(IP) is True
+    assert manager.is_blocked(None) is False
+    assert manager.is_blocked("nope") is False
+    runtime.settings = replace(runtime.settings, ipv6_prefix=128)
+    assert manager.is_blocked("2001:db8:1:2:ffff::1") is False
+    runtime.settings = replace(runtime.settings, ipv6_prefix=64)
+    assert await manager.async_unban("2001:db8:1:2::5", None, None)
+    assert manager.is_blocked("2001:db8:1:2:ffff::1") is False
+    manager.async_stop()
+
+
+async def test_ban_limit(
+    hass: HomeAssistant, runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the limit no ban is added and one repair says so, until room frees up."""
+    monkeypatch.setattr(
+        "custom_components.electric_fence.protection.bans.MAX_ACTIVE_BANS", 2
+    )
+    manager = await _manager(hass, runtime)
+    issues = ir.async_get(hass)
+    assert await manager.async_ban("203.0.113.1", 5, None, None)
+    assert await manager.async_ban("203.0.113.2", 5, None, None)
+    assert issues.async_get_issue(DOMAIN, "ban_limit_reached") is None
+    assert await manager.async_ban("203.0.113.3", 5, None, None) is False
+    assert ip_address("203.0.113.3") not in _core(hass).ip_bans_lookup
+    assert issues.async_get_issue(DOMAIN, "ban_limit_reached") is not None
+    assert await manager.async_unban("203.0.113.1", None, None)
+    assert await manager.async_ban("203.0.113.3", 5, None, None)
+    assert issues.async_get_issue(DOMAIN, "ban_limit_reached") is None
+    manager.async_stop()
+
+
+async def test_is_blocked_fails_open(hass: HomeAssistant, runtime: Runtime) -> None:
+    """A broken prefix lookup never blocks a login."""
+    manager = await _manager(hass, runtime)
+    assert await manager.async_ban("2001:db8::1", 5, None, None)
+    settings = runtime.settings
+    runtime.settings = None  # type: ignore[assignment]
+    assert manager.is_blocked("2001:db8::2") is False
+    runtime.settings = settings
     manager.async_stop()
 
 

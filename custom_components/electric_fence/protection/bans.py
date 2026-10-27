@@ -25,14 +25,16 @@ from ..models import (
 )
 from ..notifier import EVENT_IP_BANNED
 from ..repairs import (
+    async_clear_ban_limit,
     async_clear_disabled_collector,
     async_clear_ip_ban_disabled,
+    async_report_ban_limit,
     async_report_disabled_collector,
     async_report_ip_ban_disabled,
 )
 from ..storage import BanRow, FenceStore
 from .backend import HEALTH_IP_BAN_DISABLED, BlockingBackend
-from .network import IpAddress, is_exempt, normalise_ip
+from .network import IpAddress, address_key, is_exempt, normalise_ip
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -46,6 +48,9 @@ PERMANENT_FROM = 4
 # A due ban whose removal failed is retried after this, not in a tight loop.
 RETRY_DELAY = timedelta(minutes=1)
 UNAVAILABLE_CONTRACTS = "contracts"
+# Electric Fence's own active bans. An attacker with many addresses must not
+# grow Core's ban file (rewritten on every unban) without bound.
+MAX_ACTIVE_BANS = 500
 _PAGE = 500
 
 type EndReason = Literal["expired", "unbanned", "removed"]
@@ -263,6 +268,28 @@ class BanManager:
         )
         return views
 
+    def is_blocked(self, ip: str | None) -> bool:
+        """Return whether an address falls under one of Electric Fence's bans.
+
+        Core blocks the banned address itself. For IPv6 the rest of its prefix
+        (`ipv6_prefix`) is blocked too, at the login step: the same host holds
+        all of it. Memory only; any error means not blocked.
+        """
+        try:
+            if (addr := normalise_ip(ip)) is None or not self._rows:
+                return False
+            if addr in self._rows:
+                return True
+            prefix = self._runtime.settings.ipv6_prefix
+            key = address_key(addr, prefix)
+            return any(
+                banned.version == addr.version and address_key(banned, prefix) == key
+                for banned in self._rows
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Ban lookup failed: %s", type(err).__name__)
+            return False
+
     def bans_24h(self) -> int:
         """Return the number of Electric Fence bans in the last 24 hours."""
         since = dt_util.utcnow() - RECENT_WINDOW
@@ -293,7 +320,16 @@ class BanManager:
         if not self.available:
             return False
         addr = normalise_ip(ip)
-        if addr is None or is_exempt(self._hass, addr):
+        if addr is None or is_exempt(
+            self._hass, addr, exempt_local=self._runtime.settings.exempt_local
+        ):
+            return False
+        if len(self._rows) >= MAX_ACTIVE_BANS:
+            _LOGGER.warning(
+                "Electric Fence has %d active bans, its limit; no more are added",
+                MAX_ACTIVE_BANS,
+            )
+            async_report_ban_limit(self._hass, MAX_ACTIVE_BANS)
             return False
         async with self._locked(addr):
             present = self._backend_ips()
@@ -547,6 +583,8 @@ class BanManager:
     ) -> None:
         if self._rows.get(view.ip) is view:
             del self._rows[view.ip]
+            if len(self._rows) < MAX_ACTIVE_BANS:
+                async_clear_ban_limit(self._hass)
         if view.ban_id is None:
             return
         try:

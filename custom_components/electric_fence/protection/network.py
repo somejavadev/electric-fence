@@ -79,18 +79,38 @@ def _is_supervisor(hass: HomeAssistant, addr: IpAddress) -> bool:
         return False
 
 
-def is_exempt(hass: HomeAssistant, ip: str | IpAddress | None) -> bool:
+def is_exempt(
+    hass: HomeAssistant, ip: str | IpAddress | None, *, exempt_local: bool
+) -> bool:
     """Return whether an address is never banned or slowed down.
 
-    An address that can't be parsed is exempt: it can't be banned anyway.
+    Loopback, the Supervisor and the configured trusted proxies always are.
+    Other local addresses (LAN, Docker, CGNAT and Tailscale, ULA, link-local)
+    only with `exempt_local`: a compromised device on the network is an
+    attacker too. An address that can't be parsed is exempt: it can't be
+    banned anyway.
     """
     addr = normalise_ip(ip)
     if addr is None:
+        _LOGGER.debug("Unparsable address treated as exempt")
         return True
-    if classify_ip(str(addr))[1] is not None:
+    if addr.is_loopback:
+        return True
+    if exempt_local and classify_ip(str(addr))[1] is not None:
         return True
     if _is_supervisor(hass, addr):
         return True
     return any(
         addr in net for net in _trusted_networks(hass) if net.version == addr.version
     )
+
+
+def address_key(addr: IpAddress, ipv6_prefix: int) -> str:
+    """Return the key failures and bans of an address are counted under.
+
+    IPv4 is one address. One IPv6 host holds a whole prefix (a /64 at least),
+    so IPv6 is counted per `ipv6_prefix`; 128 counts single addresses.
+    """
+    if isinstance(addr, IPv4Address) or ipv6_prefix >= 128:
+        return str(addr)
+    return str(ipaddress.ip_network(f"{addr}/{ipv6_prefix}", strict=False))
