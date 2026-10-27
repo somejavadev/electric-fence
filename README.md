@@ -659,6 +659,16 @@ HA_REF=2026.11.0 scripts/setup
 the plugin supports 2026.11, the dependency will switch back to PyPI (or to
 Core's `pytest-home-assistant` package) and the script can retire.
 
+## Contributing
+
+Contributions are welcome. [Contributing](CONTRIBUTING.md) explains how to get
+set up and what a pull request needs, and everyone taking part follows the
+[code of conduct](CODE_OF_CONDUCT.md). For help, see [Support](SUPPORT.md);
+for security problems, see the [security policy](SECURITY.md).
+[Responsible use](RESPONSIBLE_USE.md) covers what Electric Fence is for and
+how to handle the data it records.
+
 ## License
 
-Electric Fence is released under the [Apache License 2.0](LICENSE).
+Electric Fence is released under the [Apache License 2.0](LICENSE). Copyright
+and third-party notices are in [NOTICE](NOTICE).
