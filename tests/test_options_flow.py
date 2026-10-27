@@ -12,6 +12,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from yarl import URL
 
 from custom_components.electric_fence.geo.maxmind import DOWNLOAD_URL
 from custom_components.electric_fence.models import (
@@ -461,7 +462,9 @@ async def test_provider_none_to_dbip_downloads(
     assert spy.await_args is not None
     assert spy.await_args.args[0].geoip_provider == "dbip_lite"
     assert aioclient_mock.call_count >= 1
-    assert all("db-ip.com" in str(c[1]) for c in aioclient_mock.mock_calls)
+    assert all(
+        URL(str(c[1])).host == "download.db-ip.com" for c in aioclient_mock.mock_calls
+    )
 
 
 async def test_maxmind_credential_change_sets_provider(
