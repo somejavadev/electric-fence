@@ -134,6 +134,17 @@ class OptionsFlowHandler(OptionsFlow):
         def flag(key: str) -> dict[probatio.Required, type[bool]]:
             return {probatio.Required(key, default=shown[key]): bool}
 
+        def text(
+            key: str, multiline: bool = False
+        ) -> dict[probatio.Optional, TextSelector]:
+            # The frontend refuses a required field holding "", and leaves a
+            # cleared optional one out; the default turns that back into "".
+            return {
+                probatio.Optional(
+                    key, default="", description={"suggested_value": shown[key]}
+                ): TextSelector(TextSelectorConfig(multiline=multiline))
+            }
+
         schema = probatio.Schema(
             {
                 probatio.Required(
@@ -219,9 +230,7 @@ class OptionsFlowHandler(OptionsFlow):
                             **flag("integration_repairs"),
                             **number("unmaintained_months", 1, 36, "months"),
                             **number("scan_delay_minutes", 1, 1440, "minutes"),
-                            probatio.Required(
-                                "ignored_files", default=shown["ignored_files"]
-                            ): TextSelector(TextSelectorConfig(multiline=True)),
+                            **text("ignored_files", multiline=True),
                         }
                     ),
                     {"collapsed": True},
@@ -230,9 +239,7 @@ class OptionsFlowHandler(OptionsFlow):
                     probatio.Schema(
                         {
                             **flag("forward_enabled"),
-                            probatio.Required(
-                                "forward_host", default=shown["forward_host"]
-                            ): TextSelector(),
+                            **text("forward_host"),
                             **number("forward_port", 1, 65535),
                             probatio.Required(
                                 "forward_protocol", default=shown["forward_protocol"]
@@ -244,9 +251,7 @@ class OptionsFlowHandler(OptionsFlow):
                                 )
                             ),
                             **flag("forward_verify_tls"),
-                            probatio.Required(
-                                "forward_ca_pem", default=shown["forward_ca_pem"]
-                            ): TextSelector(TextSelectorConfig(multiline=True)),
+                            **text("forward_ca_pem", multiline=True),
                         }
                     ),
                     {"collapsed": True},

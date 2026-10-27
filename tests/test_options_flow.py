@@ -23,6 +23,7 @@ from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import ChangeFilter
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, section
+from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 from tests.test_collector_auth_failures import _bad_bearer, _notifications, _setup
 from tests.test_geo import _attempt
@@ -838,3 +839,65 @@ async def test_v03_options_saved(
     assert settings.forward_port == 6514
     assert settings.forward_protocol == "udp"
     assert not settings.forward_verify_tls
+
+
+def _initial(fields: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the values the frontend fills the form with before anyone types."""
+    data: dict[str, Any] = {}
+    for field in fields:
+        if field.get("type") == "expandable":
+            data[field["name"]] = _initial(field["schema"])
+        elif "suggested_value" in (field.get("description") or {}):
+            data[field["name"]] = field["description"]["suggested_value"]
+        elif "default" in field:
+            data[field["name"]] = field["default"]
+    return data
+
+
+def _blocked(fields: list[dict[str, Any]], data: dict[str, Any]) -> list[str]:
+    """List the fields the frontend's "Not all required fields" check stops on."""
+    out = []
+    for field in fields:
+        value = data.get(field["name"])
+        if field.get("type") == "expandable":
+            out += _blocked(field["schema"], value or {})
+        elif field.get("required") and value in ("", None):
+            out.append(field["name"])
+    return out
+
+
+async def test_unchanged_form_passes_the_frontend_check(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The frontend refuses a required field holding ""; none may start that way."""
+    result = await _init(hass, setup_entry)
+    fields = probatio.to_field_list(
+        result["data_schema"], custom_serializer=cv.custom_serializer
+    )
+    assert _blocked(fields, _initial(fields)) == []
+
+
+async def test_cleared_text_fields_save_empty(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The frontend leaves out a cleared optional field; it saves as empty."""
+    hass.config_entries.async_update_entry(
+        setup_entry,
+        options={
+            **setup_entry.options,
+            "forward_host": "siem.local",
+            "forward_ca_pem": "x",
+            "ignored_files": "a/b.py",
+        },
+    )
+    result = await _init(hass, setup_entry)
+    form = _submit(GENERAL)
+    for key in ("forward_host", "forward_ca_pem"):
+        del form["forwarding"][key]
+    del form["integration_checks"]["ignored_files"]
+    result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert setup_entry.options["forward_host"] == ""
+    assert setup_entry.options["forward_ca_pem"] == ""
+    assert setup_entry.options["ignored_files"] == ""
