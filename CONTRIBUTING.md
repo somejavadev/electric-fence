@@ -86,8 +86,7 @@ them.
 
 You may use AI tools to help write code or documentation. You are responsible
 for what you submit: you must understand it, have tested it, and be able to
-explain it in review. Say in the pull request if a substantial part was
-generated.
+explain it in review.
 
 ## Licence
 
