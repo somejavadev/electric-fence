@@ -4,8 +4,10 @@ import type { PostureItem } from "../types.ts";
 
 const ICON = {
   ok: "mdi:check-circle-outline",
+  info: "mdi:information-outline",
   warning: "mdi:alert-circle-outline",
   error: "mdi:close-circle-outline",
+  critical: "mdi:alert-octagon-outline",
 } as const;
 
 /** The posture checklist: one friendly sentence per check. */
@@ -35,10 +37,14 @@ export class EfPostureList extends LitElement {
     .ok ha-icon {
       color: var(--success-color);
     }
+    .info ha-icon {
+      color: var(--info-color, var(--primary-color));
+    }
     .warning ha-icon {
       color: var(--warning-color);
     }
-    .error ha-icon {
+    .error ha-icon,
+    .critical ha-icon {
       color: var(--error-color);
     }
   `;

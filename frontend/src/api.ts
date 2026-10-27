@@ -5,6 +5,7 @@ import type {
   ChangeFilter,
   ChangeItem,
   HomeAssistant,
+  IntegrationsPage,
   LoginFilter,
   LoginItem,
   Overview,
@@ -77,6 +78,15 @@ export const clearCountries = (
 
 export const fetchStatus = (hass: HomeAssistant): Promise<Status> =>
   call(hass, "status");
+
+export const fetchIntegrations = (
+  hass: HomeAssistant,
+): Promise<IntegrationsPage> => call(hass, "integrations");
+
+/** `started` is false when a scan already ran in the last 5 minutes. */
+export const scanIntegrations = (
+  hass: HomeAssistant,
+): Promise<{ started: boolean }> => call(hass, "scan_integrations");
 
 /** Live logins and changes. An `unloaded` event ends the subscription. */
 export const subscribe = (

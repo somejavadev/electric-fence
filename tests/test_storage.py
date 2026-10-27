@@ -9,6 +9,7 @@ import sqlite3
 import pytest
 
 from custom_components.electric_fence.models import (
+    OUTSIDE_ACTOR,
     ChangeAction,
     ChangeKind,
     LoginAttempt,
@@ -170,6 +171,15 @@ def test_query_logins_filters(store: FenceStore) -> None:
     assert names(LoginFilter(username_contains="\\")) == []
 
 
+def test_changes_without_system_keep_outside(store: FenceStore) -> None:
+    """Hiding System changes keeps changes made outside Home Assistant."""
+    outside = replace(change(NOW, actor=None), actor_name=OUTSIDE_ACTOR)
+    store.insert([change(NOW - timedelta(minutes=1), actor=None), outside])
+    shown = store.query_changes(ChangeFilter())
+    assert [(r.actor_user_id, r.actor_name) for r in shown] == [(None, OUTSIDE_ACTOR)]
+    assert len(store.query_changes(ChangeFilter(include_system=True))) == 2
+
+
 def test_keyset_paging_returns_next_page(store: FenceStore) -> None:
     """before_id continues after the last row of the previous page."""
     store.insert(
@@ -308,13 +318,13 @@ def test_reopen_keeps_data_and_schema_version(tmp_path: Path) -> None:
 
     con = sqlite3.connect(path)
     try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2 == SCHEMA_VERSION
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3 == SCHEMA_VERSION
         assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert (
             con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[
                 0
             ]
-            == "2"
+            == "3"
         )
     finally:
         con.close()

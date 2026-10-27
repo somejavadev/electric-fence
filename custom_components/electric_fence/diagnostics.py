@@ -18,6 +18,14 @@ from .runtime import Runtime
 TO_REDACT = {"maxmind_account_id", "maxmind_license_key"}
 
 
+def _settings(runtime: Runtime) -> dict[str, Any]:
+    """Return the settings without secrets, the CA text or the forward host."""
+    options = runtime.settings.to_options()
+    options.pop("forward_ca_pem", None)
+    options["forward_host"] = "set" if options["forward_host"] else "empty"
+    return async_redact_data(options, TO_REDACT)
+
+
 def _contracts(hass: HomeAssistant) -> dict[str, str]:
     """Return each contract's name with "ok" or its failure reason."""
     out: dict[str, str] = {}
@@ -83,7 +91,7 @@ async def async_get_config_entry_diagnostics(
             "size_bytes": stats.size_bytes,
         }
     return {
-        "settings": async_redact_data(runtime.settings.to_options(), TO_REDACT),
+        "settings": _settings(runtime),
         "collectors": [
             {
                 "name": collector.name,

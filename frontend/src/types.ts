@@ -76,7 +76,11 @@ export type KnownChangeKind =
   | "logger"
   | "recorder"
   | "ip_ban"
-  | "login_protection";
+  | "login_protection"
+  | "app"
+  | "files"
+  | "integration_health"
+  | "forwarding";
 
 /** A kind from a newer or older database may be any string. */
 export type ChangeKind = KnownChangeKind | (string & Record<never, never>);
@@ -101,6 +105,25 @@ export type ChangeAction =
   | "attack_ended"
   | "slowdown_ended"
   | "countries_cleared"
+  | "installed"
+  | "uninstalled"
+  | "started"
+  | "stopped"
+  | "restarted"
+  | "rebuilt"
+  | "settings_changed"
+  | "repository_added"
+  | "repository_removed"
+  | "files_changed"
+  | "files_match"
+  | "baseline_recorded"
+  | "baseline_renewed"
+  | "archived"
+  | "removed_from_store"
+  | "unmaintained"
+  | "recovered"
+  | "forwarding_failed"
+  | "forwarding_recovered"
   | (string & Record<never, never>);
 
 /** A stored settings change. A null `actor_user_id` means System. */
@@ -117,7 +140,7 @@ export interface ChangeItem {
   actor_ip: string | null;
 }
 
-export type PostureLevel = "ok" | "warning" | "error";
+export type PostureLevel = "ok" | "info" | "warning" | "error" | "critical";
 
 /** A check that itself failed: `level` is "error". */
 export interface CheckFailed {
@@ -169,7 +192,24 @@ export type PostureItem =
         last_error: string | null;
         last_error_at: string | null;
       }
-    >;
+    >
+  | PostureBase<
+      "forwarding_failing",
+      {
+        last_error: string | null;
+        failing_since: string | null;
+        queued: number;
+        dropped: number;
+      }
+    >
+  /** Domains whose files differ from the official copy. */
+  | PostureBase<"integration_files_changed", { integrations: string[] }>
+  | PostureBase<
+      "integration_health",
+      { removed: string[]; archived: string[]; unmaintained: string[] }
+    >
+  /** Domains that could not be checked. */
+  | PostureBase<"integration_checks_unchecked", { integrations: string[] }>;
 
 export interface SessionItem {
   id: string;
@@ -278,6 +318,7 @@ export interface LoginFilter {
   username?: string;
   ip?: string;
   country?: string;
+  search?: string;
   since?: string;
   until?: string;
   before_id?: number;
@@ -287,6 +328,9 @@ export interface LoginFilter {
 export interface ChangeFilter {
   kind?: ChangeKind;
   actor_user_id?: string;
+  action?: ChangeAction;
+  ip?: string;
+  search?: string;
   include_system?: boolean;
   since?: string;
   until?: string;
@@ -328,10 +372,70 @@ export interface Status {
     /** Notify entity IDs. */
     notify_targets: string[];
     maxmind_license_key_set: boolean;
+    verify_files: boolean;
+    integration_repairs: boolean;
+    forward_enabled: boolean;
+    forward_ca_pem_set: boolean;
   };
   geo: GeoStatus | null;
   collectors: { name: string; enabled: boolean; reason: string[] }[];
   worker: { queued: number; dropped: number; storage_errors: number };
+  /** Null while forwarding is off. */
+  forwarding: ForwardingStatus | null;
+  /** `disabled`: Supervisor install, turned off by a failed contract. */
+  apps: "available" | "disabled" | "not_available";
+}
+
+export interface ForwardingStatus {
+  state: "connected" | "failing";
+  queued: number;
+  dropped: number;
+  last_error: string | null;
+}
+
+export type FilesStatus =
+  "match" | "changed" | "unchecked" | "baseline_recorded" | "baseline_renewed";
+
+export type HealthStatus =
+  "ok" | "unmaintained" | "archived" | "removed" | "unknown";
+
+export interface FileReport {
+  changed: string[];
+  missing: string[];
+  added: string[];
+  unreadable: string[];
+  symlinks: string[];
+}
+
+/** Text fields (name, version, paths, repository) are attacker-controlled. */
+export interface IntegrationItem {
+  domain: string;
+  name: string;
+  source: "marketplace" | "unverified" | (string & {});
+  version: string | null;
+  repository: string | null;
+  /** Null while file checks are off. */
+  files: {
+    status: FilesStatus;
+    reason: string | null;
+    ref: string | null;
+    version_before: string | null;
+    report: FileReport | null;
+  } | null;
+  health: {
+    status: HealthStatus;
+    level: "ok" | "notice" | "warning" | "critical";
+    last_updated: string | null;
+    reason: string | null;
+  };
+  truncated: boolean;
+}
+
+export interface IntegrationsPage {
+  items: IntegrationItem[];
+  scanned_at: string | null;
+  running: boolean;
+  available: boolean;
 }
 
 /** Pushed by `electric_fence/subscribe`. Pushed items have `id: null`. */

@@ -57,3 +57,50 @@ def test_trusted_window() -> None:
     """Permanent bans trust a success for 24 hours."""
     assert Settings(ban_hours=0).trusted_window == timedelta(hours=24)
     assert Settings(ban_hours=2).trusted_window == timedelta(hours=2)
+
+
+def test_settings_v03_defaults() -> None:
+    """The v0.3 defaults match the spec."""
+    s = Settings()
+    assert s.verify_files is True
+    assert s.ignored_files == ()
+    assert s.unmaintained_months == 4
+    assert s.integration_repairs is True
+    assert s.scan_delay_minutes == 30
+    assert s.forward_enabled is False
+    assert s.forward_host == ""
+    assert s.forward_port == 514
+    assert s.forward_protocol == "tcp"
+    assert s.forward_verify_tls is True
+    assert s.forward_ca_pem == ""
+
+
+def test_settings_v03_clamps() -> None:
+    """Out-of-range v0.3 values are clamped, bad entries dropped."""
+    s = Settings.from_options(
+        {
+            "unmaintained_months": 0,
+            "scan_delay_minutes": 99999,
+            "forward_port": 70000,
+            "forward_protocol": "ftp",
+            "ignored_files": "hacs_x/data.json\n\n../etc\nbad\n/abs/x\nother/sub/f.txt",
+        }
+    )
+    assert s.unmaintained_months == 1
+    assert s.scan_delay_minutes == 1440
+    assert s.forward_port == 65535
+    assert s.forward_protocol == "tcp"
+    assert s.ignored_files == ("hacs_x/data.json", "other/sub/f.txt")
+
+
+def test_settings_ignored_files_list() -> None:
+    """A list of entries is accepted as well as a newline string."""
+    s = Settings.from_options({"ignored_files": ["a/x", 3, "a/../y"]})
+    assert s.ignored_files == ("a/x",)
+
+
+def test_ignored_for() -> None:
+    """Ignored paths are grouped by integration."""
+    s = Settings(ignored_files=("a/x.json", "a/sub/y", "b/z"))
+    assert s.ignored_for("a") == frozenset({"x.json", "sub/y"})
+    assert s.ignored_for("c") == frozenset()

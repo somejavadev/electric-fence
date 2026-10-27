@@ -4,7 +4,7 @@ Unlike the v0.1 commands, these fire no event afterwards, so the wrapper
 records the change itself. For each command in `WS_SPECS`:
 
 - The spec's reader takes the area's settings before Core's handler runs.
-- Core's handler gets a `_ResultWatch` in place of the connection. When the
+- Core's handler gets a `ResultWatch` in place of the connection. When the
   handler sends its result for the message, the reader runs again and the
   difference is recorded (only setting names unless `record_values` is on).
   An error, an exception or no answer records nothing; so does a success
@@ -478,7 +478,7 @@ SERVICE_AREA_SPECS: tuple[ServiceSpec, ...] = (
 )
 
 
-class _ResultWatch:
+class ResultWatch:
     """An `ActiveConnection` stand-in that watches one message's answer.
 
     Every attribute read, write and delete goes to the real connection, so
@@ -490,16 +490,24 @@ class _ResultWatch:
 
     The first answer for our message ID decides: a result calls `on_success`
     (inside the guard, before the result is forwarded); an error (by
-    `send_error`, `async_handle_exception` or an error message) means no
-    success. Answers are always forwarded unchanged.
+    `send_error`, `async_handle_exception` or an error message) calls
+    `on_failure`, if given. Answers are always forwarded unchanged.
     """
 
-    __slots__ = ("_connection", "_decided", "_guard", "_msg_id", "_on_success")
+    __slots__ = (
+        "_connection",
+        "_decided",
+        "_guard",
+        "_msg_id",
+        "_on_failure",
+        "_on_success",
+    )
 
     _connection: ActiveConnection
     _decided: bool
     _guard: FailOpen
     _msg_id: int
+    _on_failure: Callable[[], None] | None
     _on_success: Callable[[], None]
 
     def __init__(
@@ -508,17 +516,20 @@ class _ResultWatch:
         msg_id: int,
         on_success: Callable[[], None],
         guard: FailOpen,
+        on_failure: Callable[[], None] | None = None,
     ) -> None:
         """Watch `connection` for the answer to message `msg_id`."""
         set_own = object.__setattr__
         set_own(self, "_connection", connection)
         set_own(self, "_msg_id", msg_id)
         set_own(self, "_on_success", on_success)
+        set_own(self, "_on_failure", on_failure)
         set_own(self, "_guard", guard)
         set_own(self, "_decided", False)
 
     @property  # type: ignore[misc]
     def __class__(self) -> type:
+        """Report the real connection's class."""
         return ActiveConnection
 
     def __getattr__(self, name: str) -> Any:
@@ -543,6 +554,8 @@ class _ResultWatch:
         object.__setattr__(self, "_decided", True)
         if success:
             self._guard.call(self._on_success)
+        elif self._on_failure is not None:
+            self._guard.call(self._on_failure)
 
     def _check_message(self, msg: Any) -> None:
         """Decide on a result or error message for our ID sent as a message."""
@@ -585,29 +598,31 @@ class _ResultWatch:
 
 
 @dataclass(frozen=True, slots=True)
-class _Actor:
+class Actor:
+    """Who made a change: a user and IP, or System (all None)."""
+
     user_id: str | None
     user_name: str | None
     ip: str | None
 
 
-def _actor(connection: ActiveConnection) -> _Actor:
+def ws_actor(connection: ActiveConnection) -> Actor:
     """Return who sent the command (admin commands always have a user)."""
     user = connection.user
-    return _Actor(
+    return Actor(
         user_id=user.id if user is not None else None,
         user_name=user.name if user is not None else None,
         ip=ws_ip(connection),
     )
 
 
-def _call_actor(hass: HomeAssistant, call: ServiceCall) -> _Actor:
+def call_actor(hass: HomeAssistant, call: ServiceCall) -> Actor:
     """Return who called the service: its context's user, else System."""
     if (user_id := call.context.user_id) is None:
-        return _Actor(user_id=None, user_name=None, ip=None)
+        return Actor(user_id=None, user_name=None, ip=None)
     users = auth_users(hass)
     user = users.get(user_id) if users is not None else None
-    return _Actor(
+    return Actor(
         user_id=user_id,
         user_name=user.name if user is not None else None,
         ip=call_ip(user_id),
@@ -770,18 +785,18 @@ class SystemSettingsCollector(BaseCollector):
 
     def _service_before(
         self, spec: ServiceSpec, call: ServiceCall
-    ) -> tuple[_Actor, dict[str, Any]] | None:
+    ) -> tuple[Actor, dict[str, Any]] | None:
         """Read before Core's handler: who calls, and the snapshot."""
         if (found := spec.read(self.hass, call)) is None:
             return None
         # Deep: Core may change nested settings in place.
-        return _call_actor(self.hass, call), copy.deepcopy(dict(found))
+        return call_actor(self.hass, call), copy.deepcopy(dict(found))
 
     def _service_after(
         self,
         spec: ServiceSpec,
         call: ServiceCall,
-        actor: _Actor,
+        actor: Actor,
         before: dict[str, Any],
     ) -> None:
         """Record once Core's handler returned (inside the guard)."""
@@ -815,7 +830,7 @@ class SystemSettingsCollector(BaseCollector):
                 msg: dict[str, Any],
             ) -> None:
                 watch = self.guard.call(self._before, spec, connection, msg)
-                # The watch stands in for the connection (see `_ResultWatch`).
+                # The watch stands in for the connection (see `ResultWatch`).
                 target = connection if watch is None else cast(ActiveConnection, watch)
                 return original(hass, target, msg)
 
@@ -825,14 +840,14 @@ class SystemSettingsCollector(BaseCollector):
 
     def _before(
         self, spec: WsSpec, connection: ActiveConnection, msg: dict[str, Any]
-    ) -> _ResultWatch | None:
+    ) -> ResultWatch | None:
         """Read before Core's handler; return the watch to pass it, if any."""
         found = spec.read(self.hass, msg)
         if found is None:
             return None
         # Deep: Core may change nested settings in place.
         before = copy.deepcopy(dict(found))
-        actor = _actor(connection)
+        actor = ws_actor(connection)
         if spec.record_before:
             # Before Core's `require_admin`: a non-admin is about to be refused.
             user = connection.user
@@ -843,12 +858,12 @@ class SystemSettingsCollector(BaseCollector):
         def on_success() -> None:
             self._after(spec, actor, before, msg)
 
-        return _ResultWatch(connection, msg["id"], on_success, self.guard)
+        return ResultWatch(connection, msg["id"], on_success, self.guard)
 
     def _after(
         self,
         spec: WsSpec,
-        actor: _Actor,
+        actor: Actor,
         before: dict[str, Any],
         msg: dict[str, Any],
     ) -> None:
@@ -876,7 +891,7 @@ class SystemSettingsCollector(BaseCollector):
     def _submit_ws(
         self,
         spec: WsSpec,
-        actor: _Actor,
+        actor: Actor,
         msg: dict[str, Any],
         details: dict[str, Any],
     ) -> None:
@@ -887,7 +902,7 @@ class SystemSettingsCollector(BaseCollector):
         kind: ChangeKind,
         action: ChangeAction,
         target_name: str,
-        actor: _Actor,
+        actor: Actor,
         details: dict[str, Any],
     ) -> None:
         self.runtime.worker.submit(

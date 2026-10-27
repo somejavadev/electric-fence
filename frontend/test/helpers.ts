@@ -3,6 +3,7 @@ import type {
   BanItem,
   ChangeItem,
   HomeAssistant,
+  IntegrationItem,
   LoginItem,
   Overview,
   Status,
@@ -98,6 +99,10 @@ export const status = (attribution: string | null = null): Status => ({
     mask_ips: false,
     notify_targets: [],
     maxmind_license_key_set: false,
+    verify_files: true,
+    integration_repairs: true,
+    forward_enabled: false,
+    forward_ca_pem_set: false,
   },
   geo: {
     provider: "dbip_lite",
@@ -107,7 +112,38 @@ export const status = (attribution: string | null = null): Status => ({
   },
   collectors: [],
   worker: { queued: 0, dropped: 0, storage_errors: 0 },
+  forwarding: null,
+  apps: "available",
 });
+
+export function integration(
+  over: Partial<IntegrationItem> = {},
+): IntegrationItem {
+  return {
+    domain: "hacs_thing",
+    name: "Thing",
+    source: "marketplace",
+    version: "1.2.0",
+    repository: "owner/thing",
+    files: {
+      status: "match",
+      reason: null,
+      ref: "v1.2.0",
+      version_before: null,
+      report: null,
+    },
+    health: { status: "ok", level: "ok", last_updated: null, reason: null },
+    truncated: false,
+    ...over,
+  };
+}
+
+export const noIntegrations = {
+  items: [],
+  scanned_at: null,
+  running: false,
+  available: false,
+};
 
 export function ban(over: Partial<BanItem> = {}): BanItem {
   return {
@@ -171,6 +207,9 @@ export function fakeHass(
         }
         if (message.type === "electric_fence/status") {
           return Promise.resolve(status(attribution));
+        }
+        if (message.type === "electric_fence/integrations") {
+          return Promise.resolve(noIntegrations);
         }
         return Promise.reject(new Error(`unexpected ${message.type}`));
       },

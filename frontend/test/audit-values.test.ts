@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EfAudit, valueLines } from "../src/views/ef-audit.ts";
 import { EfChangeRow } from "../src/components/ef-change-row.ts";
 import type { ChangeItem } from "../src/types.ts";
+import { changeSentence } from "../src/strings.ts";
 import { change, fakeApi } from "./helpers.ts";
 
 async function mountAudit(
@@ -349,5 +350,216 @@ describe("audit rows with values", () => {
       "Changed: Option: Scan interval",
       "Data keys: token",
     ]);
+  });
+});
+
+describe("sentences for apps, files and forwarding", () => {
+  const app = (over: Partial<ChangeItem>) =>
+    change({ kind: "app", target_id: "core_ssh", target_name: "SSH", ...over });
+
+  it("shows the outside actor as Outside Home Assistant", async () => {
+    const row = document.createElement("ef-change-row") as EfChangeRow;
+    (row as unknown as { hass: unknown }).hass = fakeApi({}).hass;
+    row.item = app({
+      action: "started",
+      actor_user_id: null,
+      actor_name: "outside",
+      actor_ip: null,
+    });
+    document.body.append(row);
+    await row.updateComplete;
+    expect(squash(row.shadowRoot?.textContent)).toContain(
+      "Outside Home Assistant started SSH",
+    );
+  });
+
+  it("reads a collapsed burst", () => {
+    const item = app({
+      action: "started",
+      target_id: null,
+      target_name: "11 apps",
+      details: { apps: [{ slug: "a", name: "A" }] },
+    });
+    expect(changeSentence(item)).toBe("started 11 apps");
+  });
+
+  it("lists the apps of a burst in the details", async () => {
+    const el = await mountAudit(
+      {
+        apps: [
+          { slug: "a", name: "Alpha" },
+          { slug: "b", name: "<img src=x onerror=alert(1)>" },
+        ],
+      },
+      {
+        kind: "app",
+        action: "started",
+        target_id: null,
+        target_name: "2 apps",
+      },
+    );
+    expect(squash(el.shadowRoot?.querySelector(".details")?.textContent)).toBe(
+      "Apps: Alpha, <img src=x onerror=alert(1)>",
+    );
+    expect(el.shadowRoot?.querySelector("img")).toBeNull();
+  });
+
+  it("shows versions of an update", () => {
+    expect(
+      changeSentence(
+        app({
+          action: "updated",
+          details: { version_before: "6.5", version_after: "6.6" },
+        }),
+      ),
+    ).toBe("updated SSH (version 6.5 → 6.6)");
+  });
+
+  it("says an update started in the background", () => {
+    expect(
+      changeSentence(
+        app({
+          action: "updated",
+          details: { version_before: "6.5", background: true },
+        }),
+      ),
+    ).toBe("started updating SSH");
+  });
+
+  it("does not claim values for outside option changes", () => {
+    expect(
+      changeSentence(
+        app({
+          action: "options_changed",
+          details: { changed: ["options"], outside: true },
+        }),
+      ),
+    ).toBe("changed options of SSH (values not recorded)");
+  });
+
+  it.each([
+    ["installed", "installed app SSH"],
+    ["uninstalled", "uninstalled app SSH"],
+    ["stopped", "stopped SSH"],
+    ["restarted", "restarted SSH"],
+    ["rebuilt", "rebuilt SSH"],
+    ["settings_changed", "changed settings of SSH"],
+  ])("app %s", (action, text) => {
+    expect(changeSentence(app({ action }))).toBe(text);
+  });
+
+  it("repository changes", () => {
+    expect(
+      changeSentence(
+        app({
+          action: "repository_added",
+          target_id: "https://x/y",
+          target_name: null,
+        }),
+      ),
+    ).toBe("added app repository https://x/y");
+    expect(
+      changeSentence(
+        app({
+          action: "repository_removed",
+          target_id: null,
+          target_name: null,
+        }),
+      ),
+    ).toBe("removed an app repository");
+  });
+
+  const files = (action: string, details: Record<string, unknown> = {}) =>
+    change({
+      kind: "files",
+      action,
+      target_id: "thing",
+      target_name: "Thing",
+      details,
+      actor_user_id: null,
+      actor_name: null,
+    });
+
+  it("FILES_CHANGED", () => {
+    expect(
+      changeSentence(
+        files("files_changed", {
+          changed: ["a.py", "b.py"],
+          missing: ["c.py"],
+          added: [],
+          unreadable: [],
+        }),
+      ),
+    ).toBe("files of Thing differ from the official copy (3 files)");
+  });
+
+  it("other file actions", () => {
+    expect(changeSentence(files("files_match"))).toBe(
+      "files of Thing match the official copy",
+    );
+    expect(changeSentence(files("baseline_recorded"))).toBe(
+      "recorded the files of Thing as the baseline",
+    );
+    expect(changeSentence(files("baseline_renewed"))).toBe(
+      "renewed the file baseline of Thing after an update",
+    );
+  });
+
+  it("lists changed files in the details", async () => {
+    const el = await mountAudit(
+      { changed: ["a.py"], missing: ["b.py"], added: [], unreadable: ["d.py"] },
+      { kind: "files", action: "files_changed", target_name: "Thing" },
+    );
+    const text = squash(el.shadowRoot?.querySelector(".details")?.textContent);
+    expect(text).toContain("Changed files: a.py");
+    expect(text).toContain("Missing files: b.py");
+    expect(text).toContain("Unreadable files: d.py");
+    expect(text).not.toContain("Added");
+  });
+
+  const health = (action: string, details: Record<string, unknown> = {}) =>
+    change({
+      kind: "integration_health",
+      action,
+      target_id: "thing",
+      target_name: "Thing",
+      details,
+      actor_user_id: null,
+      actor_name: null,
+    });
+
+  it("REMOVED_FROM_STORE", () => {
+    expect(changeSentence(health("removed_from_store"))).toBe(
+      "Thing was removed from the Marketplace",
+    );
+  });
+
+  it("other health actions", () => {
+    expect(changeSentence(health("archived"))).toBe(
+      "the repository of Thing was archived",
+    );
+    expect(changeSentence(health("unmaintained", { months: 6 }))).toBe(
+      "Thing has not been updated for 6 months",
+    );
+    expect(changeSentence(health("recovered"))).toBe("Thing is healthy again");
+  });
+
+  it("forwarding", () => {
+    const f = (action: string, details: Record<string, unknown> = {}) =>
+      change({
+        kind: "forwarding",
+        action,
+        target_id: null,
+        target_name: null,
+        details,
+        actor_user_id: null,
+        actor_name: null,
+      });
+    expect(changeSentence(f("forwarding_failed", { error: "OSError" }))).toBe(
+      "forwarding to the log server failed (OSError)",
+    );
+    expect(changeSentence(f("forwarding_recovered"))).toBe(
+      "forwarding to the log server recovered",
+    );
   });
 });

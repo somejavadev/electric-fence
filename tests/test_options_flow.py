@@ -23,6 +23,7 @@ from custom_components.electric_fence.settings import Settings
 from custom_components.electric_fence.storage import ChangeFilter
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, section
+from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 from tests.test_collector_auth_failures import _bad_bearer, _notifications, _setup
 from tests.test_geo import _attempt
@@ -51,6 +52,21 @@ SECTIONS = {
         "notify_ban_ended",
         "notify_targets",
     ),
+    "integration_checks": (
+        "verify_files",
+        "integration_repairs",
+        "unmaintained_months",
+        "scan_delay_minutes",
+        "ignored_files",
+    ),
+    "forwarding": (
+        "forward_enabled",
+        "forward_host",
+        "forward_port",
+        "forward_protocol",
+        "forward_verify_tls",
+        "forward_ca_pem",
+    ),
 }
 TOP_LEVEL = (
     "retention_days",
@@ -63,6 +79,9 @@ TOP_LEVEL = (
 
 def _nest(flat: dict[str, Any]) -> dict[str, Any]:
     """Group flat settings the way the options form submits them."""
+    flat = dict(flat)
+    if not isinstance(flat.get("ignored_files", ""), str):
+        flat["ignored_files"] = "\n".join(flat["ignored_files"])
     out = {k: flat[k] for k in TOP_LEVEL if k in flat}
     for name, keys in SECTIONS.items():
         out[name] = {k: flat[k] for k in keys if k in flat}
@@ -110,6 +129,7 @@ async def test_options_defaults_shown(
     expected = Settings().to_options()
     for k in ("maxmind_account_id", "maxmind_license_key"):
         del expected[k]
+    expected["ignored_files"] = ""
     expected["notify_targets"] = []
     assert defaults == expected
     assert {
@@ -120,6 +140,8 @@ async def test_options_defaults_shown(
         "bans": True,
         "username_protection": True,
         "notifications": False,
+        "integration_checks": True,
+        "forwarding": True,
     }
 
 
@@ -740,3 +762,142 @@ async def test_options_description_link_is_a_placeholder(
     assert "{dbip_url}" in description
     assert "Local network addresses are never banned" in description
     assert "https://" not in json.dumps(strings)
+
+
+async def test_options_flow_shows_v03_sections(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The form has the integration checks and forwarding sections."""
+    result = await _init(hass, setup_entry)
+    schema = {str(k): v for k, v in result["data_schema"].schema.items()}
+    for name in ("integration_checks", "forwarding"):
+        assert isinstance(schema[name], section)
+        keys = {str(k) for k in schema[name].schema.schema}
+        assert keys == set(SECTIONS[name])
+
+
+async def test_forward_host_required(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Forwarding without a host is refused."""
+    result = await _init(hass, setup_entry)
+    form = _submit(GENERAL, forward_enabled=True, forward_host="")
+    result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"forwarding": "forward_host_required"}
+
+
+async def test_forward_ca_invalid(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A CA that is not PEM is refused."""
+    result = await _init(hass, setup_entry)
+    form = _submit(
+        GENERAL,
+        forward_enabled=True,
+        forward_host="siem.local",
+        forward_protocol="tls",
+        forward_ca_pem="not a cert",
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"forwarding": "forward_ca_invalid"}
+
+
+async def test_v03_options_saved(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """Valid v0.3 values are stored flat and read back by Settings."""
+    result = await _init(hass, setup_entry)
+    form = _submit(
+        GENERAL,
+        verify_files=False,
+        integration_repairs=False,
+        unmaintained_months=12,
+        scan_delay_minutes=5,
+        ignored_files="my_integration/data.json\nother/x.txt",
+        forward_enabled=True,
+        forward_host="siem.local",
+        forward_port=6514,
+        forward_protocol="udp",
+        forward_verify_tls=False,
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    options = setup_entry.options
+    assert not any(isinstance(v, dict) for v in options.values())
+    assert options["ignored_files"] == "my_integration/data.json\nother/x.txt"
+    settings = Settings.from_options(options)
+    assert not settings.verify_files
+    assert not settings.integration_repairs
+    assert settings.unmaintained_months == 12
+    assert settings.scan_delay_minutes == 5
+    assert settings.ignored_files == ("my_integration/data.json", "other/x.txt")
+    assert settings.forward_enabled
+    assert settings.forward_host == "siem.local"
+    assert settings.forward_port == 6514
+    assert settings.forward_protocol == "udp"
+    assert not settings.forward_verify_tls
+
+
+def _initial(fields: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the values the frontend fills the form with before anyone types."""
+    data: dict[str, Any] = {}
+    for field in fields:
+        if field.get("type") == "expandable":
+            data[field["name"]] = _initial(field["schema"])
+        elif "suggested_value" in (field.get("description") or {}):
+            data[field["name"]] = field["description"]["suggested_value"]
+        elif "default" in field:
+            data[field["name"]] = field["default"]
+    return data
+
+
+def _blocked(fields: list[dict[str, Any]], data: dict[str, Any]) -> list[str]:
+    """List the fields the frontend's "Not all required fields" check stops on."""
+    out = []
+    for field in fields:
+        value = data.get(field["name"])
+        if field.get("type") == "expandable":
+            out += _blocked(field["schema"], value or {})
+        elif field.get("required") and value in ("", None):
+            out.append(field["name"])
+    return out
+
+
+async def test_unchanged_form_passes_the_frontend_check(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The frontend refuses a required field holding ""; none may start that way."""
+    result = await _init(hass, setup_entry)
+    fields = probatio.to_field_list(
+        result["data_schema"], custom_serializer=cv.custom_serializer
+    )
+    assert _blocked(fields, _initial(fields)) == []
+
+
+async def test_cleared_text_fields_save_empty(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """The frontend leaves out a cleared optional field; it saves as empty."""
+    hass.config_entries.async_update_entry(
+        setup_entry,
+        options={
+            **setup_entry.options,
+            "forward_host": "siem.local",
+            "forward_ca_pem": "x",
+            "ignored_files": "a/b.py",
+        },
+    )
+    result = await _init(hass, setup_entry)
+    form = _submit(GENERAL)
+    for key in ("forward_host", "forward_ca_pem"):
+        del form["forwarding"][key]
+    del form["integration_checks"]["ignored_files"]
+    result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert setup_entry.options["forward_host"] == ""
+    assert setup_entry.options["forward_ca_pem"] == ""
+    assert setup_entry.options["ignored_files"] == ""
