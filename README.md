@@ -237,9 +237,13 @@ author published, which may mean someone altered the code.
   commit, or the Marketplace not being set up. It is retried on the next daily
   scan and never treated as altered.
 - A symlink inside an integration folder is flagged and never followed.
-  Unreadable files are reported as unreadable, not as changed. `__pycache__`
-  and `*.pyc` are always ignored; use **Ignored files** for integrations that
-  write their own files into their folder.
+  Unreadable files are reported as unreadable, not as changed. Bytecode in
+  `__pycache__` isn't hashed, since Python rewrites it. Instead, every file
+  there that Python would load in place of its source is compiled from that
+  source and compared; one that differs is flagged as changed. A `*.pyc`
+  outside `__pycache__` can be imported on its own, so it is compared like any
+  other file. Use **Ignored files** for integrations that write their own
+  files into their folder.
 
 **Integration health** warns about Marketplace integrations whose repository is
 archived, removed from the Marketplace, or not updated in more than 4 months
