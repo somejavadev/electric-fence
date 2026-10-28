@@ -537,3 +537,155 @@ async def test_attack_end_to_end_masks_unknown_username(
     assert attack_events[0].data["username_masked"] is True
     # The panel (and the store behind it) keeps the full name.
     assert [a.username for a in runtime.store.query_attacks(active=False)] == [hostile]
+
+
+def attack(name: str = "admin") -> AttackView:
+    """Return an attack on a username that exists."""
+    return AttackView(name, dt_util.utcnow(), 12, 4, [], 1, user_exists=True)
+
+
+async def test_ban_ended_push_rate_limited(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Many bans ending at once: one push now, one summary later."""
+    assert runtime.alerts is not None
+    runtime.settings = Settings(notify_ban_ended=True, notify_targets=("notify.phone",))
+    for i in range(30):
+        runtime.alerts.ban_ended(
+            ban_view(ip=normalise_ip(f"198.51.100.{i}")), "expired"
+        )
+    await settle(hass)
+    assert len(sends) == 1
+    note = bell(hass, "electric_fence_ban_ended")
+    assert note is not None
+    assert "198.51.100.29" in note["message"]
+
+    freezer.tick(timedelta(minutes=10))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 2
+    assert sends[1].data["title"] == "Electric Fence: ban ended"
+    assert sends[1].data["message"] == "29 bans ended since the last message."
+
+
+async def test_username_attack_push_rate_limited(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Attacks on many usernames: one push now, one summary later."""
+    assert runtime.alerts is not None
+    for i in range(50):
+        runtime.alerts.username_attack(attack(f"user{i}"))
+    await settle(hass)
+    assert len(sends) == 1
+
+    freezer.tick(timedelta(minutes=10))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 2
+    assert sends[1].data["message"] == (
+        "49 usernames came under attack since the last message."
+    )
+
+
+async def test_new_country_push_rate_limited(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """New-country logins are limited like the other kinds."""
+    assert runtime.alerts is not None
+    runtime.alerts.new_country(success())
+    runtime.alerts.new_country(success(country_code="FR"))
+    await settle(hass)
+    assert len(sends) == 1
+    freezer.tick(timedelta(minutes=10))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert sends[1].data["message"] == ("1 new-country login since the last message.")
+
+
+async def test_pushes_capped_per_hour(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """At most 6 pushes an hour over all kinds; then one note of what was held."""
+    assert runtime.alerts is not None
+    alerts = runtime.alerts
+    runtime.settings = Settings(notify_ban_ended=True, notify_targets=("notify.phone",))
+
+    def burst() -> None:
+        alerts.failed_login("failed")
+        alerts.ip_banned(ban_view())
+        alerts.ban_ended(ban_view(), "expired")
+        alerts.username_attack(attack())
+        alerts.new_country(success())
+
+    burst()
+    await settle(hass)
+    assert len(sends) == 5
+    freezer.tick(timedelta(minutes=10))
+    burst()
+    await settle(hass)
+    # One more fits under the cap; the other four are held back.
+    assert len(sends) == 6
+    assert sends[5].data["message"] == "failed"
+
+    freezer.tick(timedelta(minutes=49))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 6
+
+    freezer.tick(timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 7
+    assert sends[6].data["title"] == "Electric Fence"
+    assert sends[6].data["message"] == (
+        "4 more notifications were not sent to your phone, to keep it quiet "
+        "during a flood. Open Home Assistant to see them."
+    )
+
+
+async def test_held_note_skipped_after_stop(
+    hass: HomeAssistant,
+    runtime: Runtime,
+    sends: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stopping cancels the note about held-back pushes."""
+    monkeypatch.setattr("custom_components.electric_fence.alerts.PUSH_HOURLY_LIMIT", 1)
+    assert runtime.alerts is not None
+    runtime.alerts.failed_login("first")
+    freezer.tick(timedelta(minutes=10))
+    runtime.alerts.failed_login("held")
+    await settle(hass)
+    assert len(sends) == 1
+    runtime.alerts.async_stop()
+    freezer.tick(timedelta(hours=1))
+    async_fire_time_changed(hass)
+    await settle(hass)
+    assert len(sends) == 1
+
+
+async def test_username_attack_off(
+    hass: HomeAssistant, runtime: Runtime, sends: list[ServiceCall]
+) -> None:
+    """With the switch off, an attack sends nothing."""
+    assert runtime.alerts is not None
+    runtime.settings = Settings(
+        notify_username_attack=False, notify_targets=("notify.phone",)
+    )
+    runtime.alerts.username_attack(attack())
+    await settle(hass)
+    assert bell(hass, "electric_fence_username_attack") is None
+    assert sends == []

@@ -82,7 +82,9 @@ def test_address_key(ip: str, prefix: int, key: str) -> None:
 def test_same_block() -> None:
     """Two addresses share a block when their keys are equal."""
     a, b, c = (normalise_ip(x) for x in ("2001:db8::1", "2001:db8::2", "2001:db9::1"))
-    assert a is not None and b is not None and c is not None
+    assert a is not None
+    assert b is not None
+    assert c is not None
     assert address_key(a, 64) == address_key(b, 64) != address_key(c, 64)
 
 

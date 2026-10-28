@@ -102,6 +102,29 @@ def async_clear_tls_check_required(hass: HomeAssistant) -> None:
     ir.async_delete_issue(hass, DOMAIN, TLS_CHECK_REQUIRED)
 
 
+FORWARD_PLAINTEXT = "forward_plaintext"
+
+
+def async_report_forward_plaintext(
+    hass: HomeAssistant, host: str, protocol: str
+) -> None:
+    """Raise a repair issue: events go unencrypted to a host off the network."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        FORWARD_PLAINTEXT,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=FORWARD_PLAINTEXT,
+        translation_placeholders={"host": host, "protocol": protocol.upper()},
+    )
+
+
+def async_clear_forward_plaintext(hass: HomeAssistant) -> None:
+    """Remove the repair issue for unencrypted forwarding."""
+    ir.async_delete_issue(hass, DOMAIN, FORWARD_PLAINTEXT)
+
+
 BAN_LIMIT = "ban_limit_reached"
 
 

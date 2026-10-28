@@ -136,7 +136,9 @@ async def stream_to_temp(resp: ClientResponse, dest: Path) -> Path:
 
 
 def _make_temp(directory: Path, prefix: str) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
+    # Owner only, like Home Assistant's own .storage files.
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.chmod(0o700)
     fd, name = tempfile.mkstemp(dir=directory, prefix=prefix)
     os.close(fd)
     return Path(name)

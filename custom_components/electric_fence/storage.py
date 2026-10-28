@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 import json
 import logging
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -29,6 +30,8 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_PRIVATE_FILE = 0o600
 
 SCHEMA_VERSION = 3
 
@@ -215,6 +218,25 @@ _LOGIN_SEARCH = (
     "user_agent",
 )
 _CHANGE_SEARCH = ("target_id", "target_name", "actor_name", "actor_ip", "details_json")
+# While the panel masks addresses, search skips the columns it hides, so
+# typing a guessed address or host name can't confirm it.
+_MASKED_COLUMNS = frozenset({"ip", "hostname", "client_id", "actor_ip"})
+
+
+def _make_private(path: Path) -> None:
+    """Make the database and its WAL files readable by their owner only.
+
+    They hold usernames, addresses and the audit history. Creating the file
+    first means SQLite creates the -wal and -shm files with the same mode. A
+    file system that refuses chmod doesn't stop the database opening.
+    """
+    try:
+        os.close(os.open(path, os.O_RDWR | os.O_CREAT, _PRIVATE_FILE))
+        for file in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+            if file.exists():
+                file.chmod(_PRIVATE_FILE)
+    except OSError as err:
+        _LOGGER.debug("Could not restrict the database's mode: %s", err)
 
 
 class StoreSchemaTooNewError(Exception):
@@ -262,6 +284,7 @@ class LoginFilter:
     until: datetime | None = None
     new_country: bool | None = None
     search: str | None = None
+    search_masked: bool = False
 
 
 @dataclass(frozen=True)
@@ -276,6 +299,7 @@ class ChangeFilter:
     action: ChangeAction | None = None
     ip: str | None = None
     search: str | None = None
+    search_masked: bool = False
 
 
 @dataclass(frozen=True)
@@ -519,10 +543,17 @@ def _time_clauses(
 
 
 def _search_clause(
-    where: list[str], params: list[Any], search: str | None, columns: Sequence[str]
+    where: list[str],
+    params: list[Any],
+    search: str | None,
+    columns: Sequence[str],
+    *,
+    masked: bool,
 ) -> None:
     if not search:
         return
+    if masked:
+        columns = [c for c in columns if c not in _MASKED_COLUMNS]
     pattern = f"%{_like_escape(search)}%"
     where.append("(" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in columns) + ")")
     params.extend([pattern] * len(columns))
@@ -575,6 +606,7 @@ class FenceStore:
         with self._lock:
             if self._db is not None:
                 return
+            _make_private(self._path)
             # Autocommit mode: transactions are explicit (VACUUM needs none).
             db = sqlite3.connect(
                 self._path, check_same_thread=False, isolation_level=None
@@ -674,7 +706,7 @@ class FenceStore:
             params.append(f.country_code)
         if f.new_country:
             where.append("new_country = 1")
-        _search_clause(where, params, f.search, _LOGIN_SEARCH)
+        _search_clause(where, params, f.search, _LOGIN_SEARCH, masked=f.search_masked)
         _time_clauses(where, params, f.since, f.until)
         if before_id is not None:
             where.append("(ts, id) < (SELECT ts, id FROM login_attempts WHERE id = ?)")
@@ -706,7 +738,7 @@ class FenceStore:
         if f.ip is not None:
             where.append("actor_ip = ?")
             params.append(f.ip)
-        _search_clause(where, params, f.search, _CHANGE_SEARCH)
+        _search_clause(where, params, f.search, _CHANGE_SEARCH, masked=f.search_masked)
         if not f.include_system:
             # System only: changes made outside Home Assistant stay shown.
             where.append("(actor_user_id IS NOT NULL OR actor_name = ?)")

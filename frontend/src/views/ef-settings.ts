@@ -2,7 +2,7 @@ import { html, nothing } from "lit";
 import { clearCountries, fetchStatus } from "../api.ts";
 import "../components/ef-confirm-dialog.ts";
 import { navigate } from "../fire-event.ts";
-import { formatDate } from "../format.ts";
+import { formatDate, visible } from "../format.ts";
 import { strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import { bdiText } from "../text.ts";
@@ -78,7 +78,9 @@ export class EfSettings extends LiveView {
       </table>
       ${
         geo.attribution !== null && geo.attribution !== ""
-          ? html`<p class="sub attribution"><bdi>${geo.attribution}</bdi></p>`
+          ? html`<p class="sub attribution">
+              <bdi>${visible(geo.attribution)}</bdi>
+            </p>`
           : nothing
       }
     `;

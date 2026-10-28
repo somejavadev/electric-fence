@@ -54,7 +54,8 @@ that order if you edit the file. The rules match the action on the JSON text
 
 In Home Assistant, go to **Settings** > **Devices & services** > **Electric
 Fence** > **Configure** > **Log forwarding**. Turn on **Forward events**, enter
-the manager's address and port 514, and keep the protocol on **tcp**.
+the manager's address and port 514, and set the protocol to **tcp**. Wazuh's
+own listener has no TLS, so keep the manager on your own network.
 
 ## The message format
 

@@ -1,5 +1,6 @@
 import { LitElement, css, html, nothing } from "lit";
 import type { ExportFormat } from "../export.ts";
+import { maskingIps } from "../mask.ts";
 import { strings } from "../strings.ts";
 
 /**
@@ -157,7 +158,9 @@ export class EfDownloadMenu extends LitElement {
     }
     event.preventDefault();
     const items = this._items();
-    const at = items.findIndex((i) => i === this.shadowRoot?.activeElement);
+    const at = items.indexOf(
+      this.shadowRoot?.activeElement as HTMLButtonElement,
+    );
     items[(at + step + items.length) % items.length]?.focus();
   }
 
@@ -173,6 +176,8 @@ export class EfDownloadMenu extends LitElement {
   }
 
   protected override render() {
+    const d = strings.download;
+    const masking = maskingIps();
     return html`
       <button
         type="button"
@@ -193,14 +198,14 @@ export class EfDownloadMenu extends LitElement {
                 role="menuitem"
                 @click=${() => this._choose("csv")}
               >
-                ${strings.download.csv}
+                ${masking ? d.csvUnmasked : d.csv}
               </button>
               <button
                 type="button"
                 role="menuitem"
                 @click=${() => this._choose("json")}
               >
-                ${strings.download.json}
+                ${masking ? d.jsonUnmasked : d.json}
               </button>
             </div>`
           : nothing

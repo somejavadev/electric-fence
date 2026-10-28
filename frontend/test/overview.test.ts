@@ -474,6 +474,41 @@ describe("protection on the overview", () => {
     expect(el.shadowRoot?.querySelector("ef-confirm-dialog")).toBeNull();
   });
 
+  it("shows hidden characters in a spoofed username, and ends the real one", async () => {
+    const spoof = "\u202enimda";
+    const { el, fake } = await mountApi({
+      overview: () =>
+        overview({
+          protection: {
+            available: true,
+            active_bans: 0,
+            bans_24h: 0,
+            attacks: [attack({ username: spoof })],
+          },
+        }),
+      end_slowdown: () => ({ ended: true }),
+    });
+    const row = attackRows(el)[0] as Element;
+    expect(row.textContent).toContain("⟨U+202E⟩nimda");
+    expect(row.textContent).not.toContain("\u202e");
+    row.querySelector<HTMLButtonElement>("button")?.click();
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+    }
+    const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog")
+      ?.shadowRoot as ShadowRoot;
+    const text = confirm.textContent ?? "";
+    expect(text).toContain("⟨U+202E⟩nimda");
+    expect(text).not.toContain("\u202e");
+    confirm.querySelector<HTMLButtonElement>("button.confirm")?.click();
+    for (let i = 0; i < 3; i += 1) {
+      await settle(el);
+    }
+    expect(fake.of("end_slowdown")).toEqual([
+      { type: "electric_fence/end_slowdown", username: spoof },
+    ]);
+  });
+
   it("hides Under attack when nothing is under attack", async () => {
     const { el } = await mountApi({ overview: overview() });
     expect(el.shadowRoot?.querySelector(".attacks")).toBeNull();
@@ -717,7 +752,7 @@ describe("custom integrations card", () => {
     fake.push({ type: "change", item: change({ kind: "files" }) });
     await vi.advanceTimersByTimeAsync(REFRESH_DELAY_MS);
     await settle(el);
-    expect(fake.of("integrations").length).toBe(before + 1);
+    expect(fake.of("integrations")).toHaveLength(before + 1);
     expect(squash(card(el).textContent)).toContain("Last check");
   });
 
@@ -733,7 +768,7 @@ describe("custom integrations card", () => {
     fake.push({ type: "change", item: change({ kind: "settings" }) });
     await vi.advanceTimersByTimeAsync(REFRESH_DELAY_MS);
     await settle(el);
-    expect(fake.of("integrations").length).toBe(before);
+    expect(fake.of("integrations")).toHaveLength(before);
   });
 
   it("reloads the card now and then while the page is open", async () => {
@@ -747,10 +782,10 @@ describe("custom integrations card", () => {
     const before = fake.of("integrations").length;
     await vi.advanceTimersByTimeAsync(INTEGRATIONS_REFRESH_MS);
     await settle(el);
-    expect(fake.of("integrations").length).toBe(before + 1);
+    expect(fake.of("integrations")).toHaveLength(before + 1);
     el.remove();
     await vi.advanceTimersByTimeAsync(INTEGRATIONS_REFRESH_MS * 2);
-    expect(fake.of("integrations").length).toBe(before + 1);
+    expect(fake.of("integrations")).toHaveLength(before + 1);
   });
 
   it("says when a check ran recently", async () => {

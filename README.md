@@ -162,8 +162,8 @@ audit log, and the entities are unaffected.
 | ------------------ | ---------------------------------------------------------------------------------------------------------- |
 | **Forward events** | Sends each event to your collector as a syslog message. Off by default.                                    |
 | **Host**           | Host name or IP address of the collector. Required when forwarding is on.                                  |
-| **Port**           | From 1 to 65535. The default is 514.                                                                       |
-| **Protocol**       | `tcp` (the default), `udp`, or `tls`. Wazuh's own listener accepts TCP and UDP only.                       |
+| **Port**           | From 1 to 65535. The default is 6514, the usual port for syslog over TLS. TCP and UDP usually use 514.     |
+| **Protocol**       | `tls` (the default), `tcp`, or `udp`. Wazuh's own listener accepts TCP and UDP only.                       |
 | **CA certificate** | For TLS: PEM text of a self-signed or private certificate, or of the certificate authority that signed it. |
 
 ## App changes (Supervisor installs)
@@ -300,13 +300,16 @@ forwarding** section of the settings.
   are in `changed` at the top level of the event, not repeated in `details`. A
   line never exceeds 8 KB (one UDP datagram): the longest lists are halved,
   and flagged, until it fits.
-- **Protocol.** TCP by default, or UDP, or TLS for a collector in front of
-  Wazuh such as rsyslog (Wazuh's own listener has no TLS). With TLS, the
-  collector's certificate and name are always checked, because events go out
-  unmasked. For a self-signed or private certificate, paste it, or the
+- **Protocol.** TLS by default, or TCP or UDP. Wazuh's own listener has no
+  TLS, so use TCP there, or put a collector such as rsyslog in front of it.
+  With TLS, the collector's certificate and name are always checked, because
+  events go out unmasked, and TLS 1.0 and 1.1 are refused. For a self-signed or private certificate, paste it, or the
   certificate authority that signed it, into **CA certificate**, and set
   **Host** to the name or address the certificate is for. TCP and UDP aren't
-  encrypted, so use them only on a network you trust. Over TCP and TLS each
+  encrypted, so use them only on a network you trust. While they send to a
+  host that isn't on your own network, a repair says so. Private and loopback
+  addresses count as your own network, and so do names without a dot or
+  ending in `.local`, `.lan`, `.home`, `.internal`, `.localdomain` or `.arpa`. Over TCP and TLS each
   message ends with a newline, with no length prefix, which is what Wazuh and
   Splunk's raw TCP input expect. Over UDP each message is one datagram.
 - **Reliability.** Forwarding never makes a login wait. If the collector is
@@ -517,10 +520,13 @@ settings. Messages appear as persistent notifications. Add notify entities
 (such as the Home Assistant companion app on your phone) to **Phone
 notifications** to get them there too.
 
-Failed logins and bans reach your phone at most once every 10 minutes each.
-The persistent notification always shows the latest. Bans made in between are
-summed up in one message, for example "3 addresses banned since the last
-message".
+Each kind of message (failed logins, bans, ended bans, username attacks and
+new-country logins) reaches your phone at most once every 10 minutes. The
+persistent notification always shows the latest. Events in between are summed
+up in one message, for example "3 addresses banned since the last message".
+On top of that, at most 6 messages an hour reach your phone in total, so a
+flood can't page you all night or run up the bill of a paid notify service.
+Messages held back are counted in one note once the hour allows.
 
 > [!WARNING]
 > Sensor attributes and event fields contain text typed by whoever tried to
@@ -546,6 +552,14 @@ it off in the settings.
 - **Network details.** IP addresses, host names (from reverse DNS), URLs, and
   user agents are stored. **Mask IP addresses in the panel** hides addresses,
   host names and login URLs on screen only; it doesn't change what is stored.
+  While it is on, **Search** skips those fields, so typing a guessed address
+  doesn't confirm it, and the download menu says the download is unmasked.
+- **Hidden characters.** Invisible and text-direction characters in usernames
+  and other typed text are shown as their code point, for example
+  `⟨U+202E⟩nimda`, so one name can't pose as another. Control characters are
+  removed.
+- **Files.** The database is readable by its owner only (`0600`), like Home
+  Assistant's own `.storage` files, and so is the GeoIP folder.
 - **Setting values.** With **Record before and after values** on, values are
   redacted before they are stored, and a redacted value shows as "changed
   (hidden)". Hidden by name: passwords, passcodes, secrets, tokens, keys,

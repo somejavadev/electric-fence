@@ -151,7 +151,6 @@ def _hash_archive(
         OSError,
         ValueError,
         EOFError,
-        NotImplementedError,
     ):
         return Unchecked("bad_archive")
     return hashes or Unchecked("bad_archive")
@@ -186,7 +185,7 @@ async def fetch_reference(
                     spool.write(chunk)
                 spool.seek(0)
                 return await hass.async_add_executor_job(_hash_archive, spool, item)
-    except aiohttp.ClientError, TimeoutError, OSError:
+    except aiohttp.ClientError, OSError:  # TimeoutError is an OSError
         return Unchecked("unreachable")
     except Exception:
         _LOGGER.debug("Fetching %s failed", item.domain, exc_info=True)

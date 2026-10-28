@@ -1078,6 +1078,29 @@ async def test_logins_search(
     assert [i["username_typed"] for i in res["items"]] == ["mallory"]
 
 
+async def test_logins_search_masked(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """While IPs are masked, search doesn't match addresses."""
+    await store(hass, setup_entry, attempt(ip="203.0.113.77"))
+    assert (await result(ws, "electric_fence/logins", search="113.77"))["items"]
+    runtime = setup_entry.runtime_data
+    runtime.settings = replace(runtime.settings, mask_ips=True)
+    res = await result(ws, "electric_fence/logins", search="113.77")
+    assert res["items"] == []
+
+
+async def test_changes_search_masked(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, ws: MockHAClientWebSocket
+) -> None:
+    """While IPs are masked, change search doesn't match the actor's address."""
+    await store(hass, setup_entry, change(actor_ip="198.51.100.77"))
+    runtime = setup_entry.runtime_data
+    runtime.settings = replace(runtime.settings, mask_ips=True)
+    res = await result(ws, "electric_fence/changes", search="100.77")
+    assert res["items"] == []
+
+
 async def test_search_too_long_rejected(
     ws: MockHAClientWebSocket,
 ) -> None:

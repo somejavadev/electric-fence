@@ -3,11 +3,10 @@ import { auditCsv } from "../export.ts";
 import type { ExportFormat } from "../export.ts";
 import { fetchChanges, fetchUsers } from "../api.ts";
 import "../components/ef-change-row.ts";
-import { NarrowController } from "../components/ef-filter-pane.ts";
-import "../components/ef-filter-pane.ts";
-import type {
-  FilterChange,
-  FilterField,
+import {
+  NarrowController,
+  type FilterChange,
+  type FilterField,
 } from "../components/ef-filter-pane.ts";
 import { changeLines } from "../change-lines.ts";
 import {
@@ -19,6 +18,7 @@ import {
   withinBounds,
 } from "../format.ts";
 import type { RangeChoice } from "../format.ts";
+import { maskingIps } from "../mask.ts";
 import { actorLabel, isSystemChange, strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type {
@@ -182,7 +182,7 @@ export function matchesChange(
         item.actor_user_id === null && item.actor_name !== null
           ? actorLabel(item)
           : null,
-        item.actor_ip,
+        maskingIps() ? null : item.actor_ip,
         JSON.stringify(item.details),
       ],
       filters.search,

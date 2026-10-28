@@ -48,8 +48,8 @@ class Settings:
     scan_delay_minutes: int = 30
     forward_enabled: bool = False
     forward_host: str = ""
-    forward_port: int = 514
-    forward_protocol: Literal["tcp", "udp", "tls"] = "tcp"
+    forward_port: int = 6514
+    forward_protocol: Literal["tcp", "udp", "tls"] = "tls"
     forward_ca_pem: str = ""
 
     @property

@@ -53,11 +53,16 @@ describe("csvSafe", () => {
     [" lead", '" lead"'],
     ["trail ", '"trail "'],
     ["ユーザー", "ユーザー"],
+    // Hidden and direction characters are shown, so a cell can't pose as another.
+    ["\u202enimda", "⟨U+202E⟩nimda"],
+    ["admin\u200b", "admin⟨U+200B⟩"],
     [null, ""],
     [undefined, ""],
     [{ a: 1 }, '"{""a"":1}"'],
     [5, "5"],
     [true, "true"],
+    [Symbol("s"), ""],
+    [() => 1, ""],
   ])("%j -> %s", (value, expected) => {
     expect(csvSafe(value)).toBe(expected);
   });
@@ -183,6 +188,32 @@ async function choose(
   root.querySelectorAll<HTMLButtonElement>("[role=menuitem]")[index]?.click();
   await settle(el);
 }
+
+describe("download menu labels", () => {
+  it("says the download is unmasked while masking is on", async () => {
+    const api = fakeApi({ changes: { items: [], next_before_id: null } });
+    const el = await mount<EfAudit>("ef-audit", api);
+    const labels = async () => {
+      part(el).querySelector<HTMLButtonElement>("button.trigger")?.click();
+      await menu(el).updateComplete;
+      const text = [...part(el).querySelectorAll("[role=menuitem]")].map((b) =>
+        b.textContent?.trim(),
+      );
+      part(el).querySelector<HTMLButtonElement>("button.trigger")?.click();
+      await menu(el).updateComplete;
+      return text;
+    };
+    expect(await labels()).toEqual([
+      "Download data (CSV)",
+      "Download data (JSON)",
+    ]);
+    setMaskIps(true);
+    expect(await labels()).toEqual([
+      "Download unmasked data (CSV)",
+      "Download unmasked data (JSON)",
+    ]);
+  });
+});
 
 describe("audit download", () => {
   const page = (items: ReturnType<typeof change>[], next: number | null) => ({

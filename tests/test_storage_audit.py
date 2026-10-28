@@ -187,6 +187,46 @@ def test_login_filter_search(store: FenceStore) -> None:
     ]
 
 
+def test_masked_search_skips_addresses(store: FenceStore) -> None:
+    """While IPs are masked, search can't confirm a guessed address or host."""
+    store.insert(
+        [
+            LoginAttempt(
+                ts=NOW,
+                result=LoginResult.FAILED,
+                reason=LoginReason.WRONG_PASSWORD,
+                username_typed="alice",
+                user_exists=UserExists.NO,
+                user_id=None,
+                provider=None,
+                ip="203.0.113.5",
+                source=Source.REMOTE,
+                url=None,
+                user_agent="curl/8.1",
+                client_id="https://ha.example.com/",
+                hostname="host.example.net",
+            )
+        ]
+    )
+
+    def found(search: str) -> int:
+        return len(store.query_logins(LoginFilter(search=search, search_masked=True)))
+
+    assert found("203.0.113") == 0
+    assert found("example.net") == 0
+    assert found("ha.example.com") == 0
+    assert found("alice") == 1
+    assert found("curl") == 1
+
+
+def test_masked_change_search_skips_actor_ip(store: FenceStore) -> None:
+    """While IPs are masked, change search skips the actor's address."""
+    store.insert([change(name="Tuya", ip="198.51.100.7")])
+    assert store.query_changes(ChangeFilter(search="198.51", search_masked=True)) == []
+    assert len(store.query_changes(ChangeFilter(search="198.51"))) == 1
+    assert len(store.query_changes(ChangeFilter(search="tuy", search_masked=True))) == 1
+
+
 def test_purge_keeps_audit_tables(store: FenceStore) -> None:
     """Purging old rows never touches the audit tables."""
     store.save_reference("o/r", "v1", {"a": "1"})

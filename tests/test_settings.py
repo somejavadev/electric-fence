@@ -85,8 +85,8 @@ def test_settings_v03_defaults() -> None:
     assert s.scan_delay_minutes == 30
     assert s.forward_enabled is False
     assert s.forward_host == ""
-    assert s.forward_port == 514
-    assert s.forward_protocol == "tcp"
+    assert s.forward_port == 6514
+    assert s.forward_protocol == "tls"
     assert s.forward_ca_pem == ""
 
 
@@ -104,7 +104,7 @@ def test_settings_v03_clamps() -> None:
     assert s.unmaintained_months == 1
     assert s.scan_delay_minutes == 1440
     assert s.forward_port == 65535
-    assert s.forward_protocol == "tcp"
+    assert s.forward_protocol == "tls"
     assert s.ignored_files == ("hacs_x/data.json", "other/sub/f.txt")
 
 

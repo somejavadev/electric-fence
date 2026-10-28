@@ -5,6 +5,7 @@ import {
   rangeBounds,
   reasonLabel,
   truncate,
+  visible,
 } from "../src/format.ts";
 import type { HomeAssistant } from "../src/types.ts";
 
@@ -29,6 +30,32 @@ describe("truncate", () => {
   it("never splits a surrogate pair", () => {
     const { short } = truncate("😀".repeat(70), 64);
     expect([...short]).toHaveLength(65);
+  });
+});
+
+describe("visible", () => {
+  it("shows direction and invisible characters as their code point", () => {
+    expect(visible("\u202enimda")).toBe("⟨U+202E⟩nimda");
+    expect(visible("admin\u200b")).toBe("admin⟨U+200B⟩");
+    expect(visible("\u2066a\u2069\ufeff\u2060")).toBe(
+      "⟨U+2066⟩a⟨U+2069⟩⟨U+FEFF⟩⟨U+2060⟩",
+    );
+  });
+  it("shows C1 controls too (older rows were stored with them)", () => {
+    expect(visible("a\x9bb")).toBe("a⟨U+009B⟩b");
+  });
+  it("leaves ordinary text, including right-to-left letters, alone", () => {
+    expect(visible("Ann-Marie Øster")).toBe("Ann-Marie Øster");
+    expect(visible("שלום")).toBe("שלום");
+  });
+});
+
+describe("truncate with hidden characters", () => {
+  it("shows them in the short text and the tooltip", () => {
+    expect(truncate("\u202enimda", 64)).toEqual({
+      short: "⟨U+202E⟩nimda",
+      full: "⟨U+202E⟩nimda",
+    });
   });
 });
 

@@ -287,6 +287,9 @@ export const strings = {
     menu: "More actions",
     csv: "Download data (CSV)",
     json: "Download data (JSON)",
+    // While the panel masks addresses: downloads always hold them in full.
+    csvUnmasked: "Download unmasked data (CSV)",
+    jsonUnmasked: "Download unmasked data (JSON)",
     preparing: (n: number): string => `Preparing… ${n} rows`,
     failed: "Could not prepare the download. Nothing was saved.",
     truncated: (n: number): string =>
