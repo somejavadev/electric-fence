@@ -37,7 +37,7 @@ from .collectors.system_settings import SystemSettingsCollector
 from .collectors.users import UserCollector
 from .const import DOMAIN, MIN_HA_VERSION, SIGNAL_SETTINGS_UPDATED
 from .forwarding.forwarder import Forwarder
-from .forwarding.transport import SyslogTransport, build_ssl_context
+from .forwarding.transport import SyslogTransport, build_ssl_context, is_local_host
 from .geo.base import GeoStatus
 from .geo.enrich import GeoEnricher
 from .geo.updater import GeoUpdater
@@ -51,10 +51,12 @@ from .protection.policy import IpPolicy
 from .protection.throttle import KNOWN_DEVICE_WINDOW, UsernameGuard
 from .repairs import (
     async_clear_disabled_collector,
+    async_clear_forward_plaintext,
     async_clear_ip_ban_disabled,
     async_clear_schema_too_new,
     async_clear_storage_limit,
     async_clear_tls_check_required,
+    async_report_forward_plaintext,
     async_report_schema_too_new,
     async_report_storage_limit,
     async_report_tls_check_required,
@@ -414,6 +416,20 @@ def _forward_target(settings: Settings) -> tuple[object, ...] | None:
     )
 
 
+def _async_check_plaintext(hass: HomeAssistant, settings: Settings) -> None:
+    """Raise a repair while events go unencrypted to a host off the network."""
+    if (
+        _forward_target(settings) is not None
+        and settings.forward_protocol != "tls"
+        and not is_local_host(settings.forward_host)
+    ):
+        async_report_forward_plaintext(
+            hass, settings.forward_host, settings.forward_protocol
+        )
+    else:
+        async_clear_forward_plaintext(hass)
+
+
 async def _async_build_forwarder(
     hass: HomeAssistant, runtime: Runtime
 ) -> Forwarder | None:
@@ -447,6 +463,7 @@ async def _async_build_forwarder(
 
 async def _async_start_forwarder(hass: HomeAssistant, runtime: Runtime) -> None:
     """Start forwarding when it is on. Never raises."""
+    _async_check_plaintext(hass, runtime.settings)
     try:
         forwarder = await _async_build_forwarder(hass, runtime)
         if forwarder is not None:
@@ -510,6 +527,7 @@ async def async_apply_settings(
                 type(err).__name__,
             )
     if _forward_target(settings) != _forward_target(old):
+        _async_check_plaintext(hass, settings)
         await _async_restart_forwarder(hass, runtime)
     if old.record_values and not settings.record_values:
         # Flush first so rows still queued with values are covered too.
@@ -656,5 +674,6 @@ async def async_remove_entry(
     await _async_lift_own_bans(hass)
     async_clear_disabled_collector(hass, "protection")
     async_clear_ip_ban_disabled(hass)
+    async_clear_forward_plaintext(hass)
     async_sync_integration_issues(hass, set())
     await hass.async_add_executor_job(_remove_data, Path(hass.config.config_dir))

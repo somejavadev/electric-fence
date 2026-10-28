@@ -14,7 +14,7 @@ import "../components/ef-flag.ts";
 import "../components/ef-integration-dialog.ts";
 import "../components/ef-login-row.ts";
 import "../components/ef-posture-list.ts";
-import { formatTime } from "../format.ts";
+import { formatTime, visible } from "../format.ts";
 import { integrationFiles, integrationHealth, strings } from "../strings.ts";
 import { bdiText, fill } from "../text.ts";
 import type {
@@ -916,7 +916,7 @@ export class EfOverview extends LitElement {
       ${this._integrationsCard()}
       ${
         typeof attribution === "string" && attribution !== ""
-          ? html`<p class="attribution"><bdi>${attribution}</bdi></p>`
+          ? html`<p class="attribution"><bdi>${visible(attribution)}</bdi></p>`
           : nothing
       }
       ${this._confirm()} ${this._integrationDialog()}

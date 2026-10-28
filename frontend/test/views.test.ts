@@ -14,6 +14,7 @@ import {
 import type { AuditFilters } from "../src/views/ef-audit.ts";
 import { EfSettings } from "../src/views/ef-settings.ts";
 import { EfChangeRow } from "../src/components/ef-change-row.ts";
+import { setMaskIps } from "../src/mask.ts";
 import { changeSentence } from "../src/strings.ts";
 import { EfUsers } from "../src/views/ef-users.ts";
 import { LIVE_CAP, REFRESH_DELAY_MS } from "../src/views/live-view.ts";
@@ -723,6 +724,38 @@ describe("push filter semantics", () => {
     expect(m({ range: "all" }, login({ ts: "2020-01-01T00:00:00Z" }))).toBe(
       true,
     );
+  });
+
+  it("search skips addresses, host names and client IDs while masking", () => {
+    const item = login({
+      ts: fresh.ts,
+      ip: "203.0.113.7",
+      hostname: "host.example.net",
+      client_id: "https://ha.example.com/",
+      user_agent: "curl/8.1",
+    });
+    try {
+      setMaskIps(true);
+      expect(m({ search: "113.7" }, item)).toBe(false);
+      expect(m({ search: "example.net" }, item)).toBe(false);
+      expect(m({ search: "ha.example" }, item)).toBe(false);
+      expect(m({ search: "curl" }, item)).toBe(true);
+    } finally {
+      setMaskIps(false);
+    }
+    expect(m({ search: "113.7" }, item)).toBe(true);
+  });
+
+  it("change search skips the actor's address while masking", () => {
+    const item = change({ ts: fresh.ts, actor_ip: "198.51.100.77" });
+    const f = { ...DEFAULT_AUDIT_FILTERS, search: "100.77" };
+    try {
+      setMaskIps(true);
+      expect(matchesChange(item, f, NOW)).toBe(false);
+    } finally {
+      setMaskIps(false);
+    }
+    expect(matchesChange(item, f, NOW)).toBe(true);
   });
 
   it("username folds ASCII only, like SQLite LIKE", () => {

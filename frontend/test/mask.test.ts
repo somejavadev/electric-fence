@@ -90,7 +90,9 @@ describe("showClient", () => {
   it.each([
     ["https://ha.example.com/", "https://hidden/"],
     ["http://127.0.0.1:8123/", "http://hidden/"],
-    ["http://[2001:db8::1]:8123/lovelace", "http://hidden/lovelace"],
+    // The path can name the server too (a reverse proxy's sub-path).
+    ["http://[2001:db8::1]:8123/lovelace", "http://hidden/"],
+    ["https://proxy.example.com/ha-smith/", "https://hidden/"],
     ["https://home-assistant.io/android", "https://home-assistant.io/android"],
     ["https://home-assistant.io/iOS", "https://home-assistant.io/iOS"],
     ["not a url", "hidden"],

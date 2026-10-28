@@ -280,16 +280,16 @@ async def test_reconfigure_restarts_forwarder(
         mp.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    assert [t.port for t in patched_transport.made] == [514]
+    assert [t.port for t in patched_transport.made] == [6514]
     first = patched_transport.made[0]
     hass.config_entries.async_update_entry(
         entry,
         options=replace(
-            Settings.from_options(entry.options), forward_port=6514
+            Settings.from_options(entry.options), forward_port=1514
         ).to_options(),
     )
     await hass.async_block_till_done()
-    assert [t.port for t in patched_transport.made] == [514, 6514]
+    assert [t.port for t in patched_transport.made] == [6514, 1514]
     assert first.closed
     assert entry.runtime_data.forwarder is not None
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -589,3 +589,91 @@ async def test_saving_settings_clears_the_tls_repair(
     )
     await hass.async_block_till_done()
     assert _tls_issue(hass) is None
+
+
+async def _setup_forwarding(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, host: str, protocol: str
+) -> MockConfigEntry:
+    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options=replace(
+            Settings(),
+            forward_enabled=True,
+            forward_host=host,
+            forward_protocol=protocol,
+        ).to_options(),
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+def _plaintext_issue(hass: HomeAssistant) -> ir.IssueEntry | None:
+    return ir.async_get(hass).async_get_issue(DOMAIN, "forward_plaintext")
+
+
+@pytest.mark.parametrize("protocol", ["tcp", "udp"])
+async def test_plaintext_to_a_remote_host_raises_a_repair(
+    hass: HomeAssistant,
+    patched_transport: Net,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    """Unencrypted forwarding to a host outside the home network is flagged."""
+    await _setup_forwarding(hass, monkeypatch, "siem.example.com", protocol)
+    issue = _plaintext_issue(hass)
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.translation_placeholders == {
+        "host": "siem.example.com",
+        "protocol": protocol.upper(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("host", "protocol"),
+    [
+        ("siem.example.com", "tls"),
+        ("192.168.1.20", "tcp"),
+        ("wazuh.local", "udp"),
+    ],
+)
+async def test_no_plaintext_repair_for_tls_or_local_hosts(
+    hass: HomeAssistant,
+    patched_transport: Net,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    protocol: str,
+) -> None:
+    """TLS, or a collector on the home network, raises nothing."""
+    await _setup_forwarding(hass, monkeypatch, host, protocol)
+    assert _plaintext_issue(hass) is None
+
+
+async def test_switching_to_tls_clears_the_plaintext_repair(
+    hass: HomeAssistant, patched_transport: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Choosing TLS removes the repair; turning forwarding off does too."""
+    entry = await _setup_forwarding(hass, monkeypatch, "8.8.8.8", "tcp")
+    assert _plaintext_issue(hass) is not None
+    hass.config_entries.async_update_entry(
+        entry,
+        options=replace(
+            Settings.from_options(entry.options), forward_protocol="tls"
+        ).to_options(),
+    )
+    await hass.async_block_till_done()
+    assert _plaintext_issue(hass) is None
+
+    hass.config_entries.async_update_entry(
+        entry,
+        options=replace(
+            Settings.from_options(entry.options),
+            forward_protocol="udp",
+            forward_enabled=False,
+        ).to_options(),
+    )
+    await hass.async_block_till_done()
+    assert _plaintext_issue(hass) is None

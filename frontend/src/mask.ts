@@ -4,6 +4,8 @@
  * keep using them.
  */
 
+import { visible } from "./format.ts";
+
 /** Stands in for a host name, or for an address that cannot be parsed. */
 export const HIDDEN = "hidden";
 
@@ -31,7 +33,7 @@ function ipv6Groups(ip: string): string[] | null {
   if (halves.length === 1 ? missing !== 0 : missing < 1) {
     return null;
   }
-  const groups = [...head, ...Array<string>(missing).fill("0"), ...tail];
+  const groups = [...head, ...new Array<string>(missing).fill("0"), ...tail];
   return groups.every((g) => /^[\da-f]{1,4}$/i.test(g)) ? groups : null;
 }
 
@@ -54,26 +56,29 @@ export function maskIp(ip: string): string {
   if (groups === null) {
     return HIDDEN;
   }
-  return [...groups.slice(0, 2), ...Array<string>(6).fill("x")].join(":");
+  return [...groups.slice(0, 2), ...new Array<string>(6).fill("x")].join(":");
 }
 
 /** An address as the panel shows it. */
-export const showIp = (ip: string): string => (masking ? maskIp(ip) : ip);
+export const showIp = (ip: string): string =>
+  masking ? maskIp(ip) : visible(ip);
 
 /** A reverse DNS host name as the panel shows it: often it spells the IP. */
-export const showHost = (host: string): string => (masking ? HIDDEN : host);
+export const showHost = (host: string): string =>
+  masking ? HIDDEN : visible(host);
 
 /** Client IDs of the official apps name no one's server, so they stay. */
 const PUBLIC_CLIENT_HOST = /(^|\.)home-assistant\.io$/i;
 
 /**
  * A login's client ID as the panel shows it. A browser login's client ID is
- * the URL of the Home Assistant it used, so its host is hidden:
- * https://ha.example.com/ shows as https://hidden/.
+ * the URL of the Home Assistant it used, so its host and path are hidden (a
+ * reverse proxy's path can name the server too): https://ha.example.com/x/
+ * shows as https://hidden/.
  */
 export function showClient(clientId: string): string {
   if (!masking) {
-    return clientId;
+    return visible(clientId);
   }
   let url: URL;
   try {
@@ -82,7 +87,7 @@ export function showClient(clientId: string): string {
     return HIDDEN;
   }
   if (PUBLIC_CLIENT_HOST.test(url.hostname)) {
-    return clientId;
+    return visible(clientId);
   }
-  return `${url.protocol}//${HIDDEN}${url.pathname}`;
+  return `${url.protocol}//${HIDDEN}/`;
 }

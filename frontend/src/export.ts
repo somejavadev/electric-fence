@@ -1,3 +1,4 @@
+import { visible } from "./format.ts";
 import { strings } from "./strings.ts";
 import type { ChangeItem, LoginItem, Page } from "./types.ts";
 
@@ -7,7 +8,7 @@ export const EXPORT_CAP = 100_000;
 /** The server's largest page. */
 export const EXPORT_PAGE = 200;
 
-const BOM = String.fromCharCode(0xfeff);
+const BOM = String.fromCodePoint(0xfeff);
 const FORMULA_START = /^[=+\-@\t\r]/;
 // `;` and TAB too: Excel in many locales splits on them, and the cell after
 // one would start unchecked (`x;=1+1`).
@@ -16,6 +17,7 @@ const NEEDS_QUOTES = /[,;"\t\n\r]|^ | $/;
 /**
  * One CSV field. A leading `= + - @ \t \r` gets a `'` in front so a
  * spreadsheet never runs it as a formula (usernames come from attackers).
+ * Hidden characters are shown, so a cell can't pose as another value.
  */
 export function csvSafe(value: unknown): string {
   let text: string;
@@ -23,9 +25,17 @@ export function csvSafe(value: unknown): string {
     return "";
   } else if (typeof value === "object") {
     text = JSON.stringify(value);
-  } else {
+  } else if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
     text = String(value);
+  } else {
+    return "";
   }
+  text = visible(text);
   if (FORMULA_START.test(text)) {
     text = `'${text}`;
   }

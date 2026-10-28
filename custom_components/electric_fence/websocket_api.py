@@ -54,6 +54,7 @@ from .storage import (
 _LOGGER = logging.getLogger(__name__)
 
 ERR_NOT_LOADED = "not_loaded"
+_NOT_LOADED_MESSAGE = "Electric Fence is not loaded"
 MAX_LIMIT = 200
 DEFAULT_LIMIT = 50
 OVERVIEW_ITEMS = 5
@@ -134,7 +135,7 @@ def _runtime(
 ) -> Runtime | None:
     """Return the loaded entry's runtime, or answer `not_loaded`."""
     if (entry := _loaded_entry(hass)) is None:
-        connection.send_error(msg["id"], ERR_NOT_LOADED, "Electric Fence is not loaded")
+        connection.send_error(msg["id"], ERR_NOT_LOADED, _NOT_LOADED_MESSAGE)
         return None
     return entry.runtime_data
 
@@ -250,6 +251,7 @@ async def ws_logins(
         since=msg.get("since"),
         until=msg.get("until"),
         search=msg.get("search"),
+        search_masked=runtime.settings.mask_ips,
     )
     limit: int = msg["limit"]
     rows = await hass.async_add_executor_job(
@@ -307,6 +309,7 @@ async def ws_changes(
         action=ChangeAction(action) if action is not None else None,
         ip=msg.get("ip"),
         search=msg.get("search"),
+        search_masked=runtime.settings.mask_ips,
     )
     limit: int = msg["limit"]
     rows = await hass.async_add_executor_job(
@@ -432,7 +435,7 @@ async def ws_scan_integrations(
 ) -> None:
     """Start an integration scan in the background, at most every 5 minutes."""
     if (entry := _loaded_entry(hass)) is None:
-        connection.send_error(msg["id"], ERR_NOT_LOADED, "Electric Fence is not loaded")
+        connection.send_error(msg["id"], ERR_NOT_LOADED, _NOT_LOADED_MESSAGE)
         return
     scheduler = entry.runtime_data.integrity
     requested = hass.data.setdefault(DATA_SCAN_REQUESTED, {})
@@ -465,7 +468,7 @@ def ws_subscribe(
 ) -> None:
     """Push each stored record until unsubscribed or the entry unloads."""
     if (entry := _loaded_entry(hass)) is None:
-        connection.send_error(msg["id"], ERR_NOT_LOADED, "Electric Fence is not loaded")
+        connection.send_error(msg["id"], ERR_NOT_LOADED, _NOT_LOADED_MESSAGE)
         return
     msg_id: int = msg["id"]
 

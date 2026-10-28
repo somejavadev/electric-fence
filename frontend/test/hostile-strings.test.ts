@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import "../src/components/ef-login-row.ts";
 import { EfLoginRow } from "../src/components/ef-login-row.ts";
+import { visible } from "../src/format.ts";
 import type { HomeAssistant } from "../src/types.ts";
 import "../src/views/ef-activity.ts";
 import "../src/views/ef-audit.ts";
@@ -75,13 +76,14 @@ describe("hostile typed usernames", () => {
       expect(root.querySelector("a[href]")).toBeNull();
       expect(root.querySelector('[href^="javascript:" i]')).toBeNull();
       const name = root.querySelector<HTMLElement>(".username");
-      const visible = name?.textContent ?? "";
-      expect(visible.length).toBeLessThanOrEqual(65);
-      expect(name?.getAttribute("title")).toBe(typed);
+      const shownName = name?.textContent ?? "";
+      expect(shownName.length).toBeLessThanOrEqual(65);
+      expect(name?.getAttribute("title")).toBe(visible(typed));
+      expect(root.textContent).not.toContain("\u202e");
       if (typed.length <= 64) {
-        expect(root.textContent).toContain(typed);
+        expect(root.textContent).toContain(visible(typed));
       } else {
-        expect(visible.startsWith("a".repeat(64))).toBe(true);
+        expect(shownName.startsWith("a".repeat(64))).toBe(true);
       }
       document.body.replaceChildren();
     }
@@ -89,9 +91,11 @@ describe("hostile typed usernames", () => {
 });
 
 // Every field a stranger or an admin can type, each with markup, a script URL
-// and a right-to-left override.
+// and a right-to-left override. The override is shown as `⟨U+202E⟩`.
 const hostile = (label: string) =>
   `\u202e<img src=x onerror=alert(1)>javascript:alert(1)-${label}`;
+
+const RLO_SHOWN = "⟨U+202E⟩";
 
 const allShadowElements = (root: ParentNode): Element[] =>
   [...root.querySelectorAll("*")].flatMap((el) => [
@@ -268,12 +272,12 @@ describe("hostile values across the whole overview", () => {
     for (const label of labels.filter(
       (l) => l !== "host" && l !== "successip" && l !== "successuser",
     )) {
-      expect(shown, label).toContain(h[label]);
+      expect(shown, label).toContain(visible(h[label]));
     }
     // Every text node carrying the override sits inside a bdi.
     const carriers = elements.filter((e) =>
       [...e.childNodes].some(
-        (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+        (n) => n.nodeType === 3 && (n.textContent ?? "").includes(RLO_SHOWN),
       ),
     );
     expect(carriers.length).toBeGreaterThan(10);
@@ -317,11 +321,11 @@ describe("hostile values in the other tabs", () => {
     }
     const shown = elements.map((e) => e.textContent).join("\n");
     for (const label of labels) {
-      expect(shown, label).toContain(H(label));
+      expect(shown, label).toContain(visible(H(label)));
     }
     const carriers = elements.filter((e) =>
       [...e.childNodes].some(
-        (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+        (n) => n.nodeType === 3 && (n.textContent ?? "").includes(RLO_SHOWN),
       ),
     );
     expect(carriers.length).toBeGreaterThanOrEqual(labels.length);
@@ -612,11 +616,11 @@ describe("hostile values in the other tabs", () => {
     }
     const shown = elements.map((e) => e.textContent).join("\n");
     for (const label of labels) {
-      expect(shown, label).toContain(H(label));
+      expect(shown, label).toContain(visible(H(label)));
     }
     const carriers = elements.filter((e) =>
       [...e.childNodes].some(
-        (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+        (n) => n.nodeType === 3 && (n.textContent ?? "").includes(RLO_SHOWN),
       ),
     );
     expect(carriers.length).toBeGreaterThanOrEqual(labels.length);
@@ -654,7 +658,7 @@ describe("hostile values in the other tabs", () => {
     // The name shows in the list and again in the question.
     textOnly(el, ["attacker"]);
     const question = confirm?.shadowRoot?.querySelector("h3 bdi");
-    expect(question?.textContent).toBe(H("attacker"));
+    expect(question?.textContent).toBe(visible(H("attacker")));
   });
 
   it("bans with the details dialog and the unban question open", async () => {
@@ -678,7 +682,7 @@ describe("hostile values in the other tabs", () => {
     textOnly(el, ["host", "ip"]);
     const confirm = el.shadowRoot?.querySelector("ef-confirm-dialog");
     expect(confirm?.shadowRoot?.querySelector("h3 bdi")?.textContent).toBe(
-      H("ip"),
+      visible(H("ip")),
     );
   });
 
@@ -709,7 +713,7 @@ describe("hostile values in the other tabs", () => {
       expect(elements.some((e) => e.hasAttribute("onerror"))).toBe(false);
       const carriers = elements.filter((e) =>
         [...e.childNodes].some(
-          (n) => n.nodeType === 3 && (n.textContent ?? "").includes("\u202e"),
+          (n) => n.nodeType === 3 && (n.textContent ?? "").includes(RLO_SHOWN),
         ),
       );
       expect(carriers.length).toBeGreaterThan(0);

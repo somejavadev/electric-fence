@@ -336,7 +336,7 @@ export class EfFilterPane extends LitElement {
     if (search !== null) {
       search.value = "";
     }
-    fireEvent(this, "filters-cleared", undefined);
+    fireEvent(this, "filters-cleared");
   };
 
   private _shown(field: FilterField): string {

@@ -2,11 +2,10 @@ import { html, nothing } from "lit";
 import { activityCsv } from "../export.ts";
 import type { ExportFormat } from "../export.ts";
 import { fetchLogins, fetchUsers } from "../api.ts";
-import { NarrowController } from "../components/ef-filter-pane.ts";
-import "../components/ef-filter-pane.ts";
-import type {
-  FilterChange,
-  FilterField,
+import {
+  NarrowController,
+  type FilterChange,
+  type FilterField,
 } from "../components/ef-filter-pane.ts";
 import "../components/ef-login-row.ts";
 import {
@@ -19,6 +18,7 @@ import {
   withinBounds,
 } from "../format.ts";
 import type { RangeChoice, TimeRange } from "../format.ts";
+import { maskingIps } from "../mask.ts";
 import { strings } from "../strings.ts";
 import { viewStyles } from "../styles.ts";
 import type {
@@ -171,14 +171,18 @@ export function matchesLogin(
   }
   if (
     !containsText(
-      [
-        item.username_typed,
-        item.ip,
-        item.hostname,
-        item.client_name,
-        item.client_id,
-        item.user_agent,
-      ],
+      // While masking, the fields the panel hides aren't searched, so a
+      // guessed address can't be confirmed. The server does the same.
+      maskingIps()
+        ? [item.username_typed, item.client_name, item.user_agent]
+        : [
+            item.username_typed,
+            item.ip,
+            item.hostname,
+            item.client_name,
+            item.client_id,
+            item.user_agent,
+          ],
       filters.search,
     )
   ) {

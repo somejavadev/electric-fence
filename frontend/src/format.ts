@@ -57,16 +57,33 @@ export function formatDate(day: string, hass: HomeAssistant): string {
   }).format(value);
 }
 
-/** Cut text to `max` characters plus an ellipsis; keep the full text. */
+// C1 controls and the invisible and direction characters: `\u202enimda`
+// reads as "admin", `admin\u200b` looks like "admin". The server shows them
+// this way too; older rows may still hold them.
+const HIDDEN = /[\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
+
+/** Show hidden characters as their code point, e.g. `⟨U+202E⟩`. */
+export const visible = (text: string): string =>
+  text.replace(
+    HIDDEN,
+    (c) =>
+      `⟨U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}⟩`,
+  );
+
+/**
+ * Cut text to `max` characters plus an ellipsis; keep the full text. Hidden
+ * characters are shown in both, and count as one character towards `max`.
+ */
 export function truncate(
-  text: string,
+  value: string,
   max: number,
 ): { short: string; full: string } {
-  const chars = [...text];
+  const chars = [...value];
+  const full = visible(value);
   if (chars.length <= max) {
-    return { short: text, full: text };
+    return { short: full, full };
   }
-  return { short: `${chars.slice(0, max).join("")}…`, full: text };
+  return { short: `${visible(chars.slice(0, max).join(""))}…`, full };
 }
 
 export function reasonLabel(reason: string): string {

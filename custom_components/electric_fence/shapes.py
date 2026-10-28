@@ -345,6 +345,14 @@ def integration_item(status: IntegrationStatus) -> dict[str, Any]:
     """Return an integration check result (see IntegrationItem above)."""
     files = status.files
     report = files.report if files is not None else None
+    report_lists = (
+        None
+        if report is None
+        else {
+            name: list(getattr(report, name))
+            for name in ("changed", "missing", "added", "unreadable", "symlinks")
+        }
+    )
     health = status.health
     return {
         "domain": status.domain,
@@ -359,12 +367,7 @@ def integration_item(status: IntegrationStatus) -> dict[str, Any]:
             "reason": files.reason,
             "ref": files.ref,
             "version_before": files.version_before,
-            "report": None
-            if report is None
-            else {
-                name: list(getattr(report, name))
-                for name in ("changed", "missing", "added", "unreadable", "symlinks")
-            },
+            "report": report_lists,
         },
         "health": {
             "status": health.status,

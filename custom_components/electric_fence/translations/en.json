@@ -73,6 +73,10 @@
       "title": "Log forwarding now checks the collector's certificate",
       "description": "Log forwarding over TLS was set not to check the collector's certificate. That setting has been removed: events are forwarded unmasked, and without the check anyone between Home Assistant and the collector could receive or change them. Forwarding fails until the certificate can be checked. To fix it, go to Settings > Devices & services > Electric Fence > Configure > Forwarding. Paste the collector's certificate, or the certificate authority that signed it, into CA certificate, and set Host to the name or address the certificate is for. If the collector is on a network you trust, you can choose TCP instead. Saving the settings removes this message. Logins are not affected."
     },
+    "forward_plaintext": {
+      "title": "Log forwarding is not encrypted",
+      "description": "Electric Fence forwards events to {host} over {protocol}, which is not encrypted. Events are forwarded unmasked, with addresses, usernames and settings changes, so anyone between Home Assistant and {host} can read or change them. If the collector is not on your own network, choose TLS: go to Settings > Devices & services > Electric Fence > Configure > Log forwarding. This message goes away when forwarding uses TLS or a collector on your own network. Logins are not affected."
+    },
     "ip_ban_disabled": {
       "title": "Home Assistant IP bans are switched off",
       "description": "Electric Fence bans addresses through Home Assistant's own IP ban, which is switched off, so Electric Fence cannot block any address. To switch it on, go to Settings > System > Network > HTTP server > IP banning, turn on Enable IP banning, and save. Saving restarts Home Assistant. Logins are not affected."
@@ -229,8 +233,8 @@
             "data_description": {
               "forward_enabled": "Send each event to the collector as a syslog message.",
               "forward_host": "Host name or IP address of the collector.",
-              "forward_port": "Port of the collector, from 1 to 65535.",
-              "forward_protocol": "Wazuh's own syslog listener accepts TCP and UDP. Use TLS only with a collector that supports it, such as rsyslog.",
+              "forward_port": "Port of the collector, from 1 to 65535. Syslog over TLS usually uses 6514, TCP and UDP 514.",
+              "forward_protocol": "TLS encrypts the events on the way. Wazuh's own syslog listener accepts only TCP and UDP, usually on port 514; use those only with a collector on your own network.",
               "forward_ca_pem": "With TLS the collector's certificate is always checked. For a self-signed or private certificate, paste the certificate, or the certificate authority that signed it, as PEM text."
             }
           }

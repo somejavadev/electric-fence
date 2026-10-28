@@ -16,6 +16,7 @@ import pytest
 from custom_components.electric_fence.forwarding.transport import (
     SyslogTransport,
     build_ssl_context,
+    is_local_host,
 )
 
 pytestmark = pytest.mark.enable_socket
@@ -254,6 +255,30 @@ def test_tls_context_always_verifies(cert: tuple[Path, Path, str]) -> None:
     for context in (build_ssl_context(""), build_ssl_context(cert[2])):
         assert context.verify_mode is ssl.CERT_REQUIRED
         assert context.check_hostname
+        assert context.minimum_version is ssl.TLSVersion.TLSv1_2
+
+
+@pytest.mark.parametrize(
+    ("host", "local"),
+    [
+        ("127.0.0.1", True),
+        ("10.0.0.5", True),
+        ("192.168.1.20", True),
+        ("fd00::1", True),
+        ("[fe80::1]", True),
+        ("wazuh", True),
+        ("wazuh.local", True),
+        ("siem.lan", True),
+        ("siem.home.arpa", True),
+        ("SIEM.Internal.", True),
+        ("8.8.8.8", False),
+        ("2001:4860:4860::8888", False),
+        ("siem.example.com", False),
+    ],
+)
+def test_is_local_host(host: str, local: bool) -> None:
+    """Private addresses and home-network names count as local."""
+    assert is_local_host(host) is local
 
 
 @pytest.mark.parametrize("cert", ["server"], indirect=True)
