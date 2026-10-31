@@ -34,8 +34,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements_test.txt
       # Same install as the Tests workflow (see the note there).
-      - name: Install Home Assistant (dev) and test tooling
-        run: scripts/ci_install_ha.sh dev
+      - name: Install Home Assistant (rc) and test tooling
+        run: scripts/ci_install_ha.sh rc
       - name: Python tests with coverage
         run: pytest --cov --cov-report=xml
       - name: Ruff report for SonarCloud
