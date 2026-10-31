@@ -17,6 +17,9 @@
 # (custom_components/electric_fence/contracts.py); see WATCHED below. Keep the
 # two in step when a contract is added or removed.
 #
+# Output never links Core PRs (see the link comment below), so the watch adds
+# nothing to Home Assistant's PR timelines.
+#
 # Needs git, jq and `gh` with GITHUB_TOKEN (GH_TOKEN) and `issues: write`.
 # DRY_RUN=1 prints the gh write calls instead of making them.
 # Test hooks:
@@ -159,12 +162,15 @@ while IFS= read -r -d $'\x1e' record; do
   done <<<"$files"
   ((n <= MAX_FILES)) || hits+=" and $((n - MAX_FILES)) more"
 
-  # Squash merges end in "(#<number>)"; link the PR, else the commit.
+  # Link the commit, never the PR: this repository is public, and a PR link or
+  # `owner/repo#n` reference in a comment adds a "mentioned this" event to the
+  # Core PR's timeline. Commits have no timeline, and their page links the PR.
+  # Squash merges end in "(#<number>)"; that number is shown in a code span,
+  # where GitHub does not turn it into a reference.
+  link="[\`${sha:0:11}\`](${CORE_URL}/commit/${sha})"
   if [[ "$subject" =~ ^(.*)\ \(#([0-9]+)\)$ ]]; then
     subject="${BASH_REMATCH[1]}"
-    link="[#${BASH_REMATCH[2]}](${CORE_URL}/pull/${BASH_REMATCH[2]})"
-  else
-    link="[${sha:0:11}](${CORE_URL}/commit/${sha})"
+    link+=" \`core#${BASH_REMATCH[2]}\`"
   fi
   # Subjects are untrusted: no backtick can end the code span, so no @mention,
   # #reference or markdown inside it is live.

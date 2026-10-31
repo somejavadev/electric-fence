@@ -105,7 +105,7 @@ def test_lists_only_watched_changes_in_the_window(core: Core, tmp_path: Path) ->
         "homeassistant/auth/models.py",
         date="2026-10-20T04:00:00Z",
     )
-    core.commit(
+    sha = core.commit(
         "Change websocket auth (#101)",
         "homeassistant/components/websocket_api/http.py",
         date="2026-10-24T03:00:00Z",
@@ -119,9 +119,9 @@ def test_lists_only_watched_changes_in_the_window(core: Core, tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("gh issue comment") == 1
     assert (
-        "[#101](https://github.com/home-assistant/core/pull/101) `Change websocket auth`"
-        in result.stdout
-    )
+        f"[`{sha[:11]}`](https://github.com/home-assistant/core/commit/{sha})"
+        " `core#101` `Change websocket auth`"
+    ) in result.stdout
     assert "#102" not in result.stdout
     assert "#103" not in result.stdout
 
@@ -240,20 +240,41 @@ def test_existing_issue_gets_comment_only(core: Core, tmp_path: Path) -> None:
 
 
 def test_commit_without_pr_number_links_the_commit(core: Core, tmp_path: Path) -> None:
-    """A subject without `(#n)` links the commit instead of a PR."""
+    """A subject without `(#n)` gets the commit link and no PR number."""
     sha = core.commit(
         "Direct push", "homeassistant/core.py", date="2026-10-24T01:00:00Z"
     )
     result = watch(core, tmp_path)
     assert (
-        f"[{sha[:11]}](https://github.com/home-assistant/core/commit/{sha}) `Direct push`"
-        in result.stdout
+        f"[`{sha[:11]}`](https://github.com/home-assistant/core/commit/{sha})"
+        " `Direct push`"
+    ) in result.stdout
+    assert "core#" not in result.stdout
+
+
+def test_never_references_core_prs(core: Core, tmp_path: Path) -> None:
+    """No PR link and no live reference, so Core PR timelines get no event.
+
+    Outside code spans the body may hold only commit links: no `/pull/`,
+    `/issues/` or `#<n>` that GitHub would turn into a cross-reference.
+    """
+    core.commit(
+        "See home-assistant/core#42 and https://github.com/home-assistant/core/pull/43 (#44)",
+        "homeassistant/components/http/ban.py",
+        date="2026-10-24T01:00:00Z",
     )
+    result = watch(core, tmp_path)
+    assert result.returncode == 0, result.stderr
+    body = result.stdout.split("DRY_RUN: gh issue comment")[0]
+    outside_code = re.sub(r"`[^`\n]*`", "", body)
+    assert "/pull/" not in outside_code
+    assert "/issues/" not in outside_code
+    assert not re.search(r"#\d", outside_code), outside_code
 
 
 def test_neutralises_subjects(core: Core, tmp_path: Path) -> None:
     """Mentions, issue refs and backticks in a subject cannot ping or break out."""
-    core.commit(
+    sha = core.commit(
         "fix @octocat #99 `x` (#5)",
         "homeassistant/config_entries.py",
         date="2026-10-24T01:00:00Z",
@@ -261,9 +282,9 @@ def test_neutralises_subjects(core: Core, tmp_path: Path) -> None:
     result = watch(core, tmp_path)
     assert result.returncode == 0, result.stderr
     assert (
-        "[#5](https://github.com/home-assistant/core/pull/5) `fix @octocat #99 'x'`"
-        in result.stdout
-    )
+        f"[`{sha[:11]}`](https://github.com/home-assistant/core/commit/{sha})"
+        " `core#5` `fix @octocat #99 'x'`"
+    ) in result.stdout
     assert "`x`" not in result.stdout
 
 
