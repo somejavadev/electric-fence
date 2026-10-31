@@ -1,8 +1,8 @@
 name: Upstream watch
 
-# Daily list of merged Home Assistant Core PRs that touch code this integration
-# relies on (auth, http, websocket_api, config), as a comment on the
-# `upstream-watch` issue.
+# Daily list of Home Assistant Core changes on `dev` that touch code this
+# integration relies on (the paths behind its runtime contracts, listed in
+# scripts/upstream_watch.sh), as a comment on the `upstream-watch` issue.
 
 on:
   schedule:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: List watched upstream PRs
+      - name: List watched upstream changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/upstream_watch.sh

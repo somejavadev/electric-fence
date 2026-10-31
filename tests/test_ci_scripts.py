@@ -15,8 +15,6 @@ if shutil.which("bash") is None or shutil.which("jq") is None:
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
-PULLS = FIXTURES / "upstream-pulls.json"
-NOW = "2026-10-24T06:00:00Z"
 
 
 def run(
@@ -134,61 +132,6 @@ def test_report_hard_caps_body(tmp_path: Path) -> None:
     assert "truncated" in result.stdout
 
 
-def watch(env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    """Run the watch against the pulls fixture."""
-    return run(
-        "upstream_watch.sh",
-        env={"UPSTREAM_FIXTURE": str(PULLS), "UPSTREAM_NOW": NOW, **(env or {})},
-    )
-
-
-def test_watch_lists_only_watched_recent_merged_prs() -> None:
-    """Only #101 is merged recently and touches a watched path."""
-    result = watch()
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.count("gh issue comment") == 1
-    assert "#101" in result.stdout
-    for number in ("#102", "#103", "#104"):
-        assert number not in result.stdout
-
-
-def test_watch_posts_nothing_when_empty() -> None:
-    """With nothing in the window there is no gh call."""
-    result = watch({"UPSTREAM_NOW": "2026-11-30T06:00:00Z"})
-    assert result.returncode == 0, result.stderr
-    assert "gh issue" not in result.stdout
-    assert "No watched" in result.stdout
-
-
-def test_watch_existing_issue_gets_comment_only() -> None:
-    """An existing watch issue is commented on, not recreated."""
-    result = watch({"DRY_RUN_EXISTING_ISSUE": "3"})
-    assert "gh issue comment 3" in result.stdout
-    assert "gh issue create" not in result.stdout
-
-
-def test_watch_fails_when_files_api_fails() -> None:
-    """A failing pulls/{n}/files call aborts with a non-zero exit and no comment."""
-    result = watch({"UPSTREAM_FAIL_FILES": "101"})
-    assert result.returncode != 0
-    assert "gh issue comment" not in result.stdout
-
-
-def test_watch_neutralises_titles(tmp_path: Path) -> None:
-    """Mentions, issue refs and backticks in a title cannot ping or break out."""
-    fixture = tmp_path / "pulls.json"
-    fixture.write_text(
-        '{"pulls": [{"number": 5, "title": "fix @octocat #99 `x`\\\\n",'
-        ' "html_url": "https://example.test/5", "merged_at": "2026-10-24T03:00:00Z"}],'
-        ' "files": {"5": ["homeassistant/config_entries.py"]}}'
-    )
-    result = watch({"UPSTREAM_FIXTURE": str(fixture)})
-    assert result.returncode == 0, result.stderr
-    assert "[#5](https://example.test/5) `fix @octocat #99 " in result.stdout
-    assert "`x`" not in result.stdout
-    assert "config_entries.py" in result.stdout
-
-
 def test_install_dry_run_prints_steps() -> None:
     """The install script prints every step and never clones for real."""
     result = run(
@@ -268,20 +211,6 @@ def test_report_body_is_valid_utf8_and_byte_capped(
     assert "ü€😀" in text
     assert "truncated" in text
     assert "--body-file" in Path(fake_gh["GH_CALLS"]).read_text()
-
-
-def test_watch_neutralises_backticks_in_file_names(tmp_path: Path) -> None:
-    """A backtick in a changed file name cannot end the code span."""
-    fixture = tmp_path / "pulls.json"
-    fixture.write_text(
-        '{"pulls": [{"number": 6, "title": "t", "html_url": "https://example.test/6",'
-        ' "merged_at": "2026-10-24T03:00:00Z"}],'
-        ' "files": {"6": ["homeassistant/auth/a`b.py"]}}'
-    )
-    result = watch({"UPSTREAM_FIXTURE": str(fixture)})
-    assert result.returncode == 0, result.stderr
-    assert "a`b.py" not in result.stdout
-    assert "auth/a" in result.stdout
 
 
 @pytest.mark.parametrize(

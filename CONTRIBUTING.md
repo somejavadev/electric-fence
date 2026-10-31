@@ -33,7 +33,9 @@ that, and every change is reviewed against them:
 - **Fail early on upstream changes.** Electric Fence relies on some of Home
   Assistant Core's internals. Each one has a contract test and a runtime
   check, so a change in Core switches the affected part off and says so,
-  instead of misbehaving. Add both when you rely on something new in Core.
+  instead of misbehaving. Add both when you rely on something new in Core,
+  and add its Core path to `WATCHED` in `scripts/upstream_watch.sh` so the
+  daily upstream watch reports changes to it.
 - **Keep data local.** Nothing leaves the Home Assistant system unless the
   user turned it on (GeoIP downloads, reverse DNS, log forwarding). Don't add
   calls to third-party services.
