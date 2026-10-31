@@ -499,6 +499,40 @@ register_contract(
 )
 
 
+def _check_http_store_set_pending(hass: HomeAssistant) -> str | None:
+    """Check the HTTP config store stages configs with `async_set_pending(config)`.
+
+    Core's SSL profile repair stages a config through it directly, without
+    `http/config/configure`; the collector wraps it on the live store.
+    """
+    from homeassistant.components.http import config as http  # noqa: PLC0415
+
+    if "http" not in hass.config.components:
+        return None
+    if not hasattr(http, "HTTP_CONFIG_CREATED_AT"):
+        return "config.HTTP_CONFIG_CREATED_AT is missing"
+    if (store := hass.data.get(http.DATA_STORE)) is None:
+        return "the HTTP config store is missing"
+    for attr in ("stable", "pending"):
+        if not hasattr(store, attr):
+            return f"HTTPConfigStore.{attr} is missing"
+    return _params_reason(
+        "HTTPConfigStore.async_set_pending",
+        getattr(store, "async_set_pending", None),
+        [("config", _POS, _EMPTY)],
+        coro=True,
+    )
+
+
+register_contract(
+    Contract(
+        "http_store_set_pending",
+        "system_settings_http_store",
+        _check_http_store_set_pending,
+    )
+)
+
+
 def _check_ban_manager(hass: HomeAssistant) -> str | None:
     """Core's ban manager keeps the names and attributes the backend uses."""
     from homeassistant.components.http import ban  # noqa: PLC0415

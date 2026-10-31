@@ -29,13 +29,26 @@ HTTP request (`attribution.call_ip`). The services have their own contract
 (`system_settings_services`): when it fails, only the service wrapping is
 disabled and the collector's repair issue is raised; the WebSocket part stays.
 
+Core can also stage an HTTP config without `http/config/configure`: its SSL
+profile repair calls the HTTP config store's `async_set_pending` from the
+repair flow's view, then restarts. The collector wraps that method on the live
+store and records the staged (or dropped) config like the command does,
+compared with the stable config. The actor is the admin whose request runs the
+call in the same task (`attribution.direct_request_actor`), else System. While
+the wrapped `http/config/configure` handler runs, a context flag (inherited by
+the task it starts) makes the store wrapper record nothing, so the command is
+recorded once, by its own wrapper. The store hook has its own contract
+(`system_settings_http_store`): when it fails, only the store hook is disabled
+and the collector's repair issue says so.
+
 Safety (spec §4): Core's handler is called exactly once and its return value
 or exception passes through unchanged. Reading, diffing and submitting run
 inside `self.guard`; when any of that fails, the call goes through untouched
 (with the real connection if the failure was before the call).
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 import copy
 from dataclasses import dataclass
 import logging
@@ -59,10 +72,16 @@ from homeassistant.setup import ATTR_COMPONENT, EventComponentLoaded
 from homeassistant.util import dt as dt_util
 from homeassistant.util.json import json_loads
 
-from ..attribution import auth_users, call_ip, ws_ip
+from ..attribution import auth_users, call_ip, direct_request_actor, ws_ip
 from ..contracts import CONTRACTS, check_contracts
 from ..failopen import FailOpen
-from ..hooks import HookHandle, ServiceHandler, wrap_service, wrap_ws_command
+from ..hooks import (
+    HookHandle,
+    ServiceHandler,
+    wrap_async_method,
+    wrap_service,
+    wrap_ws_command,
+)
 from ..models import ChangeAction, ChangeKind, SettingsChange
 from ..redact import diff_details
 from ..repairs import async_report_disabled_collector
@@ -78,6 +97,14 @@ _CONTRACT = "system_settings_ws"
 # The services part has its own contract "collector", so a failure disables
 # the service wrapping only (see `SystemSettingsCollector.install`).
 SERVICES_CONTRACT_GROUP = "system_settings_services"
+# Likewise the HTTP config store hook (Core's SSL profile repair).
+STORE_CONTRACT_GROUP = "system_settings_http_store"
+_HTTP_CONFIGURE = "http/config/configure"
+# True while the wrapped `http/config/configure` handler runs, and in the task
+# it starts (tasks copy the context): that wrapper records the change itself.
+_IN_HTTP_CONFIGURE: ContextVar[bool] = ContextVar(
+    "electric_fence_in_http_configure", default=False
+)
 # Message keys that are not command parameters.
 _ENVELOPE = frozenset({"id", "type"})
 
@@ -629,6 +656,14 @@ def call_actor(hass: HomeAssistant, call: ServiceCall) -> Actor:
     )
 
 
+def request_actor() -> Actor:
+    """Return the user and IP of the view running in this task, else System."""
+    if (found := direct_request_actor()) is None:
+        return Actor(user_id=None, user_name=None, ip=None)
+    user, ip = found
+    return Actor(user_id=user.id, user_name=user.name, ip=ip)
+
+
 class SystemSettingsCollector(BaseCollector):
     """Record admin WebSocket commands and services that change system settings."""
 
@@ -648,6 +683,8 @@ class SystemSettingsCollector(BaseCollector):
         self._service_handles: list[HookHandle] = []
         self._wrapped_services: set[str] = set()
         self._services_reasons: list[str] = []
+        # Why the HTTP config store hook is disabled, if it is.
+        self._store_reasons: list[str] = []
 
     def install(self) -> bool:
         """Install; a failed services contract disables the services only.
@@ -658,8 +695,8 @@ class SystemSettingsCollector(BaseCollector):
         """
         if not super().install():
             return False
-        if self._services_reasons:
-            self._report_services_disabled()
+        if self._services_reasons or self._store_reasons:
+            self._report_parts_disabled()
         return True
 
     def _install(self) -> None:
@@ -668,6 +705,9 @@ class SystemSettingsCollector(BaseCollector):
         self._services_reasons = check_contracts(self.hass, SERVICES_CONTRACT_GROUP)
         if not self._services_reasons:
             self._wrap_services()
+        self._store_reasons = check_contracts(self.hass, STORE_CONTRACT_GROUP)
+        if not self._store_reasons:
+            self._wrap_http_store()
         loaded = self.hass.config.components
         self._waiting = {
             spec.component for spec in self.WS_SPECS if spec.component not in loaded
@@ -715,12 +755,14 @@ class SystemSettingsCollector(BaseCollector):
         if reasons := check_contracts(self.hass, SERVICES_CONTRACT_GROUP):
             self._unwrap_services()
             self._services_reasons = reasons
-            self._report_services_disabled()
+            self._report_parts_disabled()
             return
         self._wrap_services()
 
-    def _report_services_disabled(self) -> None:
-        self.disabled_reason = [f"services: {r}" for r in self._services_reasons]
+    def _report_parts_disabled(self) -> None:
+        self.disabled_reason = [f"services: {r}" for r in self._services_reasons] + [
+            f"HTTP config store: {r}" for r in self._store_reasons
+        ]
         async_report_disabled_collector(self.hass, self.name, self.disabled_reason)
 
     def _wrap_ws_commands(self) -> None:
@@ -737,6 +779,14 @@ class SystemSettingsCollector(BaseCollector):
                     wrap_ws_command(self.hass, spec.command, self._wrap_ws(spec))
                 )
                 self._wrapped.add(spec.command)
+
+    def _wrap_http_store(self) -> None:
+        """Wrap the HTTP config store's `async_set_pending` (contract passed)."""
+        if (store := _http_store(self.hass)) is None:
+            return
+        self._handles.append(
+            wrap_async_method(store, "async_set_pending", self._wrap_set_pending)
+        )
 
     def _wrap_services(self) -> None:
         """Wrap the registered services of loaded components, each once."""
@@ -832,7 +882,13 @@ class SystemSettingsCollector(BaseCollector):
                 watch = self.guard.call(self._before, spec, connection, msg)
                 # The watch stands in for the connection (see `ResultWatch`).
                 target = connection if watch is None else cast(ActiveConnection, watch)
-                return original(hass, target, msg)
+                if spec.command != _HTTP_CONFIGURE:
+                    return original(hass, target, msg)
+                token = _IN_HTTP_CONFIGURE.set(True)
+                try:
+                    return original(hass, target, msg)
+                finally:
+                    _IN_HTTP_CONFIGURE.reset(token)
 
             return handler
 
@@ -880,6 +936,68 @@ class SystemSettingsCollector(BaseCollector):
             if not details["changed"]:
                 return
         self._submit_ws(spec, actor, msg, details)
+
+    def _wrap_set_pending(
+        self, original: Callable[..., Awaitable[None]]
+    ) -> Callable[..., Awaitable[None]]:
+        async def set_pending(*args: Any, **kwargs: Any) -> None:
+            found = self.guard.call(self._store_before)
+            # Core's method: its exception passes unchanged, and records nothing.
+            await original(*args, **kwargs)
+            if found is not None:
+                self.guard.call(self._store_after, *found)
+
+        return set_pending
+
+    def _store_before(
+        self,
+    ) -> tuple[Actor, dict[str, Any], dict[str, Any] | None] | None:
+        """Snapshot stable and pending, unless the WebSocket command records."""
+        if _IN_HTTP_CONFIGURE.get():
+            return None
+        if (store := _http_store(self.hass)) is None:
+            return None
+        pending = store.pending
+        return (
+            request_actor(),
+            copy.deepcopy(dict(store.stable)),
+            None if pending is None else copy.deepcopy(dict(pending)),
+        )
+
+    def _store_after(
+        self,
+        actor: Actor,
+        stable: dict[str, Any],
+        pending: dict[str, Any] | None,
+    ) -> None:
+        """Record what Core staged or dropped (inside the guard).
+
+        A staged config is compared with stable, which is in force; a dropped
+        one from the pending config. Core keeps an identical, untried pending
+        config as is (same `created_at`): nothing changed.
+        """
+        from homeassistant.components.http.config import HTTP_CONFIG_CREATED_AT  # noqa: PLC0415
+
+        if (store := _http_store(self.hass)) is None:
+            return
+        staged = store.pending
+        if staged is None:
+            if pending is None:
+                return
+            action = ChangeAction.WITHDRAWN
+            before, after = _http_settings(pending), _http_settings(stable)
+        else:
+            if pending is not None and staged.get(
+                HTTP_CONFIG_CREATED_AT
+            ) == pending.get(HTTP_CONFIG_CREATED_AT):
+                return
+            action = ChangeAction.UPDATED
+            before, after = _http_settings(stable), _http_settings(staged)
+        details = diff_details(
+            before, after, include_values=self.runtime.settings.record_values
+        )
+        if details["changed"]:
+            self._submit(ChangeKind.HTTP, action, "HTTP", actor, details)
 
     def _params_details(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """Details of an action: the parameters given (not None), redacted."""

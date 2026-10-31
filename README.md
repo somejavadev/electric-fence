@@ -30,7 +30,8 @@ Screenshots are coming.
   users, core settings, backups (settings changes, a deleted backup, and a
   requested restore, which is recorded as "requested" before it runs; see
   [Known limits](#known-limits) for why it rarely survives), HTTP and
-  IP ban settings (submitted, withdrawn, and confirmed after the restart),
+  IP ban settings (submitted, withdrawn, and confirmed after the restart,
+  including an SSL profile upgrade applied from Home Assistant's repair),
   network adapters, analytics preferences, log levels, and the recorder
   (disable, enable, purge, and purge entities). A change without a person
   behind it, such as an automation, shows as **System**. Log level and recorder
