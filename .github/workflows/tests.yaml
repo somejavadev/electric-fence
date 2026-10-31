@@ -22,11 +22,13 @@ jobs:
           cache-dependency-path: requirements_test.txt
       # Home Assistant 2026.11.0 is not on PyPI yet and the PyPI
       # pytest-homeassistant-custom-component has no 2026.11 build (0.13.374
-      # pins 2026.10.3, which these tests are not compatible with). Until both
-      # exist, install Core at `dev` and generate the plugin from it. Replace
-      # with a plain `pip install -r requirements_test.txt` once they do.
-      - name: Install Home Assistant (dev) and test tooling
-        run: scripts/ci_install_ha.sh dev
+      # pins 2026.10.4, which these tests are not compatible with). Until both
+      # exist, install Core at `rc` (the 2026.11 beta/release branch; `dev` is
+      # already 2026.12 and is covered by the nightly workflow) and generate
+      # the plugin from it. Replace with a plain
+      # `pip install -r requirements_test.txt` once they do.
+      - name: Install Home Assistant (rc) and test tooling
+        run: scripts/ci_install_ha.sh rc
       # The frontend bundle is not built here: tests/test_panel.py does not
       # need frontend_dist. The Frontend workflow builds and tests it.
       - run: ruff check .
