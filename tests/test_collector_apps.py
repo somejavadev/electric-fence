@@ -6,6 +6,7 @@ services run against a stand-in Supervisor client (`tests.helpers`).
 
 import asyncio
 from dataclasses import replace
+import inspect
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -689,7 +690,9 @@ async def test_rest_proxy_refuses_app_changes(
     """
     from homeassistant.components.hassio.http import HassIOView  # noqa: PLC0415
 
-    hass.http.register_view(HassIOView("127.0.0.1:1", Mock()))
+    # Core 2026.12 takes one connection; 2026.11 takes a host and a session.
+    args = [Mock() for _ in inspect.signature(HassIOView).parameters]
+    hass.http.register_view(HassIOView(*args))
     http = await hass_client()
     resp = await http.post("/api/hassio/addons/core_mosquitto/restart")
     assert resp.status == 401
@@ -905,24 +908,26 @@ async def test_update_contract_failure_at_install_keeps_collector(
 
     A later setup with the contract passing clears its repair.
     """
-    monkeypatch.setitem(
-        CONTRACTS,
-        "hassio_update_install",
-        Contract("hassio_update_install", "apps_update_install", lambda _hass: "moved"),
-    )
     await _fake_update_component(hass)
     monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
     found = MockConfigEntry(domain=DOMAIN, options=Settings().to_options())
     found.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(found.entry_id)
-    await hass.async_block_till_done()
+    # Only the contract is restored: the fake Supervisor stays in place.
+    with monkeypatch.context() as broken:
+        broken.setitem(
+            CONTRACTS,
+            "hassio_update_install",
+            Contract(
+                "hassio_update_install", "apps_update_install", lambda _hass: "moved"
+            ),
+        )
+        assert await hass.config_entries.async_setup(found.entry_id)
+        await hass.async_block_till_done()
     collector = _collector(found)
     assert collector.is_installed is True
     assert collector.disabled_reason == ["update entities: moved"]
     issue = "collector_disabled_apps_update_install"
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue)
-    monkeypatch.undo()
-    monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", MIN_HA_VERSION)
     collector.uninstall()
     assert collector.install() is True
     assert collector.disabled_reason == []

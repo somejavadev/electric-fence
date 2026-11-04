@@ -47,6 +47,7 @@ from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.http import current_request
 from homeassistant.setup import async_setup_component
+from homeassistant.util.hass_dict import HassKey
 
 CLIENT_ID = "http://127.0.0.1:8123/"
 REDIRECT_URI = "http://127.0.0.1:8123/"
@@ -327,6 +328,9 @@ async def dummy_entry(
     return entry
 
 
+FAKE_SUPERVISOR_SEND: HassKey[AsyncMock] = HassKey("electric_fence_test_send")
+
+
 def supervisor_client() -> Mock:
     """Return a stand-in for `hassio.get_supervisor_client(hass)`."""
     client = Mock()
@@ -365,7 +369,14 @@ async def setup_fake_hassio(
 
     assert await async_setup_component(hass, "websocket_api", {})
     send = AsyncMock(return_value={"result": "ok", "data": {}})
-    hass.data[const.DATA_COMPONENT] = Mock(send_command=send)
+    supervisor = Mock(send_command=send)
+    if hasattr(const, "DATA_COMPONENT"):
+        hass.data[const.DATA_COMPONENT] = supervisor
+    else:  # Core 2026.12 builds its passthrough client from the environment.
+        monkeypatch.setattr(
+            hassio_ws, "get_supervisor_passthrough_client", lambda _hass: supervisor
+        )
+    hass.data[FAKE_SUPERVISOR_SEND] = send
     hass.data[const.DATA_ADDONS_LIST] = []
     async_register_command(hass, hassio_ws.websocket_supervisor_api)
     async_register_command(hass, hassio_ws.websocket_update_addon)

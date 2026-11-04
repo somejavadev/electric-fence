@@ -8,11 +8,15 @@ from a local Home Assistant Core checkout.
 
 Source layout:
   * Core >= 2026.11 ships its test helpers as an in-tree package at
-    ``packages/pytest-home-assistant/pytest_homeassistant/``. Its modules are
-    the successors of ``tests/common.py``, ``tests/conftest.py`` (now
-    ``plugins.py``), and so on, so they are used when present.
+    ``packages/<name>/pytest_homeassistant/`` (``<name>`` changed from
+    ``pytest-home-assistant`` to ``pytest-homeassistant`` in 2026.11.0b4). Its
+    modules are the successors of ``tests/common.py``, ``tests/conftest.py``
+    (now ``plugins.py``), and so on, so they are used when present.
   * Older Core checkouts keep them under ``tests/``; that layout is handled
     as a fallback (``tests/conftest.py`` -> ``plugins.py``).
+
+A checkout without the modules in ``REQUIRED_FILES`` in either place is an
+error: a partial package would only fail later, when pytest loads it.
 
 Usage:
   build_phcc.py --core /path/to/core --out /path/to/outdir
@@ -95,7 +99,9 @@ PHCC_REQUIRES = [
     "numpy",
 ]
 
-PKG_SUBDIR = Path("packages/pytest-home-assistant/pytest_homeassistant")
+# The plugin can't load without these, whichever layout they come from.
+REQUIRED_FILES = ("common.py", "plugins.py", "typing.py", "test_util/aiohttp.py")
+
 DOCSTRING_RE = re.compile(r'\A(?P<q>"""|\'\'\')(?P<body>.*?)(?P=q)', re.DOTALL)
 
 
@@ -158,10 +164,10 @@ def core_version(core: Path) -> tuple[str, str]:
 def collect_sources(core: Path) -> tuple[dict[str, tuple[Path, bool]], str]:
     """Map package-relative paths to (source file, came from tests/)."""
     tests = core / "tests"
-    pkg_src = core / PKG_SUBDIR
+    pkg_src = next(iter(sorted(core.glob("packages/*/pytest_homeassistant"))), None)
     sources: dict[str, tuple[Path, bool]] = {}
-    if pkg_src.is_dir():
-        layout = f"in-tree package {PKG_SUBDIR}"
+    if pkg_src is not None:
+        layout = f"in-tree package {pkg_src.relative_to(core)}"
         for path in sorted(pkg_src.rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
@@ -239,6 +245,8 @@ def main() -> None:
     ha_version, const_py = core_version(core)
     version = f"{VERSION_PREFIX}+core{ha_version}"
     sources, layout = collect_sources(core)
+    if absent := [rel for rel in REQUIRED_FILES if rel not in sources]:
+        sys.exit(f"{layout} in {core} has no {', '.join(absent)}: did the helpers move?")
 
     if out.exists():
         shutil.rmtree(out)

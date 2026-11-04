@@ -45,6 +45,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util import dt as dt_util
 from tests.helpers import (
+    FAKE_SUPERVISOR_SEND,
     change_rows,
     dump_db,
     flush_worker,
@@ -882,10 +883,7 @@ async def test_worker_failure_does_not_escape(
 
 def _send(hass: HomeAssistant) -> AsyncMock:
     """Return the `send_command` mock Core's `supervisor/api` calls."""
-    from homeassistant.components.hassio.const import DATA_COMPONENT  # noqa: PLC0415
-
-    send: AsyncMock = hass.data[DATA_COMPONENT].send_command
-    return send
+    return hass.data[FAKE_SUPERVISOR_SEND]
 
 
 async def _panel(
