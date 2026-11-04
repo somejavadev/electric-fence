@@ -27,7 +27,7 @@ from homeassistant.data_entry_flow import FlowResultType, section
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 from tests.test_collector_auth_failures import _bad_bearer, _notifications, _setup
-from tests.test_geo import _attempt
+from tests.test_geo import DBIP_ANY, _attempt
 from tests.test_worker import failed, logins
 
 SECTIONS = {
@@ -460,14 +460,7 @@ async def test_provider_none_to_dbip_downloads(
 ) -> None:
     """Switching from none to DB-IP Lite starts a download, with no reload."""
     monkeypatch.setattr("custom_components.electric_fence.HA_VERSION", "2026.11.0")
-    aioclient_mock.get(
-        "https://download.db-ip.com/free/dbip-country-lite-2026-10.mmdb.gz",
-        status=404,
-    )
-    aioclient_mock.get(
-        "https://download.db-ip.com/free/dbip-country-lite-2026-09.mmdb.gz",
-        status=404,
-    )
+    aioclient_mock.get(DBIP_ANY, status=404)
     entry = MockConfigEntry(
         domain="electric_fence", options=Settings(geoip_provider="none").to_options()
     )
