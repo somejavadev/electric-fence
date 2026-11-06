@@ -19,8 +19,8 @@ import zlib
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
 import pytest
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.common import async_fire_time_changed
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.electric_fence.geo import base
 from custom_components.electric_fence.geo.base import (

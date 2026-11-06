@@ -8,10 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_capture_events,
-)
+from pytest_homeassistant.common import MockConfigEntry, async_capture_events
 
 from custom_components.electric_fence import notifier as notifier_module
 from custom_components.electric_fence.alerts import Alerter

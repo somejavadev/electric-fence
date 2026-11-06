@@ -13,8 +13,8 @@ import time
 from aiohttp import web
 from aiohttp.test_utils import TestClient
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.settings import Settings

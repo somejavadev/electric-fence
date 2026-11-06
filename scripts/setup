@@ -3,17 +3,16 @@
 # panel build, and the symlink that makes the integration visible to Home
 # Assistant in .devcontainer/config.
 #
-# HA_REF picks the Home Assistant Core ref (a tag or branch). The default is
-# `dev` until 2026.11.0 is released. DRY_RUN=1 prints the Home Assistant
-# install commands without cloning or installing.
+# Installs the Home Assistant release pinned in requirements_ha.txt. HA_REF
+# picks a Home Assistant Core ref (a tag or branch) instead, installed from git.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-# Installs Home Assistant, the generated test plugin, and requirements_test.txt.
-# There is no PyPI build of the test plugin for 2026.11 yet.
-scripts/ci_install_ha.sh "${HA_REF:-dev}"
-
-python -m pip --disable-pip-version-check install -r requirements_test.txt
+if [[ -n "${HA_REF:-}" ]]; then
+  scripts/ci_install_ha.sh "$HA_REF"
+else
+  python -m pip --disable-pip-version-check install -r requirements_ha.txt -r requirements_test.txt
+fi
 
 # The panel must be built before Home Assistant starts: the static path is
 # registered once, with the folder as it exists at startup.

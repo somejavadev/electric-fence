@@ -14,12 +14,8 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    MockUser,
-    async_mock_service,
-)
-from pytest_homeassistant_custom_component.typing import WebSocketGenerator
+from pytest_homeassistant.common import MockConfigEntry, MockUser, async_mock_service
+from pytest_homeassistant.typing import WebSocketGenerator
 
 from custom_components.electric_fence.collectors.system_settings import (
     SystemSettingsCollector,

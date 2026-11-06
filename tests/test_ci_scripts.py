@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 import pytest
 
@@ -145,13 +144,13 @@ def test_install_dry_run_prints_steps() -> None:
         in out
     )
     assert "/nonexistent-ci-tmp/ha-core" in out
-    assert "build_phcc.py" in out
-    assert "requirements_phcc.txt" in out
-    assert "--no-deps /nonexistent-ci-tmp/phcc" in out
+    plugin = "install /nonexistent-ci-tmp/ha-core/packages/pytest-homeassistant"
+    assert plugin in out
+    assert "aiohasupervisor" in out
     assert "requirements_test.txt" in out
     assert (
-        out.index("build_phcc.py")
-        < out.index("--no-deps")
+        out.index("install /nonexistent-ci-tmp/ha-core\n")
+        < out.index(plugin)
         < out.index("requirements_test.txt")
     )
 
@@ -238,83 +237,3 @@ def test_supported_core_reads_the_integration_minimum() -> None:
     result = run("ci_supported_core.sh", "--print-minimum")
     assert result.returncode == 0, result.stderr
     assert f'MIN_HA_VERSION = "{result.stdout.strip()}"' in const
-
-
-CORE_CONST = """\
-MAJOR_VERSION: Final = 2026
-MINOR_VERSION: Final = 11
-PATCH_VERSION: Final = "0b4"
-__short_version__: Final = f"{MAJOR_VERSION}.{MINOR_VERSION}"
-__version__: Final = f"{__short_version__}.{PATCH_VERSION}"
-"""
-HELPERS = (
-    "__init__.py",
-    "common.py",
-    "plugins.py",
-    "typing.py",
-    "test_util/aiohttp.py",
-)
-
-
-def fake_core(root: Path, helpers_dir: str, helpers: tuple[str, ...]) -> Path:
-    """Write a Core checkout holding `helpers` under `helpers_dir`."""
-    (root / "homeassistant").mkdir(parents=True)
-    (root / "homeassistant/const.py").write_text(CORE_CONST)
-    # Core's own tests package, as of 2026.11.0b4: importing it from the
-    # generated package is what crashed pytest at startup.
-    (root / "tests").mkdir()
-    (root / "tests/__init__.py").write_text("from pytest_homeassistant import _paths\n")
-    for name in helpers:
-        path = root / helpers_dir / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('"""A helper."""\n')
-    return root
-
-
-def build_phcc(core: Path, out: Path) -> subprocess.CompletedProcess[str]:
-    """Run the plugin generator on a Core checkout."""
-    return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPTS / "build_phcc.py"),
-            "--core",
-            str(core),
-            "--out",
-            str(out),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-
-
-@pytest.mark.parametrize("package", ["pytest-home-assistant", "pytest-homeassistant"])
-def test_build_phcc_finds_the_in_tree_package(package: str, tmp_path: Path) -> None:
-    """Core's helper package is used under its old and its current directory."""
-    core = fake_core(
-        tmp_path / "core", f"packages/{package}/pytest_homeassistant", HELPERS
-    )
-    result = build_phcc(core, tmp_path / "out")
-    assert result.returncode == 0, result.stderr
-    assert "in-tree package" in result.stdout
-    built = tmp_path / "out/pytest_homeassistant_custom_component"
-    assert (built / "common.py").is_file()
-    assert "_paths" not in (built / "__init__.py").read_text()
-
-
-def test_build_phcc_reads_the_legacy_layout(tmp_path: Path) -> None:
-    """A Core with its helpers under `tests/` still builds."""
-    helpers = tuple("conftest.py" if name == "plugins.py" else name for name in HELPERS)
-    core = fake_core(tmp_path / "core", "tests", helpers)
-    result = build_phcc(core, tmp_path / "out")
-    assert result.returncode == 0, result.stderr
-    assert "legacy tests/ directory" in result.stdout
-
-
-def test_build_phcc_refuses_an_unknown_layout(tmp_path: Path) -> None:
-    """Helpers that moved again fail the build, not pytest's startup."""
-    core = fake_core(tmp_path / "core", "somewhere/new", HELPERS)
-    result = build_phcc(core, tmp_path / "out")
-    assert result.returncode != 0
-    assert "common.py" in result.stderr

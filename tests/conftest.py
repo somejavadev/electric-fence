@@ -4,11 +4,7 @@ from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    mock_config_flow,
-    mock_platform,
-)
+from pytest_homeassistant.common import MockConfigEntry, mock_config_flow, mock_platform
 
 # pytest-aiohttp defines these fixtures too, and whichever plugin pytest loads
 # last wins. The load order follows the install, so it changes between
@@ -16,10 +12,7 @@ from pytest_homeassistant_custom_component.common import (
 # setting up the frontend after a test client has started fails. Fixtures in a
 # conftest always win, so importing Home Assistant's versions here makes them
 # the ones every test gets.
-from pytest_homeassistant_custom_component.plugins import (  # noqa: F401
-    aiohttp_client,
-    aiohttp_client_cls,
-)
+from pytest_homeassistant.plugins import aiohttp_client, aiohttp_client_cls  # noqa: F401
 
 from custom_components.electric_fence.const import DOMAIN, MIN_HA_VERSION
 from custom_components.electric_fence.geo.updater import GeoUpdater
@@ -27,11 +20,6 @@ from custom_components.electric_fence.settings import Settings
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from tests.helpers import DUMMY, PROBE, DummyFlow, mock_dummy
-
-
-@pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
-    """Enable loading of custom integrations in every test."""
 
 
 @pytest.fixture

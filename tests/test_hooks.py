@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pytest_homeassistant_custom_component.typing import WebSocketGenerator
+from pytest_homeassistant.typing import WebSocketGenerator
 
 from custom_components.electric_fence.hooks import (
     wrap_async_method,

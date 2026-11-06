@@ -8,10 +8,7 @@ from unittest.mock import Mock, patch
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.electric_fence import SIZE_CHECK_INTERVAL, async_enforce_size
 from custom_components.electric_fence.const import DOMAIN

@@ -10,17 +10,14 @@ from typing import Any
 
 from aiohttp import web
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     MockModule,
     mock_config_flow,
     mock_integration,
     mock_platform,
 )
-from pytest_homeassistant_custom_component.typing import (
-    ClientSessionGenerator,
-    WebSocketGenerator,
-)
+from pytest_homeassistant.typing import ClientSessionGenerator, WebSocketGenerator
 
 from homeassistant import config_entries
 from homeassistant.auth import EVENT_USER_ADDED

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install Home Assistant Core at a git ref plus the test tooling, without the
-# PyPI pytest-homeassistant-custom-component.
+# Install Home Assistant Core at a git ref, the pytest-homeassistant package
+# from that same checkout, and the test tooling.
 #
-# Why: the PyPI plugin has no build for HA 2026.11 (0.13.374 pins 2026.10.3,
-# which this repository's tests are not compatible with). The plugin is
-# generated from the checked-out Core instead (scripts/build_phcc.py), so CI
-# tests the same Core the integration will run on.
+# Why: the nightly tests Cores that have no PyPI release, such as `rc` and
+# `dev`. pytest-homeassistant lives in Core and PyPI's build requires the
+# homeassistant of the same version, so a Core from git needs its own copy. For
+# the pinned release, install requirements_ha.txt instead.
 #
 # Usage: ci_install_ha.sh <core-ref>      (a tag or branch of home-assistant/core)
 # DRY_RUN=1 prints the commands without cloning or installing.
@@ -18,7 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 WORK="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 CORE_DIR="$WORK/ha-core"
-PHCC_DIR="$WORK/phcc"
+PLUGIN_DIR="$CORE_DIR/packages/pytest-homeassistant"
 PIP=(python -m pip --disable-pip-version-check)
 
 run() {
@@ -32,7 +32,7 @@ run() {
 }
 
 echo "== 1. shallow clone of home-assistant/core at $ref"
-run rm -rf "$CORE_DIR" "$PHCC_DIR"
+run rm -rf "$CORE_DIR"
 run git clone --depth 1 --branch "$ref" https://github.com/home-assistant/core "$CORE_DIR"
 if [[ "${DRY_RUN:-}" == "1" ]]; then
   core_sha="<sha of $ref>"
@@ -61,25 +61,25 @@ fi
 echo "== 2. install Core (with its runtime dependencies)"
 run "${PIP[@]}" install "$CORE_DIR"
 
-echo "== 3. generate the test plugin from this Core"
-run python "$HERE/build_phcc.py" --core "$CORE_DIR" --out "$PHCC_DIR"
+echo "== 3. install pytest-homeassistant from this Core"
+if [[ "${DRY_RUN:-}" != "1" && ! -d "$PLUGIN_DIR" ]]; then
+  echo "Core $ref has no packages/pytest-homeassistant" >&2
+  exit 1
+fi
+run "${PIP[@]}" install "$PLUGIN_DIR"
 
-echo "== 4. install the plugin's requirements and the pinned frontend"
-run "${PIP[@]}" install -r "$PHCC_DIR/requirements_phcc.txt"
+echo "== 4. install Core's pins for what the tests import but the plugin doesn't require"
 if [[ "${DRY_RUN:-}" == "1" ]]; then
-  run "${PIP[@]}" install "<home-assistant-frontend pin from $CORE_DIR/requirements_all.txt>"
+  run "${PIP[@]}" install "<home-assistant-frontend and aiohasupervisor pins from $CORE_DIR/requirements_all.txt>"
 else
-  frontend="$(grep -E '^home-assistant-frontend==' "$CORE_DIR/requirements_all.txt")"
-  "${PIP[@]}" install "$frontend"
+  mapfile -t pins < <(grep -E '^(home-assistant-frontend|aiohasupervisor)==' "$CORE_DIR/requirements_all.txt")
+  "${PIP[@]}" install "${pins[@]}"
 fi
 
-echo "== 5. install the generated plugin (no dependencies)"
-run "${PIP[@]}" install --no-deps "$PHCC_DIR"
-
-echo "== 6. install the repository's tooling and extra test requirements"
+echo "== 5. install the repository's tooling and extra test requirements"
 # requirements_test.txt deliberately lists neither the plugin nor Home
-# Assistant, so this cannot reinstall PyPI phcc or downgrade Core.
+# Assistant, so this cannot downgrade Core.
 run "${PIP[@]}" install -r "$REPO/requirements_test.txt"
 
-echo "== 7. installed Core version"
+echo "== 6. installed Core version"
 run python -c "import homeassistant.const as c; print(c.__version__)"

@@ -11,15 +11,12 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     MockUser,
     async_fire_time_changed,
 )
-from pytest_homeassistant_custom_component.typing import (
-    ClientSessionGenerator,
-    WebSocketGenerator,
-)
+from pytest_homeassistant.typing import ClientSessionGenerator, WebSocketGenerator
 
 from custom_components.electric_fence import COLLECTOR_TYPES, attribution
 from custom_components.electric_fence.attribution import (

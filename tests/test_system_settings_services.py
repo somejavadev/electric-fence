@@ -1,6 +1,6 @@
 """The logger and recorder services: recorded after Core's handler returns.
 
-The recorder runs through phcc's `recorder_mock` (a real recorder on an
+The recorder runs through pytest-homeassistant's `recorder_mock` (a real recorder on an
 in-memory database). Nothing here restarts Home Assistant or touches the
 network.
 """
@@ -14,14 +14,9 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
-from pytest_homeassistant_custom_component.components.recorder.common import (
-    async_wait_recording_done,
-)
-from pytest_homeassistant_custom_component.typing import (
-    ClientSessionGenerator,
-    WebSocketGenerator,
-)
+from pytest_homeassistant.common import MockConfigEntry, MockUser
+from pytest_homeassistant.components.recorder.common import async_wait_recording_done
+from pytest_homeassistant.typing import ClientSessionGenerator, WebSocketGenerator
 
 from custom_components.electric_fence import attribution
 from custom_components.electric_fence.collectors.system_settings import (

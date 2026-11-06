@@ -38,9 +38,9 @@ jobs:
         env:
           CELL: ${{ matrix.ha }}
         run: echo "ref=$(scripts/ci_resolve_ref.sh "$CELL")" >> "$GITHUB_OUTPUT"
-      # Writes CORE_SHA and CORE_VERSION to the environment of later steps. The
-      # PyPI pytest-homeassistant-custom-component has no 2026.11 build, so the
-      # plugin is generated from this Core (see scripts/ci_install_ha.sh).
+      # Writes CORE_SHA and CORE_VERSION to the environment of later steps.
+      # pytest-homeassistant comes from this Core's checkout, since `rc` and
+      # `dev` have no PyPI release (see scripts/ci_install_ha.sh).
       - name: Install Home Assistant ${{ steps.ref.outputs.ref }}
         env:
           CORE_REF: ${{ steps.ref.outputs.ref }}

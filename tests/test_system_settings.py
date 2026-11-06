@@ -10,13 +10,13 @@ from unittest.mock import Mock
 
 import probatio
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     MockModule,
     MockUser,
     mock_integration,
 )
-from pytest_homeassistant_custom_component.typing import WebSocketGenerator
+from pytest_homeassistant.typing import WebSocketGenerator
 
 from custom_components.electric_fence import COLLECTOR_TYPES, attribution
 from custom_components.electric_fence.attribution import AttributionCollector

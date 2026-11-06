@@ -13,11 +13,8 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
-from pytest_homeassistant_custom_component.typing import WebSocketGenerator
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
+from pytest_homeassistant.typing import WebSocketGenerator
 
 from custom_components.electric_fence.collectors import apps_outside
 from custom_components.electric_fence.collectors.apps_outside import (
