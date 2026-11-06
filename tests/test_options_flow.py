@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, patch
 
 import probatio
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.typing import ClientSessionGenerator
 from yarl import URL
 
 from custom_components.electric_fence.geo.maxmind import DOWNLOAD_URL

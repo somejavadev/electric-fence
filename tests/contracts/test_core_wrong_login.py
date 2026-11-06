@@ -5,7 +5,7 @@ These tests characterise Home Assistant Core, not Electric Fence.
 
 from aiohttp import WSMsgType
 import pytest
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.persistent_notification import Notification, UpdateType

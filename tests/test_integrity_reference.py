@@ -10,7 +10,7 @@ from typing import Any, cast
 import zipfile
 
 import pytest
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.electric_fence.integrity.inventory import InstalledIntegration
 from custom_components.electric_fence.integrity.reference import (

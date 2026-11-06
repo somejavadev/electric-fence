@@ -640,15 +640,6 @@ is licensed under
 
 ### Try it
 
-> [!NOTE]
-> Until Home Assistant 2026.11.0 is released, the dev container installs a
-> development build (`2026.11.0.dev0`), which is below the minimum version, so
-> the integration refuses to load there (there is deliberately no bypass).
-> Once a 2026.11 tag exists, set `HA_REF` to it and rerun `scripts/setup` (see
-> [How Home Assistant is installed](#how-home-assistant-is-installed)). Until
-> then, use the test suite (`scripts/test`), which runs Electric Fence against
-> the development build with the version check pinned to 2026.11.0.
-
 1. Open the repository in the dev container (VS Code: **Dev Containers: Reopen
    in Container**). It installs everything with `scripts/setup`.
 2. Run `scripts/develop`, then open `http://localhost:8123`.
@@ -686,19 +677,17 @@ changes, and a browser reload picks them up.
 
 ### How Home Assistant is installed
 
-No build of `pytest-homeassistant-custom-component` exists on PyPI for Home
-Assistant 2026.11. So `scripts/setup` runs `scripts/ci_install_ha.sh`, which
-clones Home Assistant Core and generates the test plugin from it. It uses the
-`dev` ref by default until 2026.11.0 is released. Set `HA_REF` to use another
-tag or branch:
+`scripts/setup` installs the release pinned in `requirements_ha.txt`, with the
+matching `pytest-homeassistant` test plugin from PyPI. Upgrade the pins in that
+file together. Set `HA_REF` to use a Core tag or branch from git instead:
 
 ```bash
-HA_REF=2026.11.0 scripts/setup
+HA_REF=dev scripts/setup
 ```
 
-`requirements_test.txt` only lists tooling and extra test requirements. Once
-the plugin supports 2026.11, the dependency will switch back to PyPI (or to
-Core's `pytest-home-assistant` package) and the script can retire.
+This runs `scripts/ci_install_ha.sh`, which installs Core and the
+`pytest-homeassistant` package from the same checkout. The nightly workflow
+installs every Core it tests this way.
 
 ## Contributing
 

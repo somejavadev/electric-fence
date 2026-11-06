@@ -12,8 +12,8 @@ from unittest.mock import patch
 from aiohttp import web
 import hass_frontend
 import pytest
-from pytest_homeassistant_custom_component.common import ensure_auth_manager_loaded
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.common import ensure_auth_manager_loaded
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.auth import auth_manager_from_config
 from homeassistant.components.http.ban import KEY_FAILED_LOGIN_ATTEMPTS

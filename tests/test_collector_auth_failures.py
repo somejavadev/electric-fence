@@ -11,11 +11,8 @@ from unittest.mock import Mock, patch
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_capture_events,
-)
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.common import MockConfigEntry, async_capture_events
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from custom_components.electric_fence import COLLECTOR_TYPES
 from custom_components.electric_fence.collectors.auth_failures import (

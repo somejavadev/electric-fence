@@ -1,22 +1,15 @@
-# Tooling and extra test requirements only.
+# Tooling and extra test requirements, used with any Core. Home Assistant and
+# its test plugin are in requirements_ha.txt, so the nightly can install this
+# file on top of a Core from git without downgrading it.
 #
-# Deliberately NOT listed here:
-#   * homeassistant and pytest-homeassistant-custom-component. The PyPI plugin
-#     has no build for HA 2026.11 (0.13.374 pins 2026.10.3, which this
-#     repository's tests are not compatible with). CI generates the plugin from
-#     a Core checkout with scripts/ci_install_ha.sh <core-ref>, and locally the
-#     venv was built with the same generator.
-#   * home-assistant-frontend (taken from Core's requirements_all.txt by
-#     scripts/ci_install_ha.sh, so it always matches the Core under test).
-# Once 2026.11.0 and a matching plugin are on PyPI, this can go back to
-# `pytest-homeassistant-custom-component==<version>` and the script can retire.
 # Equal to the pin in custom_components/electric_fence/manifest.json.
 maxminddb==3.2.0
 mmdb-writer==0.2.7
+pytest-cov==7.1.0
 # Pinned to Home Assistant Core's versions (requirements_test*.txt); keep them
 # equal when Core changes them. Dependabot ignores these and maxminddb
 # (.github/dependabot.yml).
 pyotp==2.10.0
 mypy==2.4.0
-ruff==0.17.1
+ruff==0.17.3
 pre-commit

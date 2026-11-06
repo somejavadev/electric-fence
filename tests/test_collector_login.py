@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock, Mock, patch
 from aiohttp import ClientResponse, web
 from aiohttp.test_utils import TestClient
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     async_capture_events,
     ensure_auth_manager_loaded,
 )
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from custom_components.electric_fence import COLLECTOR_TYPES
 from custom_components.electric_fence.collectors.login import LoginCollector, _FlowMemo

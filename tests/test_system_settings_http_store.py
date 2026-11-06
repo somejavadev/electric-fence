@@ -10,15 +10,12 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockUser
-from pytest_homeassistant_custom_component.components.repairs import (
+from pytest_homeassistant.common import MockUser
+from pytest_homeassistant.components.repairs import (
     process_repair_fix_flow,
     start_repair_fix_flow,
 )
-from pytest_homeassistant_custom_component.typing import (
-    ClientSessionGenerator,
-    WebSocketGenerator,
-)
+from pytest_homeassistant.typing import ClientSessionGenerator, WebSocketGenerator
 
 from custom_components.electric_fence.collectors import system_settings
 from custom_components.electric_fence.const import DOMAIN

@@ -1,0 +1,11 @@
+# The Home Assistant release the Tests and SonarCloud workflows run against.
+#
+# Upgrade these together: pytest-homeassistant requires the homeassistant of
+# the same version, and home-assistant-frontend and aiohasupervisor must equal
+# the pins in Core's requirements_all.txt for that tag (neither is a dependency
+# of the wheels above). The nightly doesn't use this file, it installs each
+# Core under test from git (scripts/ci_install_ha.sh).
+homeassistant==2026.11.0
+pytest-homeassistant==2026.11.0
+home-assistant-frontend==20261028.4
+aiohasupervisor==0.8.1

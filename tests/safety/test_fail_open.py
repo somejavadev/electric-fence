@@ -16,14 +16,8 @@ from unittest.mock import patch
 
 from aiohttp import WSMsgType
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    ensure_auth_manager_loaded,
-)
-from pytest_homeassistant_custom_component.typing import (
-    ClientSessionGenerator,
-    WebSocketGenerator,
-)
+from pytest_homeassistant.common import MockConfigEntry, ensure_auth_manager_loaded
+from pytest_homeassistant.typing import ClientSessionGenerator, WebSocketGenerator
 
 from custom_components.electric_fence import (
     attribution,

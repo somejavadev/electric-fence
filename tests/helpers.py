@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 from aiohttp import web
 from aiohttp.test_utils import TestClient
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     MockModule,
     mock_integration,

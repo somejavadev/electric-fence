@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.electric_fence.contracts import (
     INTEGRATION_CHECKS,

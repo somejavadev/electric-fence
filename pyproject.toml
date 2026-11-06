@@ -11,8 +11,11 @@ plugins = []
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
 testpaths = ["tests"]
-# The benchmark runs on its own: `pytest -m benchmark`.
+# `-p no:respx` lets Home Assistant install its httpx alias before respx is
+# imported. The benchmark runs on its own: `pytest -m benchmark`.
 addopts = "-p no:respx -m 'not benchmark'"
 markers = [
   "benchmark: timing test, excluded from the default run (pytest -m benchmark)",
@@ -23,10 +26,6 @@ source = ["custom_components/electric_fence"]
 
 [tool.coverage.report]
 fail_under = 95
-
-[tool.ruff]
-# Owner-approved generator, kept verbatim from .superpowers/phcc-build.
-extend-exclude = ["scripts/build_phcc.py"]
 
 [tool.ruff.lint]
 select = [

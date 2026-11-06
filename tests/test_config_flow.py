@@ -1,6 +1,6 @@
 """Tests for the Electric Fence config flow."""
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.electric_fence.const import DOMAIN
 from custom_components.electric_fence.settings import Settings

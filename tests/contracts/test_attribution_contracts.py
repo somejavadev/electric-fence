@@ -7,11 +7,8 @@ from unittest.mock import Mock
 
 from aiohttp.web_protocol import RequestHandler
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.typing import (
-    ClientSessionGenerator,
-    WebSocketGenerator,
-)
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.typing import ClientSessionGenerator, WebSocketGenerator
 
 from custom_components.electric_fence.attribution import (
     ADMIN_WS_COMMANDS,

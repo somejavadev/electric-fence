@@ -2,8 +2,7 @@
 # fails early when an update breaks against Home Assistant.
 #
 # Not covered here: maxminddb in custom_components/electric_fence/manifest.json
-# (Dependabot does not read Home Assistant manifests), and Home Assistant
-# itself (CI installs it from a Core ref, see scripts/ci_install_ha.sh).
+# (Dependabot does not read Home Assistant manifests).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -19,11 +18,17 @@ updates:
     schedule:
       interval: weekly
     # Stay in sync with Home Assistant, never ahead of it:
+    # - requirements_ha.txt moves as one set per Core release, which separate
+    #   bumps can't do. The nightly `stable` cell tests each new release.
     # - pyotp, mypy and ruff are pinned to Home Assistant Core's versions;
     #   change them when Core does.
     # - maxminddb must equal the pin in the integration's manifest.json, which
     #   Dependabot cannot update.
     ignore:
+      - dependency-name: homeassistant
+      - dependency-name: pytest-homeassistant
+      - dependency-name: home-assistant-frontend
+      - dependency-name: aiohasupervisor
       - dependency-name: pyotp
       - dependency-name: mypy
       - dependency-name: ruff
